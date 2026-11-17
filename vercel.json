@@ -1,0 +1,25 @@
+{
+  "headers": [
+    {
+      "source": "/models/(.*)\\.glb",
+      "headers": [
+        { "key": "Content-Type", "value": "model/gltf-binary" },
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/runpod/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/((?!models/|ikea-thumbs/|rooms/|runpod/|assets/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
