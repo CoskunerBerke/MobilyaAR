@@ -13,8 +13,12 @@ export interface ScannedKeyframePayload {
   viewIdx: number;
   pos: [number, number, number];
   quat: [number, number, number, number];
+  w2cR?: number[];
+  w2cT?: number[];
   fovY: number;
   aspect: number;
+  normK?: [number, number, number, number];
+  ceilCut?: number;
   occW: number;
   occH: number;
   occK: [number, number, number, number];
@@ -25,8 +29,12 @@ export interface DecodedKeyframe {
   viewIdx: number;
   pos: [number, number, number];
   quat: [number, number, number, number];
+  w2cR?: number[];
+  w2cT?: number[];
   fovY: number;
   aspect: number;
+  normK?: [number, number, number, number];
+  ceilCut?: number;
   occW: number;
   occH: number;
   occK: [number, number, number, number];
@@ -39,6 +47,8 @@ export interface ScannedRoomPayload {
   pointCount: number;
   points: string; // base64 int16 mm xyz
   colors: string; // base64 uint8 rgb
+  wallRgb?: [number, number, number];
+  floorRgb?: string; // base64 uint8 gd*gw*3
   mesh?: {
     faceCount: number;
     faces: string; // base64 uint16 triangle indices
@@ -75,7 +85,10 @@ export interface ScannedRoomPayload {
 export interface DecodedScannedRoom {
   pointCount: number;
   positions: Float32Array;
-  colors: Float32Array;
+  colors: Float32Array; // linear vertex colors (THREE.SRGBColorSpace -> linear)
+  srgbColors: Float32Array; // raw 0..1 sRGB vertex colors for projective shader
+  wallRgb: [number, number, number];
+  floorRgb?: Uint8Array;
   mesh?: {
     faceCount: number;
     indices: Uint16Array;
@@ -107,6 +120,7 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
 
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
+  const srgbColors = new Float32Array(count * 3);
   const c = new THREE.Color();
 
   for (let i = 0; i < count; i++) {
@@ -115,7 +129,14 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
     positions[o + 1] = int16[o + 1] * 0.001;
     positions[o + 2] = int16[o + 2] * 0.001;
 
-    c.setRGB(colBytes[o] / 255, colBytes[o + 1] / 255, colBytes[o + 2] / 255, THREE.SRGBColorSpace);
+    const r = colBytes[o] / 255;
+    const g = colBytes[o + 1] / 255;
+    const b = colBytes[o + 2] / 255;
+    srgbColors[o] = r;
+    srgbColors[o + 1] = g;
+    srgbColors[o + 2] = b;
+
+    c.setRGB(r, g, b, THREE.SRGBColorSpace);
     colors[o] = c.r;
     colors[o + 1] = c.g;
     colors[o + 2] = c.b;
@@ -143,8 +164,12 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
       viewIdx: kf.viewIdx,
       pos: kf.pos,
       quat: kf.quat,
+      w2cR: kf.w2cR,
+      w2cT: kf.w2cT,
       fovY: kf.fovY,
       aspect: kf.aspect,
+      normK: kf.normK,
+      ceilCut: kf.ceilCut,
       occW: kf.occW,
       occH: kf.occH,
       occK: kf.occK,
@@ -152,10 +177,17 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
     });
   }
 
+  const wallRgb: [number, number, number] =
+    raw.wallRgb && raw.wallRgb.length >= 3 ? [raw.wallRgb[0], raw.wallRgb[1], raw.wallRgb[2]] : [224, 218, 208];
+  const floorRgb = raw.floorRgb ? decodeBase64Bytes(raw.floorRgb) : undefined;
+
   return {
     pointCount: count,
     positions,
     colors,
+    srgbColors,
+    wallRgb,
+    floorRgb,
     mesh,
     keyframes,
     bounds: raw.bounds,
@@ -225,30 +257,343 @@ export function createRoomPointCloudObject(
   };
 }
 
-export function createScannedRoomSurfaceObject(
-  room: DecodedScannedRoom,
-  clipPlane?: THREE.Plane
-): { object: THREE.Object3D; pointMat?: THREE.PointsMaterial; dispose: () => void } {
-  if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(room.positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(room.colors, 3));
-    geo.setIndex(new THREE.BufferAttribute(room.mesh.indices, 1));
-    geo.computeBoundingSphere();
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image load failed'));
+    img.src = src;
+  });
+}
 
-    const mat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-      clippingPlanes: clipPlane ? [clipPlane] : [],
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.userData.isHelper = true;
+async function createProjectiveAtlasMaterial(
+  keyframes: DecodedKeyframe[],
+  hdFrames: string[],
+  clipPlane?: THREE.Plane
+): Promise<{ material: THREE.ShaderMaterial; dispose: () => void } | null> {
+  const candidates = keyframes.filter(
+    (kf) => kf.w2cR?.length === 9 && kf.w2cT?.length === 3 && kf.normK?.length === 4 && Boolean(hdFrames[kf.viewIdx])
+  );
+  if (candidates.length === 0) return null;
+
+  const loaded = await Promise.allSettled(candidates.slice(0, 8).map((kf) => loadImageElement(hdFrames[kf.viewIdx])));
+  const pairs: Array<{ kf: DecodedKeyframe; img: HTMLImageElement }> = [];
+  for (let i = 0; i < loaded.length; i++) {
+    const r = loaded[i];
+    if (r.status === 'fulfilled') {
+      pairs.push({ kf: candidates[i], img: r.value });
+    }
+  }
+  const count = pairs.length;
+  if (count === 0) return null;
+
+  const cols = 2;
+  const rows = 4;
+  const cellW = 768;
+  const cellH = 768;
+  const atlasCanvas = document.createElement('canvas');
+  atlasCanvas.width = cols * cellW;
+  atlasCanvas.height = rows * cellH;
+  const ctx = atlasCanvas.getContext('2d');
+  if (!ctx) return null;
+
+  const dW = 160;
+  const dH = 160;
+  const depthBytes = new Uint8Array(cols * dW * rows * dH * 4);
+
+  const mat3List: THREE.Matrix3[] = [];
+  const vec3List: THREE.Vector3[] = [];
+  const vec4List: THREE.Vector4[] = [];
+
+  for (let i = 0; i < 8; i++) {
+    if (i < count) {
+      const { kf, img } = pairs[i];
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      ctx.drawImage(img, col * cellW, row * cellH, cellW, cellH);
+
+      for (let ry = 0; ry < dH; ry++) {
+        const sy = Math.min(kf.occH - 1, Math.floor(((ry + 0.5) / dH) * kf.occH));
+        for (let rx = 0; rx < dW; rx++) {
+          const sx = Math.min(kf.occW - 1, Math.floor(((rx + 0.5) / dW) * kf.occW));
+          const mm = kf.occDepthMm[sy * kf.occW + sx] ?? 0;
+          const outIdx = ((row * dH + ry) * (cols * dW) + (col * dW + rx)) * 4;
+          depthBytes[outIdx] = (mm >> 8) & 255;
+          depthBytes[outIdx + 1] = mm & 255;
+          depthBytes[outIdx + 3] = 255;
+        }
+      }
+
+      const R = kf.w2cR!;
+      const T = kf.w2cT!;
+      const K = kf.normK!;
+      mat3List.push(new THREE.Matrix3().set(R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8]));
+      vec3List.push(new THREE.Vector3(T[0], T[1], T[2]));
+      vec4List.push(new THREE.Vector4(K[0], K[1], K[2], K[3]));
+    } else {
+      mat3List.push(new THREE.Matrix3());
+      vec3List.push(new THREE.Vector3());
+      vec4List.push(new THREE.Vector4(1, 1, 0.5, 0.5));
+    }
+  }
+
+  const colorTex = new THREE.CanvasTexture(atlasCanvas);
+  colorTex.flipY = false;
+  colorTex.colorSpace = THREE.NoColorSpace;
+  colorTex.minFilter = THREE.LinearFilter;
+  colorTex.magFilter = THREE.LinearFilter;
+  colorTex.generateMipmaps = false;
+  colorTex.needsUpdate = true;
+
+  const depthTex = new THREE.DataTexture(depthBytes, cols * dW, rows * dH, THREE.RGBAFormat, THREE.UnsignedByteType);
+  depthTex.flipY = false;
+  depthTex.minFilter = THREE.NearestFilter;
+  depthTex.magFilter = THREE.NearestFilter;
+  depthTex.generateMipmaps = false;
+  depthTex.needsUpdate = true;
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uColorAtlas: { value: colorTex },
+      uDepthAtlas: { value: depthTex },
+      uKfCount: { value: count },
+      uW2cR: { value: mat3List },
+      uW2cT: { value: vec3List },
+      uNormK: { value: vec4List },
+    },
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    clipping: true,
+    clippingPlanes: clipPlane ? [clipPlane] : [],
+    toneMapped: false,
+    vertexShader: /* glsl */ `
+      #include <clipping_planes_pars_vertex>
+      varying vec3 vWorldPos;
+      varying vec3 vSrgbColor;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPosition.xyz;
+        vSrgbColor = color;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <clipping_planes_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      #include <clipping_planes_pars_fragment>
+      uniform sampler2D uColorAtlas;
+      uniform sampler2D uDepthAtlas;
+      uniform int uKfCount;
+      uniform mat3 uW2cR[8];
+      uniform vec3 uW2cT[8];
+      uniform vec4 uNormK[8];
+      varying vec3 vWorldPos;
+      varying vec3 vSrgbColor;
+
+      void main() {
+        #include <clipping_planes_fragment>
+        vec3 accCol = vec3(0.0);
+        float accW = 0.0;
+
+        for (int i = 0; i < 8; i++) {
+          if (i >= uKfCount) break;
+          vec3 pRdf = uW2cR[i] * vWorldPos + uW2cT[i];
+          if (pRdf.z <= 0.20) continue;
+
+          vec2 uv = vec2(
+            uNormK[i].x * (pRdf.x / pRdf.z) + uNormK[i].z,
+            uNormK[i].y * (pRdf.y / pRdf.z) + uNormK[i].w
+          );
+          if (uv.x <= 0.01 || uv.x >= 0.99 || uv.y <= 0.01 || uv.y >= 0.99) continue;
+
+          float col = mod(float(i), 2.0);
+          float row = floor(float(i) / 2.0);
+          vec2 atlasUv = vec2(
+            (col + clamp(uv.x, 0.003, 0.997)) * 0.5,
+            (row + clamp(uv.y, 0.003, 0.997)) * 0.25
+          );
+
+          vec4 dp = texture2D(uDepthAtlas, atlasUv);
+          float hiB = floor(dp.r * 255.0 + 0.5);
+          float loB = floor(dp.g * 255.0 + 0.5);
+          float dObs = (hiB * 256.0 + loB) * 0.001;
+          if (dObs > 0.15 && pRdf.z > dObs + 0.16) continue;
+
+          float feather =
+            smoothstep(0.01, 0.10, uv.x) *
+            smoothstep(0.99, 0.90, uv.x) *
+            smoothstep(0.01, 0.10, uv.y) *
+            smoothstep(0.99, 0.90, uv.y);
+          float w = feather / (0.35 + pRdf.z * pRdf.z);
+          accCol += w * texture2D(uColorAtlas, atlasUv).rgb;
+          accW += w;
+        }
+
+        vec3 outSrgb = accW > 0.001
+          ? mix(vSrgbColor, accCol / accW, clamp(accW * 6.0, 0.0, 1.0))
+          : vSrgbColor;
+        gl_FragColor = vec4(outSrgb, 1.0);
+      }
+    `,
+  });
+
+  return {
+    material,
+    dispose: () => {
+      colorTex.dispose();
+      depthTex.dispose();
+      material.dispose();
+    },
+  };
+}
+
+function buildWatertightFloorGeometry(room: DecodedScannedRoom, useSrgb: boolean): THREE.BufferGeometry {
+  const rw = room.bounds.halfW * 2;
+  const rd = room.bounds.halfD * 2;
+  const gw = Math.max(1, room.grid.w);
+  const gd = Math.max(1, room.grid.d);
+  const geo = new THREE.PlaneGeometry(rw, rd, gw, gd).rotateX(-Math.PI / 2);
+  const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
+  const cols = new Float32Array(posAttr.count * 3);
+  const tmpColor = new THREE.Color();
+
+  for (let i = 0; i < posAttr.count; i++) {
+    const x = posAttr.getX(i);
+    const z = posAttr.getZ(i);
+    let r = 0.76;
+    let g = 0.73;
+    let b = 0.69;
+    if (room.floorRgb && room.floorRgb.length >= gw * gd * 3) {
+      const gx = Math.min(gw - 1, Math.max(0, Math.floor(((x + room.bounds.halfW) / rw) * gw)));
+      const gz = Math.min(gd - 1, Math.max(0, Math.floor(((z + room.bounds.halfD) / rd) * gd)));
+      const idx = (gz * gw + gx) * 3;
+      r = room.floorRgb[idx] / 255;
+      g = room.floorRgb[idx + 1] / 255;
+      b = room.floorRgb[idx + 2] / 255;
+    }
+    if (useSrgb) {
+      cols[i * 3] = r;
+      cols[i * 3 + 1] = g;
+      cols[i * 3 + 2] = b;
+    } else {
+      tmpColor.setRGB(r, g, b, THREE.SRGBColorSpace);
+      cols[i * 3] = tmpColor.r;
+      cols[i * 3 + 1] = tmpColor.g;
+      cols[i * 3 + 2] = tmpColor.b;
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  return geo;
+}
+
+function addUniformVertexColors(geo: THREE.BufferGeometry, rgb: [number, number, number], useSrgb: boolean): void {
+  const count = geo.getAttribute('position').count;
+  const cols = new Float32Array(count * 3);
+  const tmp = new THREE.Color();
+  let r = (rgb[0] * 0.94) / 255;
+  let g = (rgb[1] * 0.94) / 255;
+  let b = (rgb[2] * 0.94) / 255;
+  if (!useSrgb) {
+    tmp.setRGB(r, g, b, THREE.SRGBColorSpace);
+    r = tmp.r;
+    g = tmp.g;
+    b = tmp.b;
+  }
+  for (let i = 0; i < count; i++) {
+    cols[i * 3] = r;
+    cols[i * 3 + 1] = g;
+    cols[i * 3 + 2] = b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+}
+
+export async function createScannedRoomSurfaceObject(
+  room: DecodedScannedRoom,
+  hdFrames: string[],
+  clipPlane?: THREE.Plane
+): Promise<{ object: THREE.Object3D; pointMat?: THREE.PointsMaterial; dispose: () => void }> {
+  const disposeFns: Array<() => void> = [];
+  const root = new THREE.Group();
+  root.userData.isHelper = true;
+
+  if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
+    const atlas = await createProjectiveAtlasMaterial(room.keyframes, hdFrames, clipPlane);
+    const useSrgb = Boolean(atlas);
+
+    let meshMat: THREE.Material;
+    let wallMat: THREE.Material;
+    if (atlas) {
+      meshMat = atlas.material;
+      const wm = atlas.material.clone();
+      wm.side = THREE.FrontSide;
+      wallMat = wm;
+      disposeFns.push(atlas.dispose, () => wm.dispose());
+    } else {
+      const bm = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+        clippingPlanes: clipPlane ? [clipPlane] : [],
+      });
+      const wm = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.FrontSide,
+        toneMapped: false,
+        clippingPlanes: clipPlane ? [clipPlane] : [],
+      });
+      meshMat = bm;
+      wallMat = wm;
+      disposeFns.push(
+        () => bm.dispose(),
+        () => wm.dispose()
+      );
+    }
+
+    // 1. Sızdırmaz zemin tabanı (kamera yürüyüş boşlukları sıfır siyah delik)
+    const floorBaseGeo = buildWatertightFloorGeometry(room, useSrgb);
+    const floorBaseMesh = new THREE.Mesh(floorBaseGeo, meshMat);
+    floorBaseMesh.position.y = -0.008;
+    floorBaseMesh.userData.isHelper = true;
+    root.add(floorBaseMesh);
+    disposeFns.push(() => floorBaseGeo.dispose());
+
+    // 2. İçeri bakan mimari çevre duvarları (FrontSide ile kameranın önündeki duvarlar otomatik gizlenir)
+    const rw = room.bounds.halfW * 2;
+    const rd = room.bounds.halfD * 2;
+    const wallH = Math.min(2.65, Math.max(1.85, room.bounds.ceilingM - 0.12));
+    const wallSpecs = [
+      { w: rw, x: 0, z: -room.bounds.halfD, rotY: 0 },
+      { w: rw, x: 0, z: room.bounds.halfD, rotY: Math.PI },
+      { w: rd, x: -room.bounds.halfW, z: 0, rotY: Math.PI / 2 },
+      { w: rd, x: room.bounds.halfW, z: 0, rotY: -Math.PI / 2 },
+    ];
+    for (const ws of wallSpecs) {
+      const wGeo = new THREE.PlaneGeometry(ws.w, wallH);
+      addUniformVertexColors(wGeo, room.wallRgb, useSrgb);
+      const wMesh = new THREE.Mesh(wGeo, wallMat);
+      wMesh.position.set(ws.x, wallH * 0.5 - 0.01, ws.z);
+      wMesh.rotation.y = ws.rotY;
+      wMesh.userData.isHelper = true;
+      root.add(wMesh);
+      disposeFns.push(() => wGeo.dispose());
+    }
+
+    // 3. Taranmış katı TSDF 3D oda yüzeyi
+    const scanGeo = new THREE.BufferGeometry();
+    scanGeo.setAttribute('position', new THREE.BufferAttribute(room.positions, 3));
+    scanGeo.setAttribute('color', new THREE.BufferAttribute(useSrgb ? room.srgbColors : room.colors, 3));
+    scanGeo.setIndex(new THREE.BufferAttribute(room.mesh.indices, 1));
+    scanGeo.computeBoundingSphere();
+
+    const scanMesh = new THREE.Mesh(scanGeo, meshMat);
+    scanMesh.userData.isHelper = true;
+    root.add(scanMesh);
+    disposeFns.push(() => scanGeo.dispose());
+
     return {
-      object: mesh,
+      object: root,
       dispose: () => {
-        geo.dispose();
-        mat.dispose();
+        disposeFns.forEach((fn) => fn());
       },
     };
   }
@@ -262,13 +607,22 @@ export function createScannedRoomSurfaceObject(
 }
 
 export function createKeyframeDepthOccluderMesh(
-  kf: DecodedKeyframe
+  kf: DecodedKeyframe,
+  ceilingM = 2.75
 ): { mesh: THREE.Mesh; dispose: () => void } {
   const { occW: W, occH: H, occK, occDepthMm } = kf;
   const [fx, fy, cx, cy] = occK;
   const N = W * H;
   const pos = new Float32Array(N * 3);
   const depthM = new Float32Array(N);
+  const worldY = new Float32Array(N);
+
+  const [qx, qy, qz, qw] = kf.quat;
+  const r10 = 2 * (qx * qy + qz * qw);
+  const r11 = 1 - 2 * (qx * qx + qz * qz);
+  const r12 = 2 * (qy * qz - qx * qw);
+  const py = kf.pos[1];
+  const maxH = kf.ceilCut ?? Math.max(1.85, ceilingM - 0.1);
 
   for (let r = 0; r < H; r++) {
     for (let c = 0; c < W; c++) {
@@ -276,9 +630,13 @@ export function createKeyframeDepthOccluderMesh(
       const d = (occDepthMm[i] ?? 0) * 0.001;
       depthM[i] = d;
       if (d > 0.15) {
-        pos[i * 3] = ((c - cx) * d) / fx;
-        pos[i * 3 + 1] = -((r - cy) * d) / fy;
-        pos[i * 3 + 2] = -d;
+        const xr = ((c - cx) * d) / fx;
+        const yr = -((r - cy) * d) / fy;
+        const zr = -d;
+        pos[i * 3] = xr;
+        pos[i * 3 + 1] = yr;
+        pos[i * 3 + 2] = zr;
+        worldY[i] = r10 * xr + r11 * yr + r12 * zr + py;
       }
     }
   }
@@ -295,6 +653,18 @@ export function createKeyframeDepthOccluderMesh(
       const d10 = depthM[i10];
       const d11 = depthM[i11];
       if (d00 <= 0.15 || d01 <= 0.15 || d10 <= 0.15 || d11 <= 0.15) continue;
+      if (
+        worldY[i00] <= 0.1 ||
+        worldY[i01] <= 0.1 ||
+        worldY[i10] <= 0.1 ||
+        worldY[i11] <= 0.1 ||
+        worldY[i00] >= maxH ||
+        worldY[i01] >= maxH ||
+        worldY[i10] >= maxH ||
+        worldY[i11] >= maxH
+      ) {
+        continue;
+      }
       const dMin = Math.min(d00, d01, d10, d11);
       const dMax = Math.max(d00, d01, d10, d11);
       if (dMax - dMin >= 0.18) continue;
@@ -339,13 +709,11 @@ export function createFreeFloorOverlayMesh(
     const val = cells[i] ?? 2;
     const o = i * 4;
     if (val === 0) {
-      // Görülen boş zemin: yumuşak şeffaf zümrüt yeşili
       imgData.data[o] = 16;
       imgData.data[o + 1] = 185;
       imgData.data[o + 2] = 129;
       imgData.data[o + 3] = 46;
     } else if (val === 1) {
-      // Dolu alan (mevcut eşya / duvar): hafif mercan uyarısı
       imgData.data[o] = 239;
       imgData.data[o + 1] = 68;
       imgData.data[o + 2] = 68;

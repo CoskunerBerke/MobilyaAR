@@ -40,5 +40,6 @@ jobs:
           file: ./worker/Dockerfile
           push: true
           tags: |
+            ghcr.io/coskunerberke/mobilya-ar-worker:v4
             ghcr.io/coskunerberke/mobilya-ar-worker:v3
             ghcr.io/coskunerberke/mobilya-ar-worker:latest

@@ -186,59 +186,85 @@ def _dilate_3d(mask: np.ndarray, radius: int = 2) -> np.ndarray:
 def _fill_floor_and_synthesize(
     P: np.ndarray,
     C: np.ndarray,
+    cams: np.ndarray,
     half_w: float,
     half_d: float,
     grid: np.ndarray,
     floor_cnt: np.ndarray,
     obst_cnt: np.ndarray,
 ):
-    """Zemindeki tekil boşlukları doldurur ve seyrek zemin hücrelerini halı/parke ortalama rengiyle sıklaştırır."""
+    """Kamera yürüyüş koridorunu ve zemin boşluklarını kurtarır; tüm zemin için yayılmış renk haritası ve y=0 TSDF noktaları üretir."""
     gd, gw = grid.shape
-    padded = np.pad((grid == 0).astype(np.int32), 1, mode="constant", constant_values=0)
-    nbr_free = (
-        padded[:-2, :-2]
-        + padded[:-2, 1:-1]
-        + padded[:-2, 2:]
-        + padded[1:-1, :-2]
-        + padded[1:-1, 2:]
-        + padded[2:, :-2]
-        + padded[2:, 1:-1]
-        + padded[2:, 2:]
-    )
-    fill_mask = (grid == 2) & (obst_cnt == 0) & (nbr_free >= 5)
-    grid[fill_mask] = 0
 
+    # 1. Kamera yürüyüş yolu kurtarma: kameranın geçtiği 0.45m koridor boş zemin sayılır
+    if len(cams) > 0:
+        cx_i = np.arange(gw, dtype=np.float64) * CELL_M + 0.5 * CELL_M - half_w
+        cz_i = np.arange(gd, dtype=np.float64) * CELL_M + 0.5 * CELL_M - half_d
+        gxx, gzz = np.meshgrid(cx_i, cz_i, indexing="xy")
+        cam_xz = cams[:, [0, 2]]
+        d2 = (gxx[..., None] - cam_xz[:, 0][None, None, :]) ** 2 + (gzz[..., None] - cam_xz[:, 1][None, None, :]) ** 2
+        near_cam = np.min(d2, axis=2) <= (0.45 ** 2)
+        grid[near_cam & (obst_cnt <= 1) & (grid != 1)] = 0
+
+    # 2. İç zemin tekil boşluklarını 2 tur morfolojik doldurma ile kapat
+    for _ in range(2):
+        padded = np.pad((grid == 0).astype(np.int32), 1, mode="constant", constant_values=0)
+        nbr_free = (
+            padded[:-2, :-2]
+            + padded[:-2, 1:-1]
+            + padded[:-2, 2:]
+            + padded[1:-1, :-2]
+            + padded[1:-1, 2:]
+            + padded[2:, :-2]
+            + padded[2:, 1:-1]
+            + padded[2:, 2:]
+        )
+        grid[(grid == 2) & (obst_cnt == 0) & (nbr_free >= 4)] = 0
+
+    # 3. Gözlenen zemin hücrelerinden tüm odaya Gaussian ağırlıklı halı/parke taban rengi yay
     gx = np.clip(((P[:, 0] + half_w) / CELL_M).astype(int), 0, gw - 1)
     gz = np.clip(((P[:, 2] + half_d) / CELL_M).astype(int), 0, gd - 1)
-    floor_pts = np.abs(P[:, 1]) < 0.06
-    obs_cells = np.argwhere((grid == 0) & (floor_cnt >= 2))
-    if len(obs_cells) == 0:
-        return P, C, grid
-
-    # Gözlenen zemin hücrelerinin ortalama rengi
+    floor_pts = np.abs(P[:, 1]) < 0.08
     cell_rgb = np.zeros((gd, gw, 3), dtype=np.float32)
     cell_n = np.zeros((gd, gw), dtype=np.float32)
     f_idx = np.flatnonzero(floor_pts)
-    np.add.at(cell_rgb, (gz[f_idx], gx[f_idx]), C[f_idx].astype(np.float32))
-    np.add.at(cell_n, (gz[f_idx], gx[f_idx]), 1.0)
-    obs_rgb = cell_rgb[obs_cells[:, 0], obs_cells[:, 1]] / np.maximum(cell_n[obs_cells[:, 0], obs_cells[:, 1], None], 1.0)
-    median_floor_rgb = np.median(obs_rgb, axis=0)
+    if len(f_idx) > 0:
+        np.add.at(cell_rgb, (gz[f_idx], gx[f_idx]), C[f_idx].astype(np.float32))
+        np.add.at(cell_n, (gz[f_idx], gx[f_idx]), 1.0)
 
-    sparse_cells = np.argwhere((grid == 0) & (floor_cnt < 6))
-    if len(sparse_cells) == 0:
-        return P, C, grid
+    obs_cells = np.argwhere(cell_n >= 1.0)
+    if len(obs_cells) == 0:
+        fallback = np.array([195, 188, 178], dtype=np.uint8)
+        floor_rgb_grid = np.broadcast_to(fallback, (gd, gw, 3)).copy()
+        return P, C, grid, floor_rgb_grid
 
-    # En yakın gözlenen zemin hücresinden renk al (chunk'lı)
-    sc_f = sparse_cells.astype(np.float32)
+    obs_rgb = cell_rgb[obs_cells[:, 0], obs_cells[:, 1]] / cell_n[obs_cells[:, 0], obs_cells[:, 1], None]
+    all_r, all_c = np.meshgrid(np.arange(gd, dtype=np.float32), np.arange(gw, dtype=np.float32), indexing="ij")
+    all_rc = np.column_stack([all_r.ravel(), all_c.ravel()])
     oc_f = obs_cells.astype(np.float32)
-    nearest_rgb = np.empty((len(sparse_cells), 3), dtype=np.float32)
-    for s in range(0, len(sc_f), 512):
-        sub = sc_f[s : s + 512]
-        diff = sub[:, None, :] - oc_f[None, :, :]
-        nn = np.argmin((diff * diff).sum(axis=2), axis=1)
-        nearest_rgb[s : s + 512] = obs_rgb[nn]
 
-    # Seyrek her 10cm zemin hücresine 4x4 (2.5 cm aralıkla) y=0 zemin noktası ekle
+    interp_rgb = np.empty((len(all_rc), 3), dtype=np.float32)
+    for s in range(0, len(all_rc), 256):
+        sub = all_rc[s : s + 256]
+        diff = sub[:, None, :] - oc_f[None, :, :]
+        dist2 = (diff * diff).sum(axis=2)
+        w = np.exp(-dist2 / 12.0) + 1e-6 / (1.0 + dist2)
+        w /= w.sum(axis=1, keepdims=True)
+        interp_rgb[s : s + 256] = w @ obs_rgb
+
+    floor_rgb_grid = np.clip(np.round(interp_rgb), 0, 255).astype(np.uint8).reshape(gd, gw, 3)
+
+    # Doğrudan gözlenen hücrelerde orijinal ortalama rengi koru
+    exact_mask = cell_n >= 2.0
+    floor_rgb_grid[exact_mask] = np.clip(
+        np.round(cell_rgb[exact_mask] / cell_n[exact_mask, None]), 0, 255
+    ).astype(np.uint8)
+
+    # 4. Seyrek/boş iç zemin hücrelerini y=0 noktalarıyla sıklaştır (TSDF'de kara delik kalmaz)
+    sparse_cells = np.argwhere((obst_cnt < 4) & (floor_cnt < 6))
+    if len(sparse_cells) == 0:
+        return P, C, grid, floor_rgb_grid
+
     offs = np.array([0.125, 0.375, 0.625, 0.875], dtype=np.float64) * CELL_M
     ox, oz = np.meshgrid(offs, offs, indexing="xy")
     ox = ox.ravel()
@@ -250,9 +276,10 @@ def _fill_floor_and_synthesize(
     syn_z = (base_z[:, None] + oz[None, :]).ravel()
     syn_y = np.zeros_like(syn_x)
     syn_P = np.column_stack([syn_x, syn_y, syn_z])
-    syn_C = np.repeat(np.clip(np.round(0.85 * nearest_rgb + 0.15 * median_floor_rgb[None, :]), 0, 255).astype(np.uint8), len(ox), axis=0)
+    syn_colors = floor_rgb_grid[sparse_cells[:, 0], sparse_cells[:, 1]]
+    syn_C = np.repeat(syn_colors, len(ox), axis=0)
 
-    return np.concatenate([P, syn_P], axis=0), np.concatenate([C, syn_C], axis=0), grid
+    return np.concatenate([P, syn_P], axis=0), np.concatenate([C, syn_C], axis=0), grid, floor_rgb_grid
 
 
 def _extract_tsdf_surface(
@@ -599,8 +626,8 @@ def _extract_tsdf_surface(
     return verts, shaded_rgb, faces
 
 
-def _build_keyframes(views_cam: list[dict], max_kf: int = 6) -> list[dict]:
-    """En fazla 6 eşit aralıklı açı için kamera pozu + 160px ön-plan derinlik engel haritası çıkarır."""
+def _build_keyframes(views_cam: list[dict], max_kf: int = 8) -> list[dict]:
+    """En fazla 8 eşit aralıklı açı için kamera pozu, projeksiyon matrisi ve tam 160px metrik derinlik haritası çıkarır."""
     n = len(views_cam)
     if n == 0:
         return []
@@ -611,21 +638,24 @@ def _build_keyframes(views_cam: list[dict], max_kf: int = 6) -> list[dict]:
     keyframes = []
     for idx in indices:
         vc = views_cam[int(idx)]
-        R_three = vc["R_rdf2room"] @ conv_flip
+        R_rdf = vc["R_rdf2room"]
+        R_three = R_rdf @ conv_flip
         quat = _mat3_to_quat(R_three)
         pos = [round(float(v), 4) for v in vc["cam_pos"]]
 
+        w2c_r = R_rdf.T
+        w2c_t = -w2c_r @ vc["cam_pos"]
+
         depth_m = vc["depth_m"]
         mask = vc["mask"]
-        y_room = vc["y_room"]
         K = vc["K"]
         H, W = depth_m.shape
         fx, fy, cx_p, cy_p = float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])
         fov_y = float(2.0 * np.degrees(np.arctan(H / max(1.0, 2.0 * fy))))
         aspect = round(float(W) / max(1.0, float(H)), 5)
 
-        # Yalnızca y=0.10m üzerindeki eşya/duvar derinliğini al; zemin maskelenmez (mobilya gölgesi zemine düşer)
-        occ_valid = mask & (y_room > 0.10) & (y_room < vc["ceil_cut"]) & (depth_m > 0.22) & (depth_m < 14.0)
+        # Hem 3D doku projeksiyon shader'ı hem de ön-plan derinlik maskesi için tüm geçerli metrik derinliği sakla
+        occ_valid = mask & (depth_m > 0.20) & (depth_m < 14.0)
         d_occ = np.where(occ_valid, depth_m, 0.0)
 
         stride = max(1, int(np.ceil(max(H, W) / 160.0)))
@@ -638,8 +668,17 @@ def _build_keyframes(views_cam: list[dict], max_kf: int = 6) -> list[dict]:
                 "viewIdx": int(idx),
                 "pos": pos,
                 "quat": quat,
+                "w2cR": [round(float(v), 6) for v in w2c_r.ravel()],
+                "w2cT": [round(float(v), 6) for v in w2c_t],
                 "fovY": round(fov_y, 3),
                 "aspect": aspect,
+                "normK": [
+                    round(fx / max(1.0, float(W)), 6),
+                    round(fy / max(1.0, float(H)), 6),
+                    round(cx_p / max(1.0, float(W)), 6),
+                    round(cy_p / max(1.0, float(H)), 6),
+                ],
+                "ceilCut": round(float(vc["ceil_cut"]), 3),
                 "occW": int(ow),
                 "occH": int(oh),
                 "occK": [
@@ -748,7 +787,17 @@ def build_room_payload(views_data: list[dict]) -> dict:
     grid[floor_cnt >= 2] = 0
     grid[obst_cnt >= 4] = 1
 
-    P_surf, C_surf, grid = _fill_floor_and_synthesize(P, C, half_w, half_d, grid, floor_cnt, obst_cnt)
+    P_surf, C_surf, grid, floor_rgb_grid = _fill_floor_and_synthesize(
+        P, C, cams, half_w, half_d, grid, floor_cnt, obst_cnt
+    )
+
+    outer_wall = (P[:, 1] > 0.7) & (P[:, 1] < 2.0) & (
+        (np.abs(P[:, 0]) > half_w * 0.78) | (np.abs(P[:, 2]) > half_d * 0.78)
+    )
+    if np.count_nonzero(outer_wall) >= 50:
+        wall_rgb = [int(round(v)) for v in np.median(C[outer_wall], axis=0)]
+    else:
+        wall_rgb = [224, 218, 208]
 
     # Kamera verilerini oda eksenine dönüştür (TSDF ve HD anahtar kareleri için)
     views_cam = []
@@ -804,13 +853,15 @@ def build_room_payload(views_data: list[dict]) -> dict:
     q = np.clip(np.round(out_P * 1000.0), -32760, 32760).astype(np.int16)
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
-    keyframes = _build_keyframes(views_cam, max_kf=6)
+    keyframes = _build_keyframes(views_cam, max_kf=8)
 
     res = {
         "ok": True,
         "pointCount": int(len(out_P)),
         "points": _b64(q),
         "colors": _b64(out_C.astype(np.uint8)),
+        "wallRgb": wall_rgb,
+        "floorRgb": _b64(floor_rgb_grid.astype(np.uint8)),
         "bounds": {"halfW": float(half_w), "halfD": float(half_d), "ceilingM": float(ceil)},
         "grid": {"w": gw, "d": gd, "cell": CELL_M, "data": _b64(grid)},
         "spawnXZ": spawn_xz,

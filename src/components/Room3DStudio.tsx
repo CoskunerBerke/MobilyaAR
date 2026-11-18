@@ -424,6 +424,8 @@ export const Room3DStudio: React.FC<Props> = ({
   showFreeFloorRef.current = showFreeFloor;
   const activeKeyframeIdxRef = useRef<number | null>(null);
   activeKeyframeIdxRef.current = activeKeyframeIdx;
+  const scanHdFramesRef = useRef<string[]>([]);
+  scanHdFramesRef.current = scanHdFrames;
   const roomDimsRef = useRef<{ w: number; d: number; ch: number }>({ w: 4.8, d: 5.4, ch: 2.75 });
   const hitObstacleRef = useRef(false);
   const blobUrlsRef = useRef<string[]>([]);
@@ -761,7 +763,7 @@ export const Room3DStudio: React.FC<Props> = ({
         Boolean(scannedRoom) &&
         activeKeyframeIdxRef.current !== null &&
         Boolean(scannedRoom?.keyframes[activeKeyframeIdxRef.current]);
-      const bgHex = scannedRoom ? 0x18181b : 0xf4f4f5;
+      const bgHex = scannedRoom ? 0x27272a : 0xf4f4f5;
       const scene = new THREE.Scene();
       scene.background = initialHdMode ? null : new THREE.Color(bgHex);
       renderer.setClearColor(initialHdMode ? 0x000000 : bgHex, initialHdMode ? 0 : 1);
@@ -816,6 +818,14 @@ export const Room3DStudio: React.FC<Props> = ({
       light.shadow.radius = 4;
 
       if (scannedRoom) {
+        const surfObj = await createScannedRoomSurfaceObject(scannedRoom, scanHdFramesRef.current, clipPlane);
+        if (cancelled || !alive.current) {
+          surfObj.dispose();
+          controls.dispose();
+          renderer.dispose();
+          return;
+        }
+
         host.innerHTML = '';
         host.appendChild(renderer.domElement);
         renderer.domElement.style.width = '100%';
@@ -850,7 +860,6 @@ export const Room3DStudio: React.FC<Props> = ({
           borderMat.dispose();
         });
 
-        const surfObj = createScannedRoomSurfaceObject(scannedRoom, clipPlane);
         surfObj.object.visible = !initialHdMode;
         scene.add(surfObj.object);
         roomSurfaceObj = surfObj.object;
@@ -1261,7 +1270,7 @@ export const Room3DStudio: React.FC<Props> = ({
       s.camera.quaternion.set(kf.quat[0], kf.quat[1], kf.quat[2], kf.quat[3]);
       s.camera.updateProjectionMatrix();
 
-      const occ = createKeyframeDepthOccluderMesh(kf);
+      const occ = createKeyframeDepthOccluderMesh(kf, scannedRoom!.bounds.ceilingM);
       s.scene.add(occ.mesh);
       s.occluderEntry = occ;
       return;
@@ -1270,7 +1279,7 @@ export const Room3DStudio: React.FC<Props> = ({
     const rw = roomDimsRef.current.w;
     const rd = roomDimsRef.current.d;
     const ch = roomDimsRef.current.ch;
-    const bgHex = scannedRoom ? 0x18181b : 0xf4f4f5;
+    const bgHex = scannedRoom ? 0x27272a : 0xf4f4f5;
 
     s.scene.background = new THREE.Color(bgHex);
     s.renderer.setClearColor(bgHex, 1);
@@ -2259,30 +2268,22 @@ export const Room3DStudio: React.FC<Props> = ({
 
       {step === 'studio' && (roomData || scannedRoom) && (
         <>
-          {/* Üst Kamera, HD Açı, Mini-Map & Oda Ölçü Sekmeleri */}
+          {/* Üst Kamera, HD Fotoğraf, Mini-Map & Oda Ölçü Sekmeleri */}
           <div className="bg-zinc-900 border-b border-zinc-800 px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
             {scannedRoom && scannedRoom.keyframes.length > 0 && scanHdFrames.length > 0 && (
-              <>
-                {scannedRoom.keyframes.map((kf, kIdx) =>
-                  scanHdFrames[kf.viewIdx] ? (
-                    <button
-                      key={`hd-kf-${kf.viewIdx}`}
-                      onClick={() => {
-                        setActiveKeyframeIdx(kIdx);
-                        setActiveCamIdx('free');
-                      }}
-                      className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                        activeKeyframeIdx === kIdx
-                          ? 'bg-emerald-500 text-zinc-950'
-                          : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
-                      }`}
-                    >
-                      HD Açı {kIdx + 1}
-                    </button>
-                  ) : null
-                )}
-                <span className="h-4 w-px bg-zinc-700 mx-0.5 shrink-0" />
-              </>
+              <button
+                onClick={() => {
+                  setActiveKeyframeIdx((cur) => (cur !== null ? cur : 0));
+                  setActiveCamIdx('free');
+                }}
+                className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                  activeKeyframeIdx !== null
+                    ? 'bg-emerald-500 text-zinc-950'
+                    : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+                }`}
+              >
+                HD Fotoğraf
+              </button>
             )}
 
             <button
@@ -2328,7 +2329,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
                 }`}
               >
-                Boş Alanlar ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)} m²)
+                Boş Alan ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)}m²)
               </button>
             ) : (
               roomData && (
@@ -2366,7 +2367,7 @@ export const Room3DStudio: React.FC<Props> = ({
           </div>
 
           {/* 3D Zemin Simülasyonu, HD Gerçek Açı & İnteraktif 2D Mini-Map */}
-          <div ref={stageRef} className="relative flex-1 min-h-0 flex items-center justify-center bg-zinc-950 overflow-hidden">
+          <div ref={stageRef} className="relative flex-1 min-h-0 flex items-center justify-center bg-zinc-800 overflow-hidden">
             <div
               style={
                 activeKf && activeHdUrl && stageBoxSize
@@ -2396,6 +2397,52 @@ export const Room3DStudio: React.FC<Props> = ({
                 onDrop={handleStageDrop}
               />
             </div>
+
+            {/* HD Fotoğraf Modunda Açı Değiştirme Kontrolü */}
+            {scannedRoom && activeKf && activeHdUrl && scannedRoom.keyframes.length > 1 && (
+              <div className="absolute top-3 left-3 z-20 flex items-center gap-1 bg-zinc-950/90 border border-zinc-700 rounded-lg px-2 py-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const n = scannedRoom.keyframes.length;
+                    setActiveKeyframeIdx(((activeKeyframeIdx ?? 0) - 1 + n) % n);
+                  }}
+                  className="w-6 h-6 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white flex items-center justify-center"
+                  aria-label="Önceki açı"
+                >
+                  ‹
+                </button>
+                <div className="flex items-center gap-1 px-1">
+                  {scannedRoom.keyframes.map((kf, kIdx) =>
+                    scanHdFrames[kf.viewIdx] ? (
+                      <button
+                        key={`ang-${kf.viewIdx}`}
+                        type="button"
+                        onClick={() => setActiveKeyframeIdx(kIdx)}
+                        className={`w-5 h-5 rounded text-[10px] font-mono font-bold ${
+                          activeKeyframeIdx === kIdx
+                            ? 'bg-emerald-500 text-zinc-950'
+                            : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                        }`}
+                      >
+                        {kIdx + 1}
+                      </button>
+                    ) : null
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const n = scannedRoom.keyframes.length;
+                    setActiveKeyframeIdx(((activeKeyframeIdx ?? 0) + 1) % n);
+                  }}
+                  className="w-6 h-6 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-bold text-white flex items-center justify-center"
+                  aria-label="Sonraki açı"
+                >
+                  ›
+                </button>
+              </div>
+            )}
 
             {/* Açılı Referans Fotoğraf Küçük Penceresi (3D zemini bozmadan) */}
             {previewPhotoIdx !== null && roomData && roomData.cameras[previewPhotoIdx] && (
