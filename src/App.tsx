@@ -16,6 +16,17 @@ import {
 } from './lib/server';
 import { convertCadFileToGlb } from './lib/cadImport';
 import { DEMO_STUDIO_PRESETS, type DemoStudioPresetId } from './lib/demoRooms';
+import {
+  DEALER_PLANS,
+  GPU_TIERS,
+  getActivePlan,
+  getMembershipState,
+  resetCustomerTrials,
+  setDealerPlan,
+  updateRunpodCredentials,
+  type GpuTierId,
+  type MembershipState,
+} from './lib/membership';
 import { ProductPage } from './components/ProductPage';
 
 function preprocessPhotoFor3D(file: File): Promise<string> {
@@ -111,6 +122,16 @@ export function App() {
   const [podInput, setPodInput] = useState(() => getPodId(getServerUrl()));
   const [copiedEmbed, setCopiedEmbed] = useState(false);
 
+  // B2B Üyelik, Deneme Limiti & RunPod Serverless Ayarları
+  const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
+  const [serverScanReady, setServerScanReady] = useState(false);
+  const [rpEndpoint, setRpEndpoint] = useState(() => getMembershipState().runpodEndpointId);
+  const [rpApiKey, setRpApiKey] = useState(() => getMembershipState().runpodApiKey);
+  const [rpTier, setRpTier] = useState<GpuTierId>(() => getMembershipState().gpuTier);
+  const [calcTier, setCalcTier] = useState<GpuTierId>('L40S');
+  const [calcSec, setCalcSec] = useState(18);
+  const [calcMonthlyScans, setCalcMonthlyScans] = useState(600);
+
   // CAD Upload Modal State
   const [cadFile, setCadFile] = useState<File | null>(null);
   const [cadWidthCm, setCadWidthCm] = useState('');
@@ -137,6 +158,20 @@ export function App() {
     const t = setInterval(refresh, 15000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    const st = getMembershipState();
+    setMemberState(st);
+    setRpEndpoint(st.runpodEndpointId);
+    setRpApiKey(st.runpodApiKey);
+    setRpTier(st.gpuTier);
+    fetch('/api/scan?action=config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { serverConfigured?: boolean } | null) => {
+        if (d?.serverConfigured) setServerScanReady(true);
+      })
+      .catch(() => {});
+  }, [activeState, showServer]);
 
   useEffect(() => {
     if (!activeState) {
@@ -285,6 +320,12 @@ export function App() {
   const heroProduct = products.find((p) => p.id === heroProductId) || products[0];
 
   const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=studio`;
+  const activePlan = getActivePlan(memberState);
+  const runpodConnected =
+    serverScanReady || Boolean(memberState.runpodEndpointId && memberState.runpodApiKey);
+  const remainingTrials = Math.max(0, activePlan.perCustomerLimit - memberState.customerUsedScans);
+  const calcScanUsd = GPU_TIERS[calcTier].ratePerSecUsd * calcSec;
+  const calcMonthlyUsd = calcScanUsd * calcMonthlyScans;
 
   if (activeState) {
     return (
@@ -296,6 +337,10 @@ export function App() {
         startMode={activeState.mode}
         initialStudioPreset={activeState.studioPreset}
         initialColorHex={activeState.colorHex}
+        onOpenServerSettings={() => {
+          setActiveState(null);
+          setShowServer(true);
+        }}
         onBack={() => {
           window.history.replaceState({}, '', window.location.pathname);
           setActiveState(null);
@@ -322,6 +367,9 @@ export function App() {
           </a>
           <a href="#ozellikler" className="hover:text-zinc-950 transition whitespace-nowrap">
             Özellikler
+          </a>
+          <a href="#uyelik" className="hover:text-zinc-950 transition whitespace-nowrap">
+            Üyelik
           </a>
           <a href="#entegrasyon" className="hover:text-zinc-950 transition whitespace-nowrap">
             Entegrasyon
@@ -373,10 +421,16 @@ export function App() {
             onClick={() => setShowServer(true)}
             className="relative p-2 border border-zinc-200 hover:border-zinc-400 rounded text-zinc-600 hover:text-zinc-950 shrink-0"
             aria-label="GPU Sunucu Ayarları"
-            title={health.online ? `Canlı GPU Aktif (${health.gpu})` : 'GPU Sunucu Ayarları'}
+            title={
+              runpodConnected
+                ? 'RunPod Serverless Aktif (İstek Başı)'
+                : health.online
+                ? `Canlı GPU Aktif (${health.gpu})`
+                : 'RunPod Serverless & GPU Ayarları'
+            }
           >
             <Server className="w-4 h-4" />
-            {health.online && (
+            {(health.online || runpodConnected) && (
               <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-600" />
             )}
           </button>
@@ -715,11 +769,226 @@ export function App() {
         </div>
       </section>
 
-      {/* Bölüm 4: B2B Entegrasyon & Kurumsal Footer */}
+      {/* Bölüm 4: Bayi Üyelik Paketleri, Deneme Limiti & İstek Başı GPU Maliyeti */}
+      <section id="uyelik" className="border-b border-zinc-200 bg-white">
+        <div className="max-w-6xl mx-auto px-4 lg:px-8 py-12 space-y-8">
+          <div className="max-w-3xl space-y-2">
+            <p className="text-xs font-mono text-zinc-500">04 / BAYİ ÜYELİK PAKETLERİ, DENEME LİMİTİ VE İSTEK BAŞI GPU MALİYETİ</p>
+            <h2 className="text-2xl font-bold tracking-tight text-zinc-950">
+              Boşta bekleyen sunucuya saatlik kira ödemeyin
+            </h2>
+            <p className="text-sm text-zinc-600 leading-relaxed">
+              RunPod Serverless mimarisinde GPU yalnızca müşteri video/fotoğraf taraması başlattığı saniyelerde ayağa kalkar; günün geri kalanında ücret <span className="font-mono font-semibold text-zinc-950">$0.00</span>&apos;dır. L40S 48 GB kartta tek oda taraması ortalama <span className="font-mono font-semibold text-zinc-950">0.01–0.03 USD</span> maliyetle çalışır.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {DEALER_PLANS.map((plan, idx) => {
+              const active = memberState.activePlanId === plan.id;
+              return (
+                <div
+                  key={plan.id}
+                  className={`border p-6 flex flex-col justify-between gap-5 transition ${
+                    active ? 'border-zinc-950 bg-zinc-50/70' : 'border-zinc-200 bg-white'
+                  }`}
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs font-mono text-zinc-500">
+                      <span>{String(idx + 1).padStart(2, '0')}</span>
+                      <span>{active ? 'AKTİF PAKET' : 'AYLIK BAYİ'}</span>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-zinc-950">{plan.name}</h3>
+                      <p className="mt-1 text-2xl font-bold font-mono text-zinc-950">
+                        {plan.monthlyPriceTry.toLocaleString('tr-TR')} ₺
+                        <span className="text-xs font-sans font-normal text-zinc-500"> / ay</span>
+                      </p>
+                    </div>
+                    <p className="text-xs text-zinc-600 leading-relaxed">{plan.desc}</p>
+                    <div className="pt-3 border-t border-zinc-200 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Aylık Tarama Kotası</span>
+                        <span className="font-mono font-bold text-zinc-950">{plan.monthlyQuota} oda</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Müşteri Başı Deneme Sınırı</span>
+                        <span className="font-mono font-bold text-zinc-950">{plan.perCustomerLimit} tarama</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = setDealerPlan(plan.id);
+                      setMemberState(next);
+                      setCalcMonthlyScans(plan.monthlyQuota);
+                    }}
+                    className={`w-full py-2.5 text-xs font-bold uppercase tracking-wide border transition ${
+                      active
+                        ? 'bg-zinc-950 text-white border-zinc-950'
+                        : 'bg-white hover:bg-zinc-950 hover:text-white text-zinc-950 border-zinc-300'
+                    }`}
+                  >
+                    {active ? 'Aktif Paket' : 'Bu Paketi Seç (Demo)'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-8">
+            <div className="lg:col-span-6 border border-zinc-200 p-6 space-y-4 bg-white">
+              <div className="flex items-center justify-between gap-2 border-b border-zinc-200 pb-3">
+                <div>
+                  <p className="text-[11px] font-mono text-zinc-500 uppercase">Canlı Kota &amp; GPU Defteri</p>
+                  <h3 className="text-sm font-bold text-zinc-950">Müşteri Deneme Limiti ve Son Taramalar</h3>
+                </div>
+                <span className="text-xs font-mono font-semibold text-zinc-700">
+                  {runpodConnected ? 'Serverless Bağlı' : 'Endpoint Bekleniyor'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="border border-zinc-200 p-3 space-y-1">
+                  <span className="text-[11px] text-zinc-500 block">Aktif Bayi Paketi</span>
+                  <span className="font-bold text-zinc-950">{activePlan.name}</span>
+                </div>
+                <div className="border border-zinc-200 p-3 space-y-1">
+                  <span className="text-[11px] text-zinc-500 block">Bayi Aylık Kullanım</span>
+                  <span className="font-mono font-bold text-zinc-950">
+                    {memberState.dealerUsedScans} / {activePlan.monthlyQuota}
+                  </span>
+                </div>
+                <div className="border border-zinc-200 p-3 space-y-1">
+                  <span className="text-[11px] text-zinc-500 block">Müşteri Cihaz Hakkı</span>
+                  <span className="font-mono font-bold text-zinc-950">
+                    {remainingTrials} / {activePlan.perCustomerLimit}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMemberState(resetCustomerTrials())}
+                  className="px-3.5 py-2 border border-zinc-300 hover:border-zinc-950 text-xs font-semibold text-zinc-950"
+                >
+                  Deneme Hakkını Sıfırla
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowServer(true)}
+                  className="px-3.5 py-2 bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-semibold"
+                >
+                  RunPod Serverless Bağla
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-zinc-200 space-y-2">
+                <p className="text-[11px] font-mono text-zinc-500 uppercase">Son Tarama Maliyet Kayıtları</p>
+                {memberState.history.length > 0 ? (
+                  <div className="divide-y divide-zinc-200 border border-zinc-200 text-xs font-mono">
+                    {memberState.history.slice(0, 4).map((rec) => (
+                      <div key={rec.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                        <span className="text-zinc-600">
+                          {new Date(rec.dateIso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })} · {rec.frameCount} kare · {rec.billedSec.toFixed(1)} sn
+                        </span>
+                        <span className="font-bold text-zinc-950">${rec.costUsd.toFixed(4)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500">
+                    Henüz canlı RunPod taraması yapılmadı; ilk oda taramanızda saniye bazlı gerçek GPU tutarı burada işlenir.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="lg:col-span-6 border border-zinc-200 bg-zinc-50 p-6 space-y-4">
+              <div className="border-b border-zinc-200 pb-3">
+                <p className="text-[11px] font-mono text-zinc-500 uppercase">Birim Ekonomi Hesaplayıcı</p>
+                <h3 className="text-sm font-bold text-zinc-950">İstek Başı RunPod Serverless GPU Gideri</h3>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div className="space-y-1">
+                  <label className="block font-semibold text-zinc-700">GPU Sınıfı</label>
+                  <select
+                    value={calcTier}
+                    onChange={(e) => {
+                      const tier = e.target.value as GpuTierId;
+                      setCalcTier(tier);
+                      setCalcSec(GPU_TIERS[tier].avgScanSec);
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-zinc-300 text-xs font-medium text-zinc-950"
+                  >
+                    {Object.values(GPU_TIERS).map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name} ({g.vram}) — ${g.ratePerSecUsd.toFixed(5)}/sn
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-zinc-700">Ortalama Tarama Süresi</span>
+                    <span className="font-mono font-bold text-zinc-950">{calcSec} sn</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={8}
+                    max={45}
+                    value={calcSec}
+                    onChange={(e) => setCalcSec(Number(e.target.value))}
+                    className="w-full accent-zinc-950"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-zinc-700">Aylık Oda Taraması</span>
+                    <span className="font-mono font-bold text-zinc-950">{calcMonthlyScans} oda/ay</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={50}
+                    max={3000}
+                    step={50}
+                    value={calcMonthlyScans}
+                    onChange={(e) => setCalcMonthlyScans(Number(e.target.value))}
+                    className="w-full accent-zinc-950"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-zinc-200">
+                <div className="bg-white border border-zinc-200 p-3">
+                  <span className="text-[11px] text-zinc-500 block">1 Oda Taraması GPU Maliyeti</span>
+                  <span className="text-base font-mono font-bold text-zinc-950">{calcScanUsd.toFixed(4)} USD</span>
+                </div>
+                <div className="bg-white border border-zinc-200 p-3">
+                  <span className="text-[11px] text-zinc-500 block">Aylık Toplam GPU Faturası</span>
+                  <span className="text-base font-mono font-bold text-zinc-950">{calcMonthlyUsd.toFixed(2)} USD</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-zinc-600 leading-relaxed pt-1">
+                Türkiye&apos;de yinelenen B2B bayi tahsilatı ve otomatik tarama kotası yönetimi için{' '}
+                <strong className="text-zinc-950">PayTR Tekrarlayan Ödeme (Kart Saklama)</strong> veya{' '}
+                <strong className="text-zinc-950">iyzico Abonelik API</strong> doğrudan entegre edilir (Stripe, ABD/İngiltere şirketi olmadan Türkiye firmalarına kapalıdır).
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Bölüm 5: B2B Entegrasyon & Kurumsal Footer */}
       <section id="entegrasyon" className="bg-zinc-50 border-b border-zinc-200">
         <div className="max-w-6xl mx-auto px-4 lg:px-8 py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           <div className="lg:col-span-7 space-y-3">
-            <p className="text-xs font-mono text-zinc-500">04 / E-TİCARET VE MAĞAZA ENTEGRASYONU</p>
+            <p className="text-xs font-mono text-zinc-500">05 / E-TİCARET VE MAĞAZA ENTEGRASYONU</p>
             <h2 className="text-2xl font-bold tracking-tight">Kendi ürün sayfanıza tek bağlantıyla ekleyin</h2>
             <p className="text-sm text-zinc-600 leading-relaxed">
               Her mobilya firmasının ürün detay sayfasındaki &ldquo;Odamda Nasıl Durur?&rdquo; butonu veya mağaza fiyat etiketindeki QR kodu doğrudan o ürünün 1:1 3D sahnesini açar. Mevcut <code className="px-1.5 py-0.5 bg-zinc-200/70 rounded text-xs font-mono">.GLB</code>, <code className="px-1.5 py-0.5 bg-zinc-200/70 rounded text-xs font-mono">.OBJ</code> veya <code className="px-1.5 py-0.5 bg-zinc-200/70 rounded text-xs font-mono">.STL</code> dosyalarınızı yükleyip saniyeler içinde canlı test edebilirsiniz.
@@ -997,36 +1266,125 @@ export function App() {
 
       {showServer && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-5 max-w-sm w-full space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold flex items-center gap-2">
-                <Server className="w-4 h-4" /> Canlı GPU Sunucusu (Opsiyonel)
+          <div className="bg-white rounded-xl p-5 max-w-md w-full space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-3">
+              <h3 className="text-sm font-bold flex items-center gap-2 text-zinc-950">
+                <Server className="w-4 h-4" /> RunPod Serverless &amp; GPU Ayarları
               </h3>
               <button onClick={() => setShowServer(false)} aria-label="Kapat">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-xs text-zinc-600 leading-relaxed">
-              Durum:{' '}
-              {health.online
-                ? `Bağlı (${health.gpu}, v${health.version})`
-                : 'Beklemede — Hazır demo odaları ve CAD yükleme GPU olmadan 7/24 açıktır.'}
-            </p>
-            <label className="block text-xs font-semibold">RunPod Pod ID</label>
-            <input
-              value={podInput}
-              onChange={(e) => setPodInput(e.target.value)}
-              className="w-full px-3 py-2 border border-zinc-300 rounded text-xs font-mono"
-            />
-            <button
-              onClick={() => {
-                setServerUrl(setServerPod(podInput));
-                setShowServer(false);
-              }}
-              className="w-full py-2.5 bg-zinc-950 text-white text-xs font-bold rounded"
-            >
-              Kaydet ve Bağlan
-            </button>
+
+            <div className="space-y-2.5 border border-zinc-200 p-3.5 rounded-lg bg-zinc-50/60">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-zinc-950">
+                  RunPod Serverless — Gerçek 3D Oda Taraması
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
+                    runpodConnected
+                      ? 'border-zinc-950 bg-zinc-950 text-white'
+                      : 'border-zinc-300 bg-white text-zinc-600'
+                  }`}
+                >
+                  {serverScanReady
+                    ? 'Vercel Env Aktif'
+                    : memberState.runpodEndpointId
+                    ? 'Tarayıcı Anahtarı Bağlı'
+                    : 'Endpoint Bekleniyor'}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-600 leading-relaxed">
+                İstek başı faturalandırma (~0.01–0.03 USD/tarama; boşta beklerken ücret yok). Kalıcı üretim yayını için Vercel Ortam Değişkenlerine{' '}
+                <code className="px-1 py-0.5 bg-zinc-200/80 rounded font-mono text-[10px]">RUNPOD_ENDPOINT_ID</code> ve{' '}
+                <code className="px-1 py-0.5 bg-zinc-200/80 rounded font-mono text-[10px]">RUNPOD_API_KEY</code> ekleyin; demo testinde aşağıdan doğrudan bağlayabilirsiniz.
+              </p>
+
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
+                    RunPod Serverless Endpoint ID
+                  </label>
+                  <input
+                    value={rpEndpoint}
+                    onChange={(e) => setRpEndpoint(e.target.value)}
+                    placeholder="örn: 9x8y7z6w5v"
+                    className="w-full px-3 py-2 bg-white border border-zinc-300 rounded text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
+                    RunPod API Key
+                  </label>
+                  <input
+                    type="password"
+                    value={rpApiKey}
+                    onChange={(e) => setRpApiKey(e.target.value)}
+                    placeholder="rpa_..."
+                    className="w-full px-3 py-2 bg-white border border-zinc-300 rounded text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
+                    GPU Sınıfı (Maliyet Tahmini)
+                  </label>
+                  <select
+                    value={rpTier}
+                    onChange={(e) => setRpTier(e.target.value as GpuTierId)}
+                    className="w-full px-3 py-2 bg-white border border-zinc-300 rounded text-xs"
+                  >
+                    {Object.values(GPU_TIERS).map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name} ({g.vram}) — ~${(g.ratePerSecUsd * g.avgScanSec).toFixed(3)} / tarama
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const next = updateRunpodCredentials(rpEndpoint, rpApiKey, rpTier);
+                  setMemberState(next);
+                  setShowServer(false);
+                }}
+                className="w-full py-2.5 bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-bold rounded"
+              >
+                Serverless Bağlantısını Kaydet
+              </button>
+            </div>
+
+            <div className="space-y-2 border-t border-zinc-200 pt-3">
+              <p className="text-[11px] font-semibold text-zinc-700">
+                Opsiyonel Saatlik Pod ID (Fotoğraftan Tekil 3D Mobilya Üretimi)
+              </p>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                Durum:{' '}
+                {health.online
+                  ? `Bağlı (${health.gpu}, v${health.version})`
+                  : 'Beklemede — Hazır katalog ve CAD yükleme GPU olmadan 7/24 açıktır.'}
+              </p>
+              <div className="flex gap-2">
+                <input
+                  value={podInput}
+                  onChange={(e) => setPodInput(e.target.value)}
+                  placeholder="Pod ID"
+                  className="flex-1 px-3 py-2 border border-zinc-300 rounded text-xs font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerUrl(setServerPod(podInput));
+                    setShowServer(false);
+                  }}
+                  className="px-3.5 py-2 border border-zinc-950 text-zinc-950 hover:bg-zinc-100 text-xs font-bold rounded whitespace-nowrap"
+                >
+                  Pod Kaydet
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

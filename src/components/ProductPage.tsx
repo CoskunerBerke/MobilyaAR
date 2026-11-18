@@ -13,6 +13,7 @@ interface Props {
   startMode?: 'preview' | 'photo' | 'studio';
   initialStudioPreset?: DemoStudioPresetId;
   initialColorHex?: string;
+  onOpenServerSettings?: () => void;
   onBack: () => void;
 }
 
@@ -24,6 +25,7 @@ export const ProductPage: React.FC<Props> = ({
   startMode = 'preview',
   initialStudioPreset,
   initialColorHex,
+  onOpenServerSettings,
   onBack,
 }) => {
   const [mode, setMode] = useState<'preview' | 'studio'>(startMode === 'preview' ? 'preview' : 'studio');
@@ -66,6 +68,7 @@ export const ProductPage: React.FC<Props> = ({
         serverOnline={serverOnline}
         initialPreset={studioPreset}
         initialColorHex={colorHex}
+        onOpenServerSettings={onOpenServerSettings}
         onBack={() => {
           setStudioPreset(undefined);
           if (startMode !== 'preview') onBack();

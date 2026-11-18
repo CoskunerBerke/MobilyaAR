@@ -20,19 +20,19 @@ import {
   RotateCw,
   Ruler,
   Scissors,
+  Server,
   Trash2,
   Upload,
+  Video,
   X,
 } from 'lucide-react';
 import type { Product } from '../lib/products';
 import {
   buildShareUrl,
-  reconstructRoom3D,
   type ReconstructRoomResult,
   type ReconstructedObject3D,
 } from '../lib/server';
 import {
-  buildClientStudioFromPhotos,
   buildCustomFloorTexture,
   buildDemoStudioRoom,
   DEMO_STUDIO_PRESETS,
@@ -40,7 +40,28 @@ import {
   type FloorSurfaceKind,
 } from '../lib/demoRooms';
 import { convertCadFileToGlb } from '../lib/cadImport';
-import { detectRoomFurniture } from '../lib/roomObjectDetection';
+import { downscaleDataUrlForGpu, extractFramesFromVideo } from '../lib/videoFrames';
+import {
+  createFreeFloorOverlayMesh,
+  createRoomPointCloudObject,
+  decodeScannedRoom,
+  findOpenSpawnInScannedRoom,
+  resolveMoveInScannedRoom,
+  resolveRotateInScannedRoom,
+  type DecodedScannedRoom,
+  type ScannedRoomPayload,
+} from '../lib/pointCloudRoom';
+import {
+  canRunScan,
+  getActivePlan,
+  getMembershipState,
+  GPU_TIERS,
+  recordCompletedScan,
+  resetCustomerTrials,
+  updateRunpodCredentials,
+  type GpuTierId,
+  type MembershipState,
+} from '../lib/membership';
 import {
   findOpenSpawnPosition,
   parseProductFootprintM,
@@ -64,6 +85,7 @@ interface Props {
   serverOnline?: boolean;
   initialPreset?: DemoStudioPresetId;
   initialColorHex?: string;
+  onOpenServerSettings?: () => void;
   onBack: () => void;
 }
 
@@ -105,6 +127,40 @@ function applyFabricSwatch(root: THREE.Object3D, hex?: string) {
       }
     });
   });
+}
+
+function buildMiniMapGridDataUrl(room: DecodedScannedRoom): string {
+  const { w, d, cells } = room.grid;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = d;
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+  const imgData = ctx.createImageData(w, d);
+  for (let i = 0; i < w * d; i++) {
+    const val = cells[i] ?? 2;
+    const o = i * 4;
+    if (val === 0) {
+      // Boş zemin (zümrüt yeşili)
+      imgData.data[o] = 16;
+      imgData.data[o + 1] = 185;
+      imgData.data[o + 2] = 129;
+      imgData.data[o + 3] = 105;
+    } else if (val === 1) {
+      // Mevcut eşya / duvar engeli (kırmızı/mercan)
+      imgData.data[o] = 239;
+      imgData.data[o + 1] = 68;
+      imgData.data[o + 2] = 68;
+      imgData.data[o + 3] = 165;
+    } else {
+      imgData.data[o] = 39;
+      imgData.data[o + 1] = 39;
+      imgData.data[o + 2] = 42;
+      imgData.data[o + 3] = 90;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return c.toDataURL();
 }
 
 function buildExistingFurnitureGroup(
@@ -262,14 +318,29 @@ export const Room3DStudio: React.FC<Props> = ({
   serverOnline = false,
   initialPreset,
   initialColorHex,
+  onOpenServerSettings,
   onBack,
 }) => {
   const [step, setStep] = useState<Step>('capture');
+  const [captureMode, setCaptureMode] = useState<'video' | 'photos'>('video');
+  const [videoFrames, setVideoFrames] = useState<string[]>([]);
+  const [extractPct, setExtractPct] = useState<number | null>(null);
   const [views, setViews] = useState<CapturedView[]>([]);
   const [error, setError] = useState('');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [roomData, setRoomData] = useState<ReconstructRoomResult | null>(null);
+  const [scannedRoom, setScannedRoom] = useState<DecodedScannedRoom | null>(null);
+  const [miniMapGridUrl, setMiniMapGridUrl] = useState<string>('');
+  const [showFreeFloor, setShowFreeFloor] = useState(true);
+  const [pointSize, setPointSize] = useState(0.042);
   const [sceneReady, setSceneReady] = useState(0);
+
+  const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
+  const [serverEnvConfigured, setServerEnvConfigured] = useState<boolean | null>(null);
+  const [showQuickRunpod, setShowQuickRunpod] = useState(false);
+  const [quickEndpoint, setQuickEndpoint] = useState(() => getMembershipState().runpodEndpointId);
+  const [quickApiKey, setQuickApiKey] = useState(() => getMembershipState().runpodApiKey);
+  const [quickTier, setQuickTier] = useState<GpuTierId>(() => getMembershipState().gpuTier);
 
   const [items, setItems] = useState<PlacedItem3D[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -294,6 +365,27 @@ export const Room3DStudio: React.FC<Props> = ({
   const [reconstructMsg, setReconstructMsg] = useState('');
   const [showMobileQr, setShowMobileQr] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/scan?action=config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j && typeof j.serverConfigured === 'boolean') {
+          setServerEnvConfigured(j.serverConfigured);
+        }
+      })
+      .catch(() => setServerEnvConfigured(false));
+  }, []);
+
+  useEffect(() => {
+    if (step === 'capture') {
+      const latest = getMembershipState();
+      setMemberState(latest);
+      setQuickEndpoint(latest.runpodEndpointId);
+      setQuickApiKey(latest.runpodApiKey);
+      setQuickTier(latest.gpuTier);
+    }
+  }, [step]);
 
   const mobileStudioUrl = buildShareUrl({
     productId: product.id,
@@ -323,6 +415,12 @@ export const Room3DStudio: React.FC<Props> = ({
   wallModeRef.current = wallMode;
   const emptyRoomRef = useRef(true);
   emptyRoomRef.current = emptyRoom;
+  const scannedRoomRef = useRef<DecodedScannedRoom | null>(null);
+  scannedRoomRef.current = scannedRoom;
+  const showFreeFloorRef = useRef(true);
+  showFreeFloorRef.current = showFreeFloor;
+  const pointSizeRef = useRef(0.042);
+  pointSizeRef.current = pointSize;
   const roomDimsRef = useRef<{ w: number; d: number; ch: number }>({ w: 4.8, d: 5.4, ch: 2.75 });
   const hitObstacleRef = useRef(false);
   const blobUrlsRef = useRef<string[]>([]);
@@ -335,8 +433,10 @@ export const Room3DStudio: React.FC<Props> = ({
     rafId: number;
     itemsRoot: THREE.Group;
     floorMesh: THREE.Mesh;
-    floorMat: THREE.MeshStandardMaterial;
-    floorRgb: [number, number, number];
+    floorMat?: THREE.MeshStandardMaterial;
+    floorRgb?: [number, number, number];
+    pointMat?: THREE.PointsMaterial;
+    freeFloorMesh?: THREE.Mesh;
     borderLines: THREE.LineSegments;
     groups: Map<string, { key: string; root: THREE.Group }>;
     walls: Array<{ side: 'north' | 'south' | 'west' | 'east'; mesh: THREE.Mesh; inwardNormal: THREE.Vector3; center: THREE.Vector3 }>;
@@ -386,7 +486,7 @@ export const Room3DStudio: React.FC<Props> = ({
       .map(toOBB);
   }, []);
 
-  const MAX_VIEWS = 8;
+  const MAX_VIEWS = 16;
 
   const addFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -400,7 +500,7 @@ export const Room3DStudio: React.FC<Props> = ({
       const parsed: CapturedView[] = [];
       for (const f of picked) {
         try {
-          const res = await normalizeRoomPhoto(f, 1024);
+          const res = await normalizeRoomPhoto(f, 518);
           parsed.push({
             id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             dataUrl: res.dataUrl,
@@ -420,10 +520,33 @@ export const Room3DStudio: React.FC<Props> = ({
     }
   };
 
+  const handleVideoUpload = async (file: File | null) => {
+    if (!file) return;
+    setExtractPct(0);
+    try {
+      const frames = await extractFramesFromVideo(file, 24, 518, (pct) => {
+        if (alive.current) setExtractPct(pct);
+      });
+      if (frames.length < 4) {
+        showToast('Videodan en az 4 kare çıkarılamadı — lütfen 10–25 sn arası bir video seçin');
+        setVideoFrames([]);
+      } else {
+        setVideoFrames(frames);
+        showToast(`${frames.length} video karesi çıkarıldı ve 3D taramaya hazır`);
+      }
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Video okunamadı');
+    } finally {
+      if (alive.current) setExtractPct(null);
+    }
+  };
+
   const applyRoomResult = useCallback((res: ReconstructRoomResult) => {
+    setScannedRoom(null);
+    setMiniMapGridUrl('');
     roomDimsRef.current = { w: res.roomWidthM, d: res.roomDepthM, ch: res.ceilingHeightM };
     setRoomData(res);
-    setEmptyRoom((res.existingObjects || []).length === 0);
+    setEmptyRoom(true);
     setClipAxis('none');
     setShowClipBar(false);
     setShowSizeBar(false);
@@ -431,22 +554,8 @@ export const Room3DStudio: React.FC<Props> = ({
     setActiveCamIdx('free');
     setPreviewPhotoIdx(null);
 
-    // Tarama eşyaları varsa hareketli/çarpışmalı öğe olarak hazır tut (başlangıçta oda boş açılır)
-    const scanned: PlacedItem3D[] = (res.existingObjects || []).map((obj) => ({
-      id: obj.id,
-      label: obj.label,
-      dimensionsCm: `${Math.round(obj.size[0] * 100)} × ${Math.round(obj.size[2] * 100)} × ${Math.round(obj.size[1] * 100)} cm`,
-      existingSpec: obj,
-      x: obj.center[0],
-      z: obj.center[2],
-      rot: obj.yaw,
-      halfW: Math.max(0.14, obj.size[0] * 0.5 - 0.01),
-      halfD: Math.max(0.14, obj.size[2] * 0.5 - 0.01),
-      isScanned: true,
-    }));
-
-    itemsRef.current = scanned;
-    setItems(scanned);
+    itemsRef.current = [];
+    setItems([]);
     selectedIdRef.current = null;
     setSelectedId(null);
     setStep('studio');
@@ -468,63 +577,146 @@ export const Room3DStudio: React.FC<Props> = ({
     }
   }, [initialPreset, loadDemoPreset]);
 
-  const startReconstruction = async () => {
-    if (views.length < 4) return;
+  const startGpuScan = async () => {
+    const rawFrames = captureMode === 'video' ? videoFrames : views.map((v) => v.dataUrl);
+    if (rawFrames.length < 4) return;
+
+    const latestMem = getMembershipState();
+    setMemberState(latestMem);
+    const quota = canRunScan(latestMem);
+    if (!quota.ok) {
+      showToast(quota.reason || 'Tarama kotası doldu');
+      return;
+    }
+
+    const hasLocalCreds = Boolean(latestMem.runpodEndpointId && latestMem.runpodApiKey);
+    if (!serverEnvConfigured && !hasLocalCreds) {
+      setShowQuickRunpod(true);
+      showToast('Gerçek 3D tarama için önce RunPod Serverless Endpoint ID ve API Key girin');
+      return;
+    }
+
     disposeStudio();
     setStep('reconstructing');
-    setReconstructMsg('Fotoğraflar hazırlanıyor...');
+    setReconstructMsg('Kareler GPU için hazırlanıyor...');
     try {
-      if (serverOnline) {
-        try {
-          setReconstructMsg('GPU sunucusunda derinlik ve eşya analizi yapılıyor...');
-          const res = await reconstructRoom3D(
-            serverUrl,
-            views.map((v) => v.dataUrl),
-            views.map((v) => v.exifFocal35mm)
-          );
-          applyRoomResult(res);
-          return;
-        } catch {
-          /* Sunucu çevrimdışıysa tarayıcı içi analize düş */
+      const gpuFrames =
+        captureMode === 'video'
+          ? rawFrames
+          : await Promise.all(rawFrames.map((d) => downscaleDataUrlForGpu(d, 518)));
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (hasLocalCreds) {
+        headers['x-runpod-endpoint'] = latestMem.runpodEndpointId;
+        headers['x-runpod-key'] = latestMem.runpodApiKey;
+        headers['x-gpu-tier'] = latestMem.gpuTier;
+      }
+
+      setReconstructMsg(`${gpuFrames.length} kare RunPod Serverless GPU'ya gönderiliyor...`);
+      const startRes = await fetch('/api/scan', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ images: gpuFrames }),
+      });
+      const startJson = await startRes.json().catch(() => ({}));
+      if (!startRes.ok || !startJson.ok || !startJson.jobId) {
+        throw new Error(startJson.error || 'RunPod tarama işi başlatılamadı');
+      }
+
+      const jobId = startJson.jobId as string;
+      const t0 = Date.now();
+      let payload: ScannedRoomPayload | null = null;
+      let billedSec = 0;
+      let costUsd = 0;
+
+      for (let attempt = 0; attempt < 96; attempt++) {
+        await new Promise((r) => setTimeout(r, 2500));
+        if (!alive.current) return;
+
+        const sec = Math.round((Date.now() - t0) / 1000);
+        const stRes = await fetch(`/api/scan?jobId=${encodeURIComponent(jobId)}`, {
+          method: 'GET',
+          headers: hasLocalCreds
+            ? {
+                'x-runpod-endpoint': latestMem.runpodEndpointId,
+                'x-runpod-key': latestMem.runpodApiKey,
+                'x-gpu-tier': latestMem.gpuTier,
+              }
+            : undefined,
+        });
+        const stJson = await stRes.json().catch(() => ({}));
+        if (!stRes.ok || !stJson.ok) {
+          throw new Error(stJson.error || 'RunPod tarama durumu alınamadı');
         }
+
+        const st = stJson.status as string;
+        if (st === 'COMPLETED') {
+          const out = stJson.output as ScannedRoomPayload | undefined;
+          if (!out || !out.ok) {
+            throw new Error(out?.error || 'MapAnything 3D oda çıktısı üretilemedi');
+          }
+          payload = out;
+          billedSec = Number(stJson.executionTimeMs || 0) / 1000 || out.stats?.totalSec || sec;
+          costUsd = Number(stJson.estimatedCostUsd || 0);
+          break;
+        }
+        if (st === 'FAILED' || st === 'CANCELLED' || st === 'TIMED_OUT') {
+          throw new Error(stJson.error || `RunPod işlemi başarısız (${st})`);
+        }
+        setReconstructMsg(
+          st === 'IN_PROGRESS'
+            ? `MapAnything gerçek 3D oda geometrisi çıkarıyor (${sec} sn)...`
+            : `Serverless GPU uyanıyor / sırada (${sec} sn)...`
+        );
       }
 
-      let layout: Awaited<ReturnType<typeof detectRoomFurniture>> | undefined;
-      try {
-        layout = await detectRoomFurniture(views, setReconstructMsg);
-      } catch {
-        layout = undefined;
+      if (!payload) {
+        throw new Error('Tarama zaman aşımına uğradı (240 sn). Lütfen daha az kare veya sıcak worker ile tekrar deneyin.');
       }
 
-      setReconstructMsg('3D oda, zemin ve duvarlar kuruluyor...');
-      const fallback = await buildClientStudioFromPhotos(views, layout);
-      applyRoomResult(fallback);
+      const decoded = decodeScannedRoom(payload);
+      const updatedMem = recordCompletedScan(gpuFrames.length, billedSec, costUsd);
+      setMemberState(updatedMem);
 
-      if (!layout) {
-        showToast('Eşya tanıma modeli yüklenemedi — oda boş kuruldu');
-      } else if (layout.existingObjects.length === 0) {
-        showToast('Fotoğraflarda zemine oturan eşya bulunamadı — oda boş kuruldu');
-      } else {
-        const counts = layout.existingObjects.reduce<Record<string, number>>((acc, o) => {
-          acc[o.label] = (acc[o.label] || 0) + 1;
-          return acc;
-        }, {});
-        const summary = Object.entries(counts)
-          .map(([k, c]) => `${c} ${k}`)
-          .join(', ');
-        showToast(`Odadaki mevcut eşyalar yerleştirildi: ${summary}`);
-      }
+      setRoomData(null);
+      setScannedRoom(decoded);
+      setMiniMapGridUrl(buildMiniMapGridDataUrl(decoded));
+      roomDimsRef.current = {
+        w: decoded.bounds.halfW * 2,
+        d: decoded.bounds.halfD * 2,
+        ch: decoded.bounds.ceilingM,
+      };
+      itemsRef.current = [];
+      setItems([]);
+      selectedIdRef.current = null;
+      setSelectedId(null);
+      setEmptyRoom(true);
+      setClipAxis('none');
+      setShowClipBar(false);
+      setShowSizeBar(false);
+      setWallMode('auto');
+      setActiveCamIdx('free');
+      setPreviewPhotoIdx(null);
+      setShowFreeFloor(true);
+      setStep('studio');
+      showToast(
+        `Gerçek 3D oda hazır (${decoded.pointCount.toLocaleString('tr-TR')} nokta • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : '3D oda oluşturulamadı');
+      setError(e instanceof Error ? e.message : 'Gerçek 3D oda oluşturulamadı');
       setStep('error');
     }
   };
 
-  // ---- 3D Oda Sahnesini Kur (Oda boyutu değişikliklerini içeriden hızlı günceller) ----
-  const setupKey = roomData ? `${roomData.floorTexture.slice(0, 64)}:${roomData.viewCount}` : '';
+  // ---- 3D Oda Sahnesini Kur (Gerçek Tarama Nokta Bulutu VEYA Boş Demo Oda) ----
+  const setupKey = scannedRoom
+    ? `scan:${scannedRoom.pointCount}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
+    : roomData
+    ? `demo:${roomData.floorTexture.slice(0, 64)}:${roomData.viewCount}`
+    : '';
 
   useEffect(() => {
-    if (step !== 'studio' || !roomData || !hostRef.current) return;
+    if (step !== 'studio' || (!roomData && !scannedRoom) || !hostRef.current) return;
     const host = hostRef.current;
 
     let cancelled = false;
@@ -541,14 +733,15 @@ export const Room3DStudio: React.FC<Props> = ({
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.06;
+      renderer.toneMappingExposure = scannedRoom ? 1.12 : 1.06;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.localClippingEnabled = true;
 
+      const bgHex = scannedRoom ? 0x18181b : 0xf4f4f5;
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xf4f4f5);
-      renderer.setClearColor(0xf4f4f5, 1);
+      scene.background = new THREE.Color(bgHex);
+      renderer.setClearColor(bgHex, 1);
 
       const camera = new THREE.PerspectiveCamera(52, w / h, 0.08, 60);
       const rw = roomDimsRef.current.w;
@@ -560,50 +753,30 @@ export const Room3DStudio: React.FC<Props> = ({
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
       controls.minDistance = 0.9;
-      controls.maxDistance = 15;
+      controls.maxDistance = 16;
       controls.maxPolarAngle = Math.PI * 0.495;
       controls.target.set(0, 0.72, 0);
       controls.update();
 
       const maxAniso = renderer.capabilities.getMaxAnisotropy();
       const disposeFns: Array<() => void> = [];
+      const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 100);
 
-      const [floorImg, floorTex, northTex, southTex, westTex, eastTex] = await Promise.all([
-        loadHtmlImage(roomData.floorTexture),
-        loadThreeTexture(roomData.floorTexture),
-        loadThreeTexture(roomData.wallTextures.north),
-        loadThreeTexture(roomData.wallTextures.south),
-        loadThreeTexture(roomData.wallTextures.west),
-        loadThreeTexture(roomData.wallTextures.east),
-      ]);
-
-      if (cancelled || !alive.current) {
-        [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => t.dispose());
-        controls.dispose();
-        renderer.dispose();
-        return;
-      }
-
-      [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => {
-        t.anisotropy = maxAniso;
-      });
-      disposeFns.push(() => [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => t.dispose()));
-
-      host.innerHTML = '';
-      host.appendChild(renderer.domElement);
-      renderer.domElement.style.width = '100%';
-      renderer.domElement.style.height = '100%';
-      renderer.domElement.style.touchAction = 'none';
-
-      const envInfo = buildRoomEnvironment(floorImg, renderer);
-      scene.environment = envInfo.env;
-
-      const hemi = new THREE.HemisphereLight(0xffffff, 0xd6d3cd, 0.95);
-      scene.add(hemi);
+      let envTex: THREE.Texture | null = null;
+      let floorMesh: THREE.Mesh;
+      let floorMat: THREE.MeshStandardMaterial | undefined;
+      let floorRgb: [number, number, number] | undefined;
+      let pointMat: THREE.PointsMaterial | undefined;
+      let freeFloorMesh: THREE.Mesh | undefined;
+      let borderLines: THREE.LineSegments;
+      const walls: Array<{
+        side: 'north' | 'south' | 'west' | 'east';
+        mesh: THREE.Mesh;
+        inwardNormal: THREE.Vector3;
+        center: THREE.Vector3;
+      }> = [];
 
       const light = new THREE.DirectionalLight(0xfffcf5, 1.45);
-      const ld = roomData.lightDir;
-      light.position.set(ld[0] * 6, Math.max(3.5, ld[1] * 6), ld[2] * 6);
       light.castShadow = true;
       light.shadow.mapSize.set(2048, 2048);
       const ext = Math.max(rw, rd) * 0.85;
@@ -612,125 +785,198 @@ export const Room3DStudio: React.FC<Props> = ({
       light.shadow.camera.top = ext;
       light.shadow.camera.bottom = -ext;
       light.shadow.camera.near = 0.5;
-      light.shadow.camera.far = 18;
+      light.shadow.camera.far = 20;
       light.shadow.bias = -0.0004;
       light.shadow.normalBias = 0.02;
       light.shadow.radius = 4;
-      scene.add(light);
 
-      const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 100);
+      if (scannedRoom) {
+        host.innerHTML = '';
+        host.appendChild(renderer.domElement);
+        renderer.domElement.style.width = '100%';
+        renderer.domElement.style.height = '100%';
+        renderer.domElement.style.touchAction = 'none';
 
-      let floorRgb: [number, number, number] = [208, 198, 182];
-      try {
-        const sc = document.createElement('canvas');
-        sc.width = 4;
-        sc.height = 4;
-        const sctx = sc.getContext('2d');
-        if (sctx) {
-          sctx.drawImage(floorImg, 0, 0, 4, 4);
-          const px = sctx.getImageData(1, 1, 1, 1).data;
-          floorRgb = [px[0], px[1], px[2]];
-          const mx = Math.max(px[0], px[1], px[2]);
-          const mn = Math.min(px[0], px[1], px[2]);
-          setFloorStyle((mx - mn) / Math.max(1, mx) < 0.17 ? 'tile' : 'wood');
-        }
-      } catch {
-        /* use default */
-      }
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x9ca3af, 1.15);
+        scene.add(hemi);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+        light.position.set(-rw * 0.6, Math.max(4.0, ch * 1.6), rd * 0.6);
+        scene.add(light);
 
-      // Zemin
-      const floorGeo = new THREE.PlaneGeometry(rw, rd).rotateX(-Math.PI / 2);
-      const floorMat = new THREE.MeshStandardMaterial({
-        map: floorTex,
-        roughness: 0.86,
-        metalness: 0.0,
-        envMapIntensity: 0.28,
-        side: THREE.DoubleSide,
-      });
-      const floorMesh = new THREE.Mesh(floorGeo, floorMat);
-      floorMesh.receiveShadow = true;
-      scene.add(floorMesh);
-      disposeFns.push(() => {
-        floorMesh.geometry.dispose();
-        floorMat.map?.dispose();
-        floorMat.dispose();
-      });
-
-      // Zemin kenar mimari çerçeve çizgisi
-      const borderGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(rw, 0.012, rd));
-      const borderMat = new THREE.LineBasicMaterial({ color: 0x71717a, transparent: true, opacity: 0.4 });
-      const borderLines = new THREE.LineSegments(borderGeo, borderMat);
-      borderLines.position.y = 0.006;
-      scene.add(borderLines);
-      disposeFns.push(() => {
-        borderLines.geometry.dispose();
-        borderMat.dispose();
-      });
-
-      // 4 Mimari Duvar
-      const hw = rw * 0.5;
-      const hd = rd * 0.5;
-      const wallSpecs = [
-        {
-          side: 'north' as const,
-          w: rw,
-          tex: northTex,
-          pos: new THREE.Vector3(0, ch * 0.5, -hd),
-          rotY: 0,
-          normal: new THREE.Vector3(0, 0, 1),
-        },
-        {
-          side: 'south' as const,
-          w: rw,
-          tex: southTex,
-          pos: new THREE.Vector3(0, ch * 0.5, hd),
-          rotY: Math.PI,
-          normal: new THREE.Vector3(0, 0, -1),
-        },
-        {
-          side: 'west' as const,
-          w: rd,
-          tex: westTex,
-          pos: new THREE.Vector3(-hw, ch * 0.5, 0),
-          rotY: Math.PI / 2,
-          normal: new THREE.Vector3(1, 0, 0),
-        },
-        {
-          side: 'east' as const,
-          w: rd,
-          tex: eastTex,
-          pos: new THREE.Vector3(hw, ch * 0.5, 0),
-          rotY: -Math.PI / 2,
-          normal: new THREE.Vector3(-1, 0, 0),
-        },
-      ];
-
-      const walls: Array<{
-        side: 'north' | 'south' | 'west' | 'east';
-        mesh: THREE.Mesh;
-        inwardNormal: THREE.Vector3;
-        center: THREE.Vector3;
-      }> = [];
-      for (const ws of wallSpecs) {
-        const wGeo = new THREE.PlaneGeometry(ws.w, ch);
-        const wMat = new THREE.MeshStandardMaterial({
-          map: ws.tex,
-          roughness: 0.92,
-          metalness: 0.0,
-          envMapIntensity: 0.16,
-          side: THREE.DoubleSide,
-          clippingPlanes: [clipPlane],
-        });
-        const wMesh = new THREE.Mesh(wGeo, wMat);
-        wMesh.position.copy(ws.pos);
-        wMesh.rotation.y = ws.rotY;
-        wMesh.receiveShadow = true;
-        scene.add(wMesh);
-        walls.push({ side: ws.side, mesh: wMesh, inwardNormal: ws.normal, center: ws.pos.clone() });
+        const shadowGeo = new THREE.PlaneGeometry(rw + 4, rd + 4).rotateX(-Math.PI / 2);
+        const shadowMat = new THREE.ShadowMaterial({ opacity: 0.36 });
+        floorMesh = new THREE.Mesh(shadowGeo, shadowMat);
+        floorMesh.receiveShadow = true;
+        floorMesh.userData.isHelper = true;
+        scene.add(floorMesh);
         disposeFns.push(() => {
-          wMesh.geometry.dispose();
-          wMat.dispose();
+          shadowGeo.dispose();
+          shadowMat.dispose();
         });
+
+        const borderGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(rw, 0.012, rd));
+        const borderMat = new THREE.LineBasicMaterial({ color: 0x52525b, transparent: true, opacity: 0.5 });
+        borderLines = new THREE.LineSegments(borderGeo, borderMat);
+        borderLines.position.y = 0.002;
+        scene.add(borderLines);
+        disposeFns.push(() => {
+          borderGeo.dispose();
+          borderMat.dispose();
+        });
+
+        const pcObj = createRoomPointCloudObject(scannedRoom, pointSizeRef.current, clipPlane);
+        scene.add(pcObj.points);
+        pointMat = pcObj.material;
+        disposeFns.push(pcObj.dispose);
+
+        const ffObj = createFreeFloorOverlayMesh(scannedRoom);
+        ffObj.mesh.visible = showFreeFloorRef.current;
+        scene.add(ffObj.mesh);
+        freeFloorMesh = ffObj.mesh;
+        disposeFns.push(ffObj.dispose);
+      } else {
+        const rdData = roomData!;
+        const [floorImg, floorTex, northTex, southTex, westTex, eastTex] = await Promise.all([
+          loadHtmlImage(rdData.floorTexture),
+          loadThreeTexture(rdData.floorTexture),
+          loadThreeTexture(rdData.wallTextures.north),
+          loadThreeTexture(rdData.wallTextures.south),
+          loadThreeTexture(rdData.wallTextures.west),
+          loadThreeTexture(rdData.wallTextures.east),
+        ]);
+
+        if (cancelled || !alive.current) {
+          [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => t.dispose());
+          controls.dispose();
+          renderer.dispose();
+          return;
+        }
+
+        [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => {
+          t.anisotropy = maxAniso;
+        });
+        disposeFns.push(() => [floorTex, northTex, southTex, westTex, eastTex].forEach((t) => t.dispose()));
+
+        host.innerHTML = '';
+        host.appendChild(renderer.domElement);
+        renderer.domElement.style.width = '100%';
+        renderer.domElement.style.height = '100%';
+        renderer.domElement.style.touchAction = 'none';
+
+        const envInfo = buildRoomEnvironment(floorImg, renderer);
+        envTex = envInfo.env;
+        scene.environment = envInfo.env;
+
+        const hemi = new THREE.HemisphereLight(0xffffff, 0xd6d3cd, 0.95);
+        scene.add(hemi);
+
+        const ld = rdData.lightDir;
+        light.position.set(ld[0] * 6, Math.max(3.5, ld[1] * 6), ld[2] * 6);
+        scene.add(light);
+
+        floorRgb = [208, 198, 182];
+        try {
+          const sc = document.createElement('canvas');
+          sc.width = 4;
+          sc.height = 4;
+          const sctx = sc.getContext('2d');
+          if (sctx) {
+            sctx.drawImage(floorImg, 0, 0, 4, 4);
+            const px = sctx.getImageData(1, 1, 1, 1).data;
+            floorRgb = [px[0], px[1], px[2]];
+            const mx = Math.max(px[0], px[1], px[2]);
+            const mn = Math.min(px[0], px[1], px[2]);
+            setFloorStyle((mx - mn) / Math.max(1, mx) < 0.17 ? 'tile' : 'wood');
+          }
+        } catch {
+          /* use default */
+        }
+
+        const floorGeo = new THREE.PlaneGeometry(rw, rd).rotateX(-Math.PI / 2);
+        floorMat = new THREE.MeshStandardMaterial({
+          map: floorTex,
+          roughness: 0.86,
+          metalness: 0.0,
+          envMapIntensity: 0.28,
+          side: THREE.DoubleSide,
+        });
+        floorMesh = new THREE.Mesh(floorGeo, floorMat);
+        floorMesh.receiveShadow = true;
+        scene.add(floorMesh);
+        disposeFns.push(() => {
+          floorMesh.geometry.dispose();
+          floorMat?.map?.dispose();
+          floorMat?.dispose();
+        });
+
+        const borderGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(rw, 0.012, rd));
+        const borderMat = new THREE.LineBasicMaterial({ color: 0x71717a, transparent: true, opacity: 0.4 });
+        borderLines = new THREE.LineSegments(borderGeo, borderMat);
+        borderLines.position.y = 0.006;
+        scene.add(borderLines);
+        disposeFns.push(() => {
+          borderLines.geometry.dispose();
+          borderMat.dispose();
+        });
+
+        const hw = rw * 0.5;
+        const hd = rd * 0.5;
+        const wallSpecs = [
+          {
+            side: 'north' as const,
+            w: rw,
+            tex: northTex,
+            pos: new THREE.Vector3(0, ch * 0.5, -hd),
+            rotY: 0,
+            normal: new THREE.Vector3(0, 0, 1),
+          },
+          {
+            side: 'south' as const,
+            w: rw,
+            tex: southTex,
+            pos: new THREE.Vector3(0, ch * 0.5, hd),
+            rotY: Math.PI,
+            normal: new THREE.Vector3(0, 0, -1),
+          },
+          {
+            side: 'west' as const,
+            w: rd,
+            tex: westTex,
+            pos: new THREE.Vector3(-hw, ch * 0.5, 0),
+            rotY: Math.PI / 2,
+            normal: new THREE.Vector3(1, 0, 0),
+          },
+          {
+            side: 'east' as const,
+            w: rd,
+            tex: eastTex,
+            pos: new THREE.Vector3(hw, ch * 0.5, 0),
+            rotY: -Math.PI / 2,
+            normal: new THREE.Vector3(-1, 0, 0),
+          },
+        ];
+
+        for (const ws of wallSpecs) {
+          const wGeo = new THREE.PlaneGeometry(ws.w, ch);
+          const wMat = new THREE.MeshStandardMaterial({
+            map: ws.tex,
+            roughness: 0.92,
+            metalness: 0.0,
+            envMapIntensity: 0.16,
+            side: THREE.DoubleSide,
+            clippingPlanes: [clipPlane],
+          });
+          const wMesh = new THREE.Mesh(wGeo, wMat);
+          wMesh.position.copy(ws.pos);
+          wMesh.rotation.y = ws.rotY;
+          wMesh.receiveShadow = true;
+          scene.add(wMesh);
+          walls.push({ side: ws.side, mesh: wMesh, inwardNormal: ws.normal, center: ws.pos.clone() });
+          disposeFns.push(() => {
+            wMesh.geometry.dispose();
+            wMat.dispose();
+          });
+        }
       }
 
       // Seçili OBB dikdörtgen ayak izi çerçevesi
@@ -769,6 +1015,8 @@ export const Room3DStudio: React.FC<Props> = ({
         floorMesh,
         floorMat,
         floorRgb,
+        pointMat,
+        freeFloorMesh,
         borderLines,
         groups: new Map(),
         walls,
@@ -776,7 +1024,7 @@ export const Room3DStudio: React.FC<Props> = ({
         selFrame,
         selMat,
         light,
-        envTex: envInfo.env,
+        envTex,
         gltfCache: new Map(),
         loadingKeys: new Set(),
         disposeFns,
@@ -822,7 +1070,7 @@ export const Room3DStudio: React.FC<Props> = ({
           selFrame.position.set(sel.x, 0.007, sel.z);
           selFrame.rotation.set(0, sel.rot, 0);
           selFrame.scale.set(sel.halfW + 0.025, 1, sel.halfD + 0.025);
-          selMat.color.setHex(hitObstacleRef.current ? 0xdc2626 : 0x18181b);
+          selMat.color.setHex(hitObstacleRef.current ? 0xdc2626 : scannedRoomRef.current ? 0xf4f4f5 : 0x18181b);
         } else {
           selFrame.visible = false;
         }
@@ -897,10 +1145,10 @@ export const Room3DStudio: React.FC<Props> = ({
   const switchFloorStyle = useCallback(async (kind: FloorSurfaceKind) => {
     setFloorStyle(kind);
     const s = sceneRef.current;
-    if (!s) return;
+    if (!s || !s.floorMat || !s.floorRgb) return;
     const texUrl = buildCustomFloorTexture(kind, s.floorRgb);
     const newTex = await loadThreeTexture(texUrl);
-    if (!alive.current || !sceneRef.current) {
+    if (!alive.current || !sceneRef.current || !sceneRef.current.floorMat) {
       newTex.dispose();
       return;
     }
@@ -929,14 +1177,15 @@ export const Room3DStudio: React.FC<Props> = ({
   // ---- Serbest 3D / Kuşbakışı Kamera Modu ----
   useEffect(() => {
     const s = sceneRef.current;
-    if (!s || !roomData || step !== 'studio') return;
+    if (!s || (!roomData && !scannedRoom) || step !== 'studio') return;
 
     const rw = roomDimsRef.current.w;
     const rd = roomDimsRef.current.d;
     const ch = roomDimsRef.current.ch;
+    const bgHex = scannedRoom ? 0x18181b : 0xf4f4f5;
 
-    s.scene.background = new THREE.Color(0xf4f4f5);
-    s.renderer.setClearColor(0xf4f4f5, 1);
+    s.scene.background = new THREE.Color(bgHex);
+    s.renderer.setClearColor(bgHex, 1);
     if (hostRef.current && hostRef.current.clientWidth > 0 && hostRef.current.clientHeight > 0) {
       const nw = hostRef.current.clientWidth;
       const nh = hostRef.current.clientHeight;
@@ -957,28 +1206,43 @@ export const Room3DStudio: React.FC<Props> = ({
       s.controls.target.set(0, 0.72, 0);
     }
     s.controls.update();
-  }, [activeCamIdx, roomData, sceneReady, step]);
+  }, [activeCamIdx, roomData, scannedRoom, sceneReady, step]);
 
   // ---- Kesit düzlemi ----
   useEffect(() => {
     const s = sceneRef.current;
-    if (!s || !roomData) return;
+    if (!s || (!roomData && !scannedRoom)) return;
+    const { w: rw, d: rd, ch } = roomDimsRef.current;
 
     if (clipAxis === 'none') {
       s.clipPlane.set(new THREE.Vector3(0, -1, 0), 100);
     } else if (clipAxis === 'y') {
-      const maxH = 0.25 + (clipPct / 100) * roomData.ceilingHeightM;
+      const maxH = 0.25 + (clipPct / 100) * ch;
       s.clipPlane.set(new THREE.Vector3(0, -1, 0), maxH);
     } else if (clipAxis === 'x') {
-      const rw = roomData.roomWidthM;
       const cutoff = -rw * 0.5 + (clipPct / 100) * rw;
       s.clipPlane.set(new THREE.Vector3(-1, 0, 0), cutoff);
     } else if (clipAxis === 'z') {
-      const rd = roomData.roomDepthM;
       const cutoff = -rd * 0.5 + (clipPct / 100) * rd;
       s.clipPlane.set(new THREE.Vector3(0, 0, -1), cutoff);
     }
-  }, [clipAxis, clipPct, roomData, sceneReady]);
+  }, [clipAxis, clipPct, roomData, scannedRoom, sceneReady]);
+
+  // ---- Nokta Boyutu & Boş Zemin Vurgusu Canlı Güncellemesi ----
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (s?.pointMat) {
+      s.pointMat.size = pointSize;
+      s.pointMat.needsUpdate = true;
+    }
+  }, [pointSize, sceneReady]);
+
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (s?.freeFloorMesh) {
+      s.freeFloorMesh.visible = showFreeFloor;
+    }
+  }, [showFreeFloor, sceneReady]);
 
   // ---- Tüm Eşyaları (CAD Mobilyalar + Taramadan Gelen Hareketli Eşyalar) Senkronize Et ----
   useEffect(() => {
@@ -1170,7 +1434,7 @@ export const Room3DStudio: React.FC<Props> = ({
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!drag.current || !roomData) return;
+    if (!drag.current || (!roomData && !scannedRoomRef.current)) return;
     const fh = floorRayHit(e.clientX, e.clientY);
     if (!fh) return;
 
@@ -1181,7 +1445,10 @@ export const Room3DStudio: React.FC<Props> = ({
     const rawX = drag.current.px + (fh.x - drag.current.hx);
     const rawZ = drag.current.pz + (fh.z - drag.current.hz);
     const { w: rw, d: rd } = roomDimsRef.current;
-    const res = resolveMoveOBB(toOBB(cur), rawX, rawZ, getOtherOBBs(did), rw, rd);
+    const sr = scannedRoomRef.current;
+    const res = sr
+      ? resolveMoveInScannedRoom(toOBB(cur), rawX, rawZ, getOtherOBBs(did), sr)
+      : resolveMoveOBB(toOBB(cur), rawX, rawZ, getOtherOBBs(did), rw, rd);
 
     hitObstacleRef.current = res.hitObstacle;
     const nextList = itemsRef.current.map((it) => (it.id === did ? { ...it, x: res.x, z: res.z } : it));
@@ -1209,9 +1476,12 @@ export const Room3DStudio: React.FC<Props> = ({
 
     const nextRot = cur.rot + (deg * Math.PI) / 180;
     const { w: rw, d: rd } = roomDimsRef.current;
-    const res = resolveRotateOBB(toOBB(cur), nextRot, getOtherOBBs(sid), rw, rd);
+    const sr = scannedRoomRef.current;
+    const res = sr
+      ? resolveRotateInScannedRoom(toOBB(cur), nextRot, getOtherOBBs(sid), sr)
+      : resolveRotateOBB(toOBB(cur), nextRot, getOtherOBBs(sid), rw, rd);
     if (!res.ok) {
-      showToast('Çevredeki eşyalar veya duvar nedeniyle burada döndürülemiyor');
+      showToast('Mevcut eşyalar veya duvar nedeniyle burada döndürülemiyor');
       return;
     }
 
@@ -1241,19 +1511,24 @@ export const Room3DStudio: React.FC<Props> = ({
     setEmptyRoom(true);
     selectedIdRef.current = null;
     setSelectedId(null);
-    showToast('Oda boşaltıldı');
+    showToast('Eklenen mobilyalar kaldırıldı');
   };
 
   const addProductAtPoint = (prod: Product, targetX?: number, targetZ?: number): boolean => {
     const { halfW, halfD } = parseProductFootprintM(prod.dimensionsCm);
     const { w: rw, d: rd } = roomDimsRef.current;
-    const baseXZ: [number, number] =
+    const sr = scannedRoomRef.current;
+    const baseXZ: [number, number] | undefined =
       targetX !== undefined && targetZ !== undefined
         ? [targetX, targetZ]
+        : sr
+        ? sr.spawnXZ
         : roomData?.spawnXZ || [0, 0];
-    const pos = findOpenSpawnPosition(halfW, halfD, 0, getOtherOBBs('__none__'), rw, rd, baseXZ);
+    const pos = sr
+      ? findOpenSpawnInScannedRoom(halfW, halfD, getOtherOBBs('__none__'), sr, baseXZ)
+      : findOpenSpawnPosition(halfW, halfD, 0, getOtherOBBs('__none__'), rw, rd, baseXZ);
     if (!pos) {
-      showToast(`Odada bu ürün (${prod.dimensionsCm}) için yeterli boş alan kalmadı`);
+      showToast(`Odada bu ürün (${prod.dimensionsCm}) için yeterli boş zemin bulunamadı`);
       return false;
     }
 
@@ -1337,23 +1612,22 @@ export const Room3DStudio: React.FC<Props> = ({
         const { halfW, halfD } = parseProductFootprintM(prod.dimensionsCm);
         const { w: rw, d: rd } = roomDimsRef.current;
         const others = getOtherOBBs(sid);
+        const sr = scannedRoomRef.current;
         let nx = cur.x;
         let nz = cur.z;
         let nrot = cur.rot;
 
-        const rotFit = resolveRotateOBB(
-          { id: sid, x: cur.x, z: cur.z, rot: cur.rot, halfW, halfD },
-          cur.rot,
-          others,
-          rw,
-          rd
-        );
+        const rotFit = sr
+          ? resolveRotateInScannedRoom({ id: sid, x: cur.x, z: cur.z, rot: cur.rot, halfW, halfD }, cur.rot, others, sr)
+          : resolveRotateOBB({ id: sid, x: cur.x, z: cur.z, rot: cur.rot, halfW, halfD }, cur.rot, others, rw, rd);
         if (rotFit.ok) {
           nx = rotFit.x;
           nz = rotFit.z;
           nrot = rotFit.rot;
         } else {
-          const openFit = findOpenSpawnPosition(halfW, halfD, cur.rot, others, rw, rd, [cur.x, cur.z]);
+          const openFit = sr
+            ? findOpenSpawnInScannedRoom(halfW, halfD, others, sr, [cur.x, cur.z])
+            : findOpenSpawnPosition(halfW, halfD, cur.rot, others, rw, rd, [cur.x, cur.z]);
           if (!openFit) {
             showToast(`Bu ürün (${prod.dimensionsCm}) seçili alana sığmıyor`);
             return;
@@ -1393,7 +1667,7 @@ export const Room3DStudio: React.FC<Props> = ({
 
   const saveSnapshot = async () => {
     const s = sceneRef.current;
-    if (!s || !roomData) return;
+    if (!s || (!roomData && !scannedRoom)) return;
     setSaving(true);
     try {
       const prevFrame = s.selFrame.visible;
@@ -1427,6 +1701,11 @@ export const Room3DStudio: React.FC<Props> = ({
     return true;
   });
 
+  const activePlan = getActivePlan(memberState);
+  const remainingTrials = Math.max(0, activePlan.perCustomerLimit - memberState.customerUsedScans);
+  const gpuReady = Boolean(serverEnvConfigured || (memberState.runpodEndpointId && memberState.runpodApiKey));
+  const activeFrameCount = captureMode === 'video' ? videoFrames.length : views.length;
+
   return (
     <div className="fixed inset-0 h-[100dvh] z-50 bg-zinc-950 text-white flex flex-col">
       <header className="h-14 px-3 flex items-center justify-between gap-2 border-b border-zinc-800 shrink-0">
@@ -1437,16 +1716,20 @@ export const Room3DStudio: React.FC<Props> = ({
 
         <div className="min-w-0 text-center">
           <p className="text-xs font-bold truncate">
-            {step === 'studio' && roomData
+            {step === 'studio' && scannedRoom
+              ? `Gerçek 3D Oda (${(scannedRoom.bounds.halfW * 2).toFixed(1)} × ${(scannedRoom.bounds.halfD * 2).toFixed(1)} m)`
+              : step === 'studio' && roomData
               ? `3D Oda (${roomData.roomWidthM.toFixed(1)} × ${roomData.roomDepthM.toFixed(1)} m)`
-              : '3D Oda Tasarım Stüdyosu'}
+              : 'Gerçek 3D Oda Tarama Stüdyosu'}
           </p>
           <p className="text-[10px] text-zinc-400 font-mono truncate">
             {selectedItem
               ? `${selectedItem.label} • ${selectedItem.dimensionsCm}`
+              : step === 'studio' && scannedRoom
+              ? `${visibleItems.length} mobilya • ${scannedRoom.pointCount.toLocaleString('tr-TR')} 3D nokta • Çarpışma korumalı`
               : step === 'studio'
               ? `${visibleItems.length} ürün odada • Çarpışma koruması açık`
-              : 'Fotoğraf çekin veya boş oda seçin'}
+              : 'Video / foto çekin veya boş oda seçin'}
           </p>
         </div>
 
@@ -1473,118 +1756,292 @@ export const Room3DStudio: React.FC<Props> = ({
               </div>
             )}
 
-            <div className="space-y-3 border border-zinc-800 bg-zinc-900/70 rounded-lg p-4">
-              <div className="space-y-1 text-center">
-                <h2 className="text-base font-bold text-white">
-                  Odanızı 4–5 Farklı Açıdan Çekin (3D Mini-Map Simülasyonu)
-                </h2>
-                <p className="text-xs text-zinc-400">
-                  Her fotoğrafı bir duvarın ortasında durup karşı duvara doğru, telefon göz hizasında ve zemin görünecek şekilde çekin; saat yönünde ilerleyin. Sıra, masa, sandalye ve koltuk gibi mevcut eşyalar tespit edilip 3D odaya yerleştirilir, siz de boş alanlara yeni mobilya deneyebilirsiniz.
-                </p>
-              </div>
-
-              {/* 4 Cephe + Ek Açılar (4–8 Fotoğraf) Kılavuz Gridi */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {Array.from({ length: Math.min(MAX_VIEWS, Math.max(4, views.length + (views.length < MAX_VIEWS ? 1 : 0))) }).map(
-                  (_, idx) => {
-                    const view = views[idx];
-                    const slotLabels = [
-                      '1. Karşı Cephe',
-                      '2. Sağ Cephe',
-                      '3. Arka Cephe',
-                      '4. Sol Cephe',
-                    ];
-                    const slotTitle = idx < slotLabels.length ? slotLabels[idx] : `${idx + 1}. Ek Açı`;
-                    if (view) {
-                      return (
-                        <div
-                          key={view.id}
-                          className="relative aspect-[4/3] bg-zinc-950 border border-emerald-500/60 rounded overflow-hidden"
-                        >
-                          <img src={view.dataUrl} alt={slotTitle} className="w-full h-full object-cover" />
-                          <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/80 text-[9px] font-mono rounded text-white">
-                            {idx + 1}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setViews((prev) => prev.filter((item) => item.id !== view.id))}
-                            className="absolute top-1 right-1 w-5 h-5 bg-black/80 rounded-full flex items-center justify-center text-white"
-                            aria-label="Sil"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      );
-                    }
-                    return (
-                      <label
-                        key={`slot-${idx}`}
-                        className="relative overflow-hidden aspect-[4/3] border border-dashed border-zinc-700 hover:border-white bg-zinc-950/70 rounded flex flex-col items-center justify-center p-1.5 text-center cursor-pointer"
-                      >
-                        <Camera className="w-4 h-4 text-zinc-400 mb-1" />
-                        <span className="text-[10px] font-semibold text-zinc-300 leading-tight">
-                          + {slotTitle}
-                        </span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                          onChange={(e) => {
-                            addFiles(e.target.files);
-                            e.currentTarget.value = '';
-                          }}
-                        />
-                      </label>
-                    );
-                  }
+            {/* Kota & Serverless GPU Durum Çubuğu */}
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 border border-zinc-800 bg-zinc-900/90 rounded-lg text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-400">Deneme Hakkı:</span>
+                <span className={`font-mono font-bold ${remainingTrials > 0 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                  {remainingTrials} / {activePlan.perCustomerLimit}
+                </span>
+                {remainingTrials < activePlan.perCustomerLimit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMemberState(resetCustomerTrials());
+                      showToast('Müşteri deneme sayacı sıfırlandı');
+                    }}
+                    className="underline text-zinc-300 hover:text-white"
+                  >
+                    Sıfırla
+                  </button>
                 )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <label className="relative overflow-hidden py-3.5 px-3 bg-white text-zinc-950 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer">
-                  <Camera className="w-4 h-4" />
-                  <span>Kamera ile Açı Çek ({views.length}/8)</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    onChange={(e) => {
-                      addFiles(e.target.files);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                </label>
-
-                <label className="relative overflow-hidden py-3.5 px-3 border border-zinc-700 hover:border-white text-zinc-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer">
-                  <ImageIcon className="w-4 h-4" />
-                  <span>Galeriden 4–5+ Seç</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    onChange={(e) => {
-                      addFiles(e.target.files);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                </label>
               </div>
 
               <button
                 type="button"
-                onClick={startReconstruction}
-                disabled={views.length < 4 || addingPhotos}
+                onClick={() => setShowQuickRunpod((v) => !v)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded border font-semibold ${
+                  gpuReady
+                    ? 'border-emerald-700/70 bg-emerald-950/40 text-emerald-300'
+                    : 'border-amber-700/70 bg-amber-950/40 text-amber-200'
+                }`}
+              >
+                <Server className="w-3 h-3" />
+                <span>{gpuReady ? 'RunPod Hazır (İstek Başı)' : 'RunPod Bağla'}</span>
+              </button>
+            </div>
+
+            {showQuickRunpod && (
+              <div className="p-3.5 border border-zinc-700 bg-zinc-900 rounded-lg space-y-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white">RunPod Serverless Bağlantısı (İstek Başı Ödeme)</span>
+                  <button type="button" onClick={() => setShowQuickRunpod(false)} className="text-zinc-400 hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Bekleyen GPU ücreti ödenmez; sadece tarama yapılan saniye faturalanır (~0.01–0.05 USD). Vercel Ortam Değişkenlerine eklediğinizde tüm telefonlar otomatik bağlanır.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    value={quickEndpoint}
+                    onChange={(e) => setQuickEndpoint(e.target.value)}
+                    placeholder="Endpoint ID (örn: abc123xyz)"
+                    className="px-2.5 py-2 bg-zinc-950 border border-zinc-700 rounded text-xs font-mono text-white"
+                  />
+                  <input
+                    type="password"
+                    value={quickApiKey}
+                    onChange={(e) => setQuickApiKey(e.target.value)}
+                    placeholder="RunPod API Key (rpa_...)"
+                    className="px-2.5 py-2 bg-zinc-950 border border-zinc-700 rounded text-xs font-mono text-white"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={quickTier}
+                    onChange={(e) => setQuickTier(e.target.value as GpuTierId)}
+                    className="px-2.5 py-2 bg-zinc-950 border border-zinc-700 rounded text-xs text-white"
+                  >
+                    {Object.values(GPU_TIERS).map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name} ({g.vram})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = updateRunpodCredentials(quickEndpoint, quickApiKey, quickTier);
+                      setMemberState(next);
+                      setShowQuickRunpod(false);
+                      showToast('RunPod Serverless bağlantısı kaydedildi');
+                    }}
+                    className="flex-1 py-2 bg-white text-zinc-950 font-bold rounded text-xs"
+                  >
+                    Kaydet ve Bağlan
+                  </button>
+                  {onOpenServerSettings && (
+                    <button
+                      type="button"
+                      onClick={onOpenServerSettings}
+                      className="px-2.5 py-2 border border-zinc-700 rounded text-[11px] text-zinc-300 hover:text-white"
+                    >
+                      Ayarlar
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3 border border-zinc-800 bg-zinc-900/70 rounded-lg p-4">
+              <div className="space-y-1 text-center">
+                <h2 className="text-base font-bold text-white">
+                  Odanızın Gerçek 3D Simülasyonunu Çıkarın
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Mevcut koltuk, masa, sıra ve duvarlar fotoğraftaki görüntüsüyle gerçek 3D&apos;ye dönüşür; mobilyaları yalnızca gerçek boş alanlara koyabilirsiniz.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 border border-zinc-800 bg-zinc-950 rounded-lg p-1 gap-1 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setCaptureMode('video')}
+                  className={`py-2 rounded flex items-center justify-center gap-1.5 transition ${
+                    captureMode === 'video' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  <span>15–20 sn Video (Önerilen)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaptureMode('photos')}
+                  className={`py-2 rounded flex items-center justify-center gap-1.5 transition ${
+                    captureMode === 'photos' ? 'bg-white text-zinc-950' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>4–16 Fotoğraf</span>
+                </button>
+              </div>
+
+              {captureMode === 'video' ? (
+                <div className="space-y-3">
+                  <label className="relative overflow-hidden border border-dashed border-zinc-700 hover:border-white bg-zinc-950/75 rounded-lg p-5 flex flex-col items-center justify-center gap-2 cursor-pointer text-center">
+                    <Video className="w-6 h-6 text-emerald-400" />
+                    <span className="text-xs font-bold text-white">
+                      {extractPct !== null
+                        ? `Video kareleri çıkarılıyor (%${extractPct})...`
+                        : videoFrames.length > 0
+                        ? `${videoFrames.length} kare hazır — değiştirmek için tıklayın`
+                        : 'Oda Videosu Çek veya Seç (MP4 / MOV)'}
+                    </span>
+                    <span className="text-[11px] text-zinc-400">
+                      Telefonu göz hizasında tutup odanın içinde yavaşça 360° dönerek 15–20 saniyelik video çekin; tarayıcı en iyi ~24 kareyi seçip küçültür.
+                    </span>
+                    <input
+                      type="file"
+                      accept="video/*"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        e.currentTarget.value = '';
+                        handleVideoUpload(f);
+                      }}
+                    />
+                  </label>
+
+                  {videoFrames.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                        <span>Çıkarılan Kareler ({videoFrames.length} adet)</span>
+                        <button
+                          type="button"
+                          onClick={() => setVideoFrames([])}
+                          className="text-red-300 hover:text-red-200 font-semibold"
+                        >
+                          Temizle
+                        </button>
+                      </div>
+                      <div className="flex gap-1.5 overflow-x-auto pb-1">
+                        {videoFrames.map((src, i) => (
+                          <img
+                            key={`vf-${i}`}
+                            src={src}
+                            alt={`Kare ${i + 1}`}
+                            className="w-16 h-12 object-cover rounded border border-zinc-800 shrink-0"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {Array.from({
+                      length: Math.min(MAX_VIEWS, Math.max(4, views.length + (views.length < MAX_VIEWS ? 1 : 0))),
+                    }).map((_, idx) => {
+                      const view = views[idx];
+                      const slotLabels = ['1. Açı', '2. Açı', '3. Açı', '4. Açı'];
+                      const slotTitle = idx < slotLabels.length ? slotLabels[idx] : `${idx + 1}. Açı`;
+                      if (view) {
+                        return (
+                          <div
+                            key={view.id}
+                            className="relative aspect-[4/3] bg-zinc-950 border border-emerald-500/60 rounded overflow-hidden"
+                          >
+                            <img src={view.dataUrl} alt={slotTitle} className="w-full h-full object-cover" />
+                            <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/80 text-[9px] font-mono rounded text-white">
+                              {idx + 1}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setViews((prev) => prev.filter((item) => item.id !== view.id))}
+                              className="absolute top-1 right-1 w-5 h-5 bg-black/80 rounded-full flex items-center justify-center text-white"
+                              aria-label="Sil"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        <label
+                          key={`slot-${idx}`}
+                          className="relative overflow-hidden aspect-[4/3] border border-dashed border-zinc-700 hover:border-white bg-zinc-950/70 rounded flex flex-col items-center justify-center p-1.5 text-center cursor-pointer"
+                        >
+                          <Camera className="w-4 h-4 text-zinc-400 mb-1" />
+                          <span className="text-[10px] font-semibold text-zinc-300 leading-tight">
+                            + {slotTitle}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                            onChange={(e) => {
+                              addFiles(e.target.files);
+                              e.currentTarget.value = '';
+                            }}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="relative overflow-hidden py-3 px-3 bg-white text-zinc-950 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer">
+                      <Camera className="w-4 h-4" />
+                      <span>Kamera ({views.length}/{MAX_VIEWS})</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        onChange={(e) => {
+                          addFiles(e.target.files);
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+
+                    <label className="relative overflow-hidden py-3 px-3 border border-zinc-700 hover:border-white text-zinc-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer">
+                      <ImageIcon className="w-4 h-4" />
+                      <span>Galeriden Çoklu Seç</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        onChange={(e) => {
+                          addFiles(e.target.files);
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={startGpuScan}
+                disabled={activeFrameCount < 4 || extractPct !== null || addingPhotos}
                 className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2"
               >
-                {addingPhotos ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {extractPct !== null || addingPhotos ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 <span>
-                  {addingPhotos
+                  {extractPct !== null
+                    ? `Video İşleniyor (%${extractPct})...`
+                    : addingPhotos
                     ? 'Fotoğraflar hazırlanıyor...'
-                    : views.length < 4
-                    ? `En Az 4 Fotoğraf Ekleyin (${views.length}/4 Tamamlandı)`
-                    : `Odamın 3D Mini-Map Simülasyonunu Kur (${views.length} Fotoğraf)`}
+                    : activeFrameCount < 4
+                    ? captureMode === 'video'
+                      ? 'Devam Etmek İçin 15–20 sn Oda Videosu Seçin'
+                      : `En Az 4 Fotoğraf Ekleyin (${activeFrameCount}/4)`
+                    : `Gerçek 3D Odamı Oluştur (${activeFrameCount} Kare • Serverless GPU)`}
                 </span>
               </button>
             </div>
@@ -1665,7 +2122,9 @@ export const Room3DStudio: React.FC<Props> = ({
       {step === 'reconstructing' && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
           <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
-          <p className="text-sm font-semibold">{views.length} açı birleştirilip 3D oda kuruluyor...</p>
+          <p className="text-sm font-semibold">
+            {Math.max(activeFrameCount, 4)} kare birleştirilip gerçek 3D oda kuruluyor...
+          </p>
           <p className="text-xs text-zinc-400 max-w-xs">{reconstructMsg}</p>
         </div>
       )}
@@ -1685,7 +2144,7 @@ export const Room3DStudio: React.FC<Props> = ({
         </div>
       )}
 
-      {step === 'studio' && roomData && (
+      {step === 'studio' && (roomData || scannedRoom) && (
         <>
           {/* Üst Kamera, Mini-Map & Oda Ölçü Sekmeleri */}
           <div className="bg-zinc-900 border-b border-zinc-800 px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
@@ -1715,33 +2174,68 @@ export const Room3DStudio: React.FC<Props> = ({
               <span>Mini-Map</span>
             </button>
 
-            {roomData.cameras.map((cam) => (
-              <button
-                key={cam.index}
-                onClick={() => focusWallAngle(cam.index)}
-                className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                  previewPhotoIdx === cam.index ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-300'
-                }`}
-              >
-                {cam.label}
-              </button>
-            ))}
+            {scannedRoom ? (
+              <>
+                <button
+                  onClick={() => setShowFreeFloor((v) => !v)}
+                  className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                    showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
+                  }`}
+                >
+                  Boş Alanlar ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)} m²)
+                </button>
+                <span className="h-4 w-px bg-zinc-700 mx-1 shrink-0" />
+                {[
+                  { label: 'Nokta: İnce', v: 0.028 },
+                  { label: 'Dengeli', v: 0.042 },
+                  { label: 'Dolgun', v: 0.062 },
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    onClick={() => setPointSize(opt.v)}
+                    className={`px-2 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                      Math.abs(pointSize - opt.v) < 0.005
+                        ? 'bg-white text-zinc-950'
+                        : 'bg-zinc-800 text-zinc-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </>
+            ) : (
+              roomData && (
+                <>
+                  {roomData.cameras.map((cam) => (
+                    <button
+                      key={cam.index}
+                      onClick={() => focusWallAngle(cam.index)}
+                      className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                        previewPhotoIdx === cam.index ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-300'
+                      }`}
+                    >
+                      {cam.label}
+                    </button>
+                  ))}
 
-            <span className="h-4 w-px bg-zinc-700 mx-1 shrink-0" />
-            <button
-              onClick={() => {
-                setShowClipBar(false);
-                setShowSizeBar((v) => !v);
-              }}
-              className={`px-2.5 py-1 rounded font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                showSizeBar ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-200'
-              }`}
-            >
-              <Ruler className="w-3 h-3" />
-              <span>
-                Ölçü &amp; Zemin: {roomData.roomWidthM.toFixed(1)}×{roomData.roomDepthM.toFixed(1)}m
-              </span>
-            </button>
+                  <span className="h-4 w-px bg-zinc-700 mx-1 shrink-0" />
+                  <button
+                    onClick={() => {
+                      setShowClipBar(false);
+                      setShowSizeBar((v) => !v);
+                    }}
+                    className={`px-2.5 py-1 rounded font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                      showSizeBar ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-200'
+                    }`}
+                  >
+                    <Ruler className="w-3 h-3" />
+                    <span>
+                      Ölçü &amp; Zemin: {roomData.roomWidthM.toFixed(1)}×{roomData.roomDepthM.toFixed(1)}m
+                    </span>
+                  </button>
+                </>
+              )
+            )}
           </div>
 
           {/* 3D Zemin Simülasyonu & İnteraktif 2D Mini-Map */}
@@ -1758,7 +2252,7 @@ export const Room3DStudio: React.FC<Props> = ({
             />
 
             {/* Açılı Referans Fotoğraf Küçük Penceresi (3D zemini bozmadan) */}
-            {previewPhotoIdx !== null && roomData.cameras[previewPhotoIdx] && (
+            {previewPhotoIdx !== null && roomData && roomData.cameras[previewPhotoIdx] && (
               <div className="absolute top-3 left-3 w-32 sm:w-44 bg-zinc-950/95 border border-zinc-700 rounded-lg overflow-hidden shadow-2xl z-20">
                 <div className="flex items-center justify-between px-2 py-1 border-b border-zinc-800 text-[10px] font-semibold text-zinc-200">
                   <span className="truncate">{roomData.cameras[previewPhotoIdx].label}</span>
@@ -1793,15 +2287,15 @@ export const Room3DStudio: React.FC<Props> = ({
                   </button>
                 </div>
                 {(() => {
-                  const rw = roomData.roomWidthM;
-                  const rd = roomData.roomDepthM;
+                  const rw = scannedRoom ? scannedRoom.bounds.halfW * 2 : roomData!.roomWidthM;
+                  const rd = scannedRoom ? scannedRoom.bounds.halfD * 2 : roomData!.roomDepthM;
                   const padX = rw * 0.58;
                   const padZ = rd * 0.58;
                   const gxStart = -Math.floor(rw * 0.5);
                   const gxEnd = Math.floor(rw * 0.5);
                   const gzStart = -Math.floor(rd * 0.5);
                   const gzEnd = Math.floor(rd * 0.5);
-                  const totalCams = Math.max(4, roomData.cameras.length);
+                  const totalCams = Math.max(4, roomData?.cameras.length || 4);
 
                   return (
                     <svg viewBox={`${-padX} ${-padZ} ${padX * 2} ${padZ * 2}`} className="w-full h-auto block">
@@ -1814,6 +2308,18 @@ export const Room3DStudio: React.FC<Props> = ({
                         stroke="#71717a"
                         strokeWidth={0.07}
                       />
+                      {scannedRoom && miniMapGridUrl && (
+                        <image
+                          href={miniMapGridUrl}
+                          x={-rw * 0.5}
+                          y={-rd * 0.5}
+                          width={rw}
+                          height={rd}
+                          preserveAspectRatio="none"
+                          opacity={0.9}
+                          style={{ imageRendering: 'pixelated' }}
+                        />
+                      )}
                       {Array.from({ length: Math.max(0, gxEnd - gxStart + 1) }).map((_, k) => {
                         const xLine = gxStart + k;
                         return (
@@ -1870,36 +2376,64 @@ export const Room3DStudio: React.FC<Props> = ({
                         );
                       })}
 
-                      {roomData.cameras.map((cam) => {
-                        const yaw = (cam.index / totalCams) * Math.PI * 2;
-                        const cx = -Math.sin(yaw) * rw * 0.45;
-                        const cz = Math.cos(yaw) * rd * 0.45;
-                        const activePin = previewPhotoIdx === cam.index;
-                        return (
-                          <g
-                            key={`pin-${cam.index}`}
-                            transform={`translate(${cx}, ${cz})`}
-                            onClick={() => focusWallAngle(cam.index)}
-                            className="cursor-pointer"
-                          >
-                            <circle
-                              r={0.26}
-                              fill={activePin ? '#10b981' : '#27272a'}
-                              stroke="#ffffff"
-                              strokeWidth={0.05}
-                            />
-                            <text
-                              textAnchor="middle"
-                              dominantBaseline="central"
-                              fill="#ffffff"
-                              fontSize={0.26}
-                              fontWeight="bold"
+                      {scannedRoom
+                        ? scannedRoom.cameras.slice(0, 12).map(([cx, cy, cz], idx) => (
+                            <g
+                              key={`scan-cam-${idx}`}
+                              transform={`translate(${cx}, ${cz})`}
+                              onClick={() => {
+                                setActiveCamIdx('free');
+                                const s = sceneRef.current;
+                                if (s) {
+                                  s.camera.position.set(cx, Math.max(1.35, cy), cz);
+                                  s.controls.target.set(0, 0.55, 0);
+                                  s.controls.update();
+                                }
+                              }}
+                              className="cursor-pointer"
                             >
-                              {cam.index + 1}
-                            </text>
-                          </g>
-                        );
-                      })}
+                              <circle r={0.2} fill="#10b981" stroke="#ffffff" strokeWidth={0.04} />
+                              <text
+                                textAnchor="middle"
+                                dominantBaseline="central"
+                                fill="#ffffff"
+                                fontSize={0.2}
+                                fontWeight="bold"
+                              >
+                                {idx + 1}
+                              </text>
+                            </g>
+                          ))
+                        : roomData?.cameras.map((cam) => {
+                            const yaw = (cam.index / totalCams) * Math.PI * 2;
+                            const cx = -Math.sin(yaw) * rw * 0.45;
+                            const cz = Math.cos(yaw) * rd * 0.45;
+                            const activePin = previewPhotoIdx === cam.index;
+                            return (
+                              <g
+                                key={`pin-${cam.index}`}
+                                transform={`translate(${cx}, ${cz})`}
+                                onClick={() => focusWallAngle(cam.index)}
+                                className="cursor-pointer"
+                              >
+                                <circle
+                                  r={0.26}
+                                  fill={activePin ? '#10b981' : '#27272a'}
+                                  stroke="#ffffff"
+                                  strokeWidth={0.05}
+                                />
+                                <text
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill="#ffffff"
+                                  fontSize={0.26}
+                                  fontWeight="bold"
+                                >
+                                  {cam.index + 1}
+                                </text>
+                              </g>
+                            );
+                          })}
                     </svg>
                   );
                 })()}
@@ -1937,7 +2471,7 @@ export const Room3DStudio: React.FC<Props> = ({
             )}
 
             {/* Oda Ölçü & Zemin Tipi Ayarı Popover */}
-            {showSizeBar && (
+            {showSizeBar && roomData && (
               <div className="absolute top-3 left-3 right-3 sm:left-auto sm:w-80 bg-zinc-950/95 border border-zinc-700 rounded-lg p-3 space-y-3 z-20 shadow-xl">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold">Oda Ölçüleri &amp; Zemin</span>
@@ -2190,15 +2724,17 @@ export const Room3DStudio: React.FC<Props> = ({
                 <span>Odayı Kes</span>
               </button>
 
-              <button
-                onClick={() =>
-                  setWallMode((m) => (m === 'auto' ? 'all' : m === 'all' ? 'floor' : 'auto'))
-                }
-                className="flex-1 py-2 px-2 rounded-lg bg-zinc-800 text-zinc-200 font-semibold flex items-center justify-center gap-1 whitespace-nowrap"
-              >
-                <Eye className="w-3.5 h-3.5 shrink-0" />
-                <span>{wallMode === 'auto' ? 'Duvar: Akıllı' : wallMode === 'all' ? '4 Duvar' : 'Sadece Zemin'}</span>
-              </button>
+              {roomData && (
+                <button
+                  onClick={() =>
+                    setWallMode((m) => (m === 'auto' ? 'all' : m === 'all' ? 'floor' : 'auto'))
+                  }
+                  className="flex-1 py-2 px-2 rounded-lg bg-zinc-800 text-zinc-200 font-semibold flex items-center justify-center gap-1 whitespace-nowrap"
+                >
+                  <Eye className="w-3.5 h-3.5 shrink-0" />
+                  <span>{wallMode === 'auto' ? 'Duvar: Akıllı' : wallMode === 'all' ? '4 Duvar' : 'Sadece Zemin'}</span>
+                </button>
+              )}
 
               <button
                 onClick={clearRoom}
