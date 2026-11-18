@@ -6,11 +6,75 @@ Sadece numpy kullanır (harici bağımlılık gerektirmez ve yerelde test edileb
 """
 
 import base64
+import gzip
+import struct
 
 import numpy as np
 
 VOXEL_M = 0.02
 CELL_M = 0.10
+SPZ_MAGIC = 0x5053474E  # "NGSP"
+SPZ_SH_C0 = 0.28209479177387814
+SPZ_COLOR_SCALE = 0.15
+
+
+def pack_spz_v2(
+    positions: np.ndarray,
+    log_scales: np.ndarray,
+    quats_wxyz: np.ndarray,
+    alphas: np.ndarray,
+    rgb: np.ndarray,
+    antialiased: bool = True,
+) -> bytes:
+    """
+    RUB koordinatlı 3D Gaussian bulutunu Niantic SPZ v2 (gzip) ikili biçimine sıkıştırır.
+    Spark (@sparkjsdev/spark) ve tüm standart SPZ v2 okuyucularıyla bit-düzeyinde uyumludur.
+    """
+    n = int(len(positions))
+    flags = 1 if antialiased else 0
+    header = struct.pack("<IIIBBBB", SPZ_MAGIC, 2, n, 0, 12, flags, 0)
+
+    # 1. Positions: 24-bit işaretli sabit nokta (1/4096 m = 0.24 mm hassasiyet)
+    pos_q = np.clip(np.round(np.asarray(positions, dtype=np.float64) * 4096.0), -8_388_607, 8_388_607).astype(np.int32)
+    p_u = pos_q.astype(np.uint32).reshape(-1)
+    pos_bytes = np.empty((len(p_u), 3), dtype=np.uint8)
+    pos_bytes[:, 0] = p_u & 0xFF
+    pos_bytes[:, 1] = (p_u >> 8) & 0xFF
+    pos_bytes[:, 2] = (p_u >> 16) & 0xFF
+
+    # 2. Alphas: [0, 1] -> uint8
+    alpha_bytes = np.clip(np.round(np.asarray(alphas, dtype=np.float32) * 255.0), 0, 255).astype(np.uint8)
+
+    # 3. Colors (DC): Spark decoder rgb = (byte/255 - 0.5) * (SH_C0 / 0.15) + 0.5
+    rgb_f = np.asarray(rgb, dtype=np.float32)
+    color_bytes = np.clip(
+        np.round(((rgb_f - 0.5) * (SPZ_COLOR_SCALE / SPZ_SH_C0) + 0.5) * 255.0),
+        0,
+        255,
+    ).astype(np.uint8)
+
+    # 4. Scales: log-scale -> uint8 ((log_s + 10) * 16)
+    scale_bytes = np.clip(np.round((np.asarray(log_scales, dtype=np.float32) + 10.0) * 16.0), 0, 255).astype(np.uint8)
+
+    # 5. Rotations (SPZ v2): normalize [w,x,y,z], w >= 0 yap, [x,y,z] -> uint8 (v*127.5 + 127.5)
+    q = np.asarray(quats_wxyz, dtype=np.float32).copy()
+    q_norm = np.linalg.norm(q, axis=1, keepdims=True)
+    q = np.divide(q, np.maximum(q_norm, 1e-8))
+    flip = q[:, 0] < 0.0
+    q[flip] = -q[flip]
+    rot_bytes = np.clip(np.round(q[:, 1:4] * 127.5 + 127.5), 0, 255).astype(np.uint8)
+
+    raw = b"".join(
+        [
+            header,
+            np.ascontiguousarray(pos_bytes).tobytes(),
+            np.ascontiguousarray(alpha_bytes).tobytes(),
+            np.ascontiguousarray(color_bytes).tobytes(),
+            np.ascontiguousarray(scale_bytes).tobytes(),
+            np.ascontiguousarray(rot_bytes).tobytes(),
+        ]
+    )
+    return gzip.compress(raw, compresslevel=6)
 
 
 def _b64(arr: np.ndarray) -> str:
@@ -693,7 +757,7 @@ def _build_keyframes(views_cam: list[dict], max_kf: int = 8) -> list[dict]:
     return keyframes
 
 
-def build_room_payload(views_data: list[dict]) -> dict:
+def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
     rng = np.random.default_rng(7)
     if not views_data:
         return {"ok": False, "error": "Görüntü verisi bulunamadı."}
@@ -821,39 +885,102 @@ def build_room_payload(views_data: list[dict]) -> dict:
             }
         )
 
-    # Katı TSDF + Surface Nets yüzeyini çıkar; uint16 tepe sınırına (<65000) uymak için vokseli ayarla
-    vox = float(np.clip(max(2.0 * half_w, 2.0 * half_d) / 150.0, 0.032, 0.052))
-    verts, vert_colors, faces = None, None, None
-    for _ in range(3):
-        v_out, c_out, f_out = _extract_tsdf_surface(
-            P_surf, C_surf, views_cam, grid, obst_cnt, half_w, half_d, ceil, vox
-        )
-        if v_out is None:
-            break
-        verts, vert_colors, faces = v_out, c_out, f_out
-        if len(verts) <= 64_500 and len(faces) <= 135_000:
-            break
-        vox *= 1.25
+    # 1. Öncelik: Per-Scene 3D Gaussian Splatting (gsplat -> SPZ v2) — fotogerçekçi tam 3D oda
+    splat_spz_b64 = None
+    splat_count = 0
+    gs_sec = 0.0
+    gs_error = None
+    if enable_gs and len(views_cam) >= 4:
+        try:
+            from splat_trainer import train_room_splats
 
-    mesh_payload = None
-    if verts is not None and faces is not None and len(verts) <= 65_535:
-        out_P = verts
-        out_C = vert_colors
-        mesh_payload = {
-            "faceCount": int(len(faces)),
-            "faces": _b64(faces.astype(np.uint16)),
-        }
-    else:
-        if len(P_surf) > 120_000:
-            sel = rng.choice(len(P_surf), 120_000, replace=False)
-            out_P, out_C = P_surf[sel], C_surf[sel]
-        else:
-            out_P, out_C = P_surf, C_surf
+            gs_out = train_room_splats(
+                P_init=P_surf,
+                C_init=C_surf,
+                views_cam=views_cam,
+                half_w=half_w,
+                half_d=half_d,
+                ceil_cut=ceil_cut,
+                max_splats=110_000,
+                num_steps=1100,
+            )
+            spz_bytes = pack_spz_v2(
+                positions=gs_out["positions"],
+                log_scales=gs_out["log_scales"],
+                quats_wxyz=gs_out["quats_wxyz"],
+                alphas=gs_out["alphas"],
+                rgb=gs_out["rgb"],
+                antialiased=True,
+            )
+            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.35 MB (~3.1 MB base64)
+            if len(spz_bytes) > 2_350_000:
+                keep_n = max(30_000, int(len(gs_out["positions"]) * (2_150_000 / len(spz_bytes))))
+                score = gs_out["alphas"] * np.power(
+                    np.maximum(1e-9, np.exp(gs_out["log_scales"]).prod(axis=1)), 0.15
+                )
+                top_idx = np.argpartition(score, -keep_n)[-keep_n:]
+                spz_bytes = pack_spz_v2(
+                    positions=gs_out["positions"][top_idx],
+                    log_scales=gs_out["log_scales"][top_idx],
+                    quats_wxyz=gs_out["quats_wxyz"][top_idx],
+                    alphas=gs_out["alphas"][top_idx],
+                    rgb=gs_out["rgb"][top_idx],
+                    antialiased=True,
+                )
+                splat_count = int(len(top_idx))
+            else:
+                splat_count = int(len(gs_out["positions"]))
 
-    q = np.clip(np.round(out_P * 1000.0), -32760, 32760).astype(np.int16)
+            splat_spz_b64 = base64.b64encode(spz_bytes).decode("ascii")
+            gs_sec = float(gs_out["gs_sec"])
+            print(f"[postprocess] SPZ v2 paketlendi: {splat_count} splat, {len(spz_bytes)/1e6:.2f} MB", flush=True)
+        except Exception as exc:
+            gs_error = f"{type(exc).__name__}: {exc}"
+            print(f"[postprocess] 3DGS atlandı, TSDF yedeğine dönülüyor: {gs_error}", flush=True)
+
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
-    keyframes = _build_keyframes(views_cam, max_kf=8)
+    keyframes = _build_keyframes(views_cam, max_kf=10)
+
+    mesh_payload = None
+    vox = 0.0
+    if splat_spz_b64 is not None:
+        # 3DGS başarılı: ağır TSDF üçgenlerini göndermeye gerek yok, yanıt hızlı ve <3.5 MB kalır
+        out_P = np.zeros((0, 3), dtype=np.float64)
+        out_C = np.zeros((0, 3), dtype=np.uint8)
+        faces_count = 0
+    else:
+        # Yedek: Katı TSDF + Surface Nets yüzeyini çıkar
+        vox = float(np.clip(max(2.0 * half_w, 2.0 * half_d) / 150.0, 0.032, 0.052))
+        verts, vert_colors, faces = None, None, None
+        for _ in range(3):
+            v_out, c_out, f_out = _extract_tsdf_surface(
+                P_surf, C_surf, views_cam, grid, obst_cnt, half_w, half_d, ceil, vox
+            )
+            if v_out is None:
+                break
+            verts, vert_colors, faces = v_out, c_out, f_out
+            if len(verts) <= 64_500 and len(faces) <= 135_000:
+                break
+            vox *= 1.25
+
+        if verts is not None and faces is not None and len(verts) <= 65_535:
+            out_P = verts
+            out_C = vert_colors
+            faces_count = int(len(faces))
+            mesh_payload = {
+                "faceCount": faces_count,
+                "faces": _b64(faces.astype(np.uint16)),
+            }
+        else:
+            faces_count = 0
+            if len(P_surf) > 120_000:
+                sel = rng.choice(len(P_surf), 120_000, replace=False)
+                out_P, out_C = P_surf[sel], C_surf[sel]
+            else:
+                out_P, out_C = P_surf, C_surf
+
+    q = np.clip(np.round(out_P * 1000.0), -32760, 32760).astype(np.int16)
 
     res = {
         "ok": True,
@@ -871,11 +998,18 @@ def build_room_payload(views_data: list[dict]) -> dict:
             "scaleFix": round(scale, 3),
             "cameraHeightM": round(float(np.median(cams[:, 1])), 2),
             "freeFloorM2": round(free_m2, 1),
-            "meshFaces": int(len(faces)) if mesh_payload else 0,
+            "meshFaces": faces_count,
             "meshVerts": int(len(out_P)),
             "voxelM": round(vox, 4),
+            "splatCount": splat_count,
+            "gsSec": gs_sec,
         },
     }
+    if gs_error is not None:
+        res["stats"]["gsFallback"] = gs_error[:180]
+    if splat_spz_b64 is not None:
+        res["splatSpz"] = splat_spz_b64
+        res["splatCount"] = splat_count
     if mesh_payload is not None:
         res["mesh"] = mesh_payload
     return res

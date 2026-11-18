@@ -146,7 +146,7 @@ function captureDualFrame(
   hdCanvas: HTMLCanvasElement,
   hdCtx: CanvasRenderingContext2D
 ): { frame: PreparedScanFrame; hasSignal: boolean } {
-  const gpuDataUrl = drawCenterCropped(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.8);
+  const gpuDataUrl = drawCenterCropped(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.82);
   let hasSignal = true;
   try {
     const data = gpuCtx.getImageData(0, 0, tw, th).data;
@@ -314,7 +314,7 @@ async function extractSequentialFallback(
 
 export async function extractFramesFromVideo(
   file: File,
-  maxFrames = 20,
+  maxFrames = 32,
   _maxEdge = 518,
   onProgress?: (pct: number) => void
 ): Promise<PreparedScanFrame[]> {
@@ -384,7 +384,7 @@ export async function extractFramesFromVideo(
 
     if (Number.isFinite(video.duration) && video.duration > 0.5) {
       const duration = Math.min(60, video.duration);
-      const count = Math.min(maxFrames, Math.max(8, Math.floor(duration * 1.35)));
+      const count = Math.min(maxFrames, Math.max(12, Math.floor(duration * 1.8)));
       const startT = Math.min(0.2, duration * 0.05);
       const endT = Math.max(startT + 0.25, duration - Math.min(0.3, duration * 0.07));
 

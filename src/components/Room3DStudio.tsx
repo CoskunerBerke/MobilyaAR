@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import type { SparkRenderer } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { QRCodeSVG } from 'qrcode.react';
@@ -442,6 +443,7 @@ export const Room3DStudio: React.FC<Props> = ({
     floorRgb?: [number, number, number];
     pointMat?: THREE.PointsMaterial;
     roomSurfaceObj?: THREE.Object3D;
+    sparkRenderer?: SparkRenderer;
     occluderEntry?: { mesh: THREE.Mesh; dispose: () => void };
     freeFloorMesh?: THREE.Mesh;
     borderLines: THREE.LineSegments;
@@ -533,7 +535,7 @@ export const Room3DStudio: React.FC<Props> = ({
     if (!file) return;
     setExtractPct(0);
     try {
-      const frames = await extractFramesFromVideo(file, 20, 518, (pct) => {
+      const frames = await extractFramesFromVideo(file, 32, 518, (pct) => {
         if (alive.current) setExtractPct(pct);
       });
       if (frames.length < 4) {
@@ -682,7 +684,7 @@ export const Room3DStudio: React.FC<Props> = ({
         }
         setReconstructMsg(
           st === 'IN_PROGRESS'
-            ? `MapAnything gerçek 3D oda yüzeyini çıkarıyor (${sec} sn)...`
+            ? `MapAnything + 3D Gaussian Splatting fotogerçekçi odanızı oluşturuyor (${sec} sn)...`
             : `Serverless GPU uyanıyor / sırada (${sec} sn)...`
         );
       }
@@ -714,12 +716,15 @@ export const Room3DStudio: React.FC<Props> = ({
       setShowSizeBar(false);
       setWallMode('auto');
       setActiveCamIdx('free');
-      const initialKf = decoded.keyframes.length > 0 && hdFrames.length > 0 ? 0 : null;
+      const initialKf =
+        decoded.splatSpzBytes ? null : decoded.keyframes.length > 0 && hdFrames.length > 0 ? 0 : null;
       setActiveKeyframeIdx(initialKf);
       setPreviewPhotoIdx(null);
       setShowFreeFloor(false);
       setStep('studio');
-      const surfaceLabel = decoded.mesh
+      const surfaceLabel = decoded.splatSpzBytes
+        ? `${decoded.splatCount.toLocaleString('tr-TR')} 3D Gaussian Splat`
+        : decoded.mesh
         ? `${decoded.mesh.faceCount.toLocaleString('tr-TR')} yüzey`
         : `${decoded.pointCount.toLocaleString('tr-TR')} nokta`;
       showToast(`Gerçek 3D oda hazır (${surfaceLabel} • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`);
@@ -731,7 +736,7 @@ export const Room3DStudio: React.FC<Props> = ({
 
   // ---- 3D Oda Sahnesini Kur (Katı 3D Tarama Yüzeyi VEYA Boş Demo Oda) ----
   const setupKey = scannedRoom
-    ? `scan:${scannedRoom.pointCount}:${scannedRoom.mesh?.faceCount ?? 0}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
+    ? `scan:${scannedRoom.splatCount}:${scannedRoom.pointCount}:${scannedRoom.mesh?.faceCount ?? 0}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
     : roomData
     ? `demo:${roomData.floorTexture.slice(0, 64)}:${roomData.viewCount}`
     : '';
@@ -744,9 +749,10 @@ export const Room3DStudio: React.FC<Props> = ({
     (async () => {
       const w = host.clientWidth || window.innerWidth;
       const h = host.clientHeight || window.innerHeight - 180;
+      const hasSplat = Boolean(scannedRoom?.splatSpzBytes);
 
       const renderer = new THREE.WebGLRenderer({
-        antialias: true,
+        antialias: !hasSplat,
         alpha: true,
         preserveDrawingBuffer: true,
       });
@@ -794,6 +800,7 @@ export const Room3DStudio: React.FC<Props> = ({
       let floorRgb: [number, number, number] | undefined;
       let pointMat: THREE.PointsMaterial | undefined;
       let roomSurfaceObj: THREE.Object3D | undefined;
+      let sparkRenderer: SparkRenderer | undefined;
       let freeFloorMesh: THREE.Mesh | undefined;
       let borderLines: THREE.LineSegments;
       const walls: Array<{
@@ -818,7 +825,13 @@ export const Room3DStudio: React.FC<Props> = ({
       light.shadow.radius = 4;
 
       if (scannedRoom) {
-        const surfObj = await createScannedRoomSurfaceObject(scannedRoom, scanHdFramesRef.current, clipPlane);
+        const surfObj = await createScannedRoomSurfaceObject(
+          scannedRoom,
+          scanHdFramesRef.current,
+          clipPlane,
+          renderer,
+          scene
+        );
         if (cancelled || !alive.current) {
           surfObj.dispose();
           controls.dispose();
@@ -841,6 +854,8 @@ export const Room3DStudio: React.FC<Props> = ({
         const shadowGeo = new THREE.PlaneGeometry(rw + 4, rd + 4).rotateX(-Math.PI / 2);
         const shadowMat = new THREE.ShadowMaterial({ opacity: 0.36 });
         floorMesh = new THREE.Mesh(shadowGeo, shadowMat);
+        floorMesh.position.y = 0.004;
+        floorMesh.renderOrder = 1;
         floorMesh.receiveShadow = true;
         floorMesh.userData.isHelper = true;
         scene.add(floorMesh);
@@ -861,12 +876,18 @@ export const Room3DStudio: React.FC<Props> = ({
         });
 
         surfObj.object.visible = !initialHdMode;
+        if (surfObj.sparkRenderer) {
+          surfObj.sparkRenderer.visible = !initialHdMode;
+          sparkRenderer = surfObj.sparkRenderer;
+        }
         scene.add(surfObj.object);
         roomSurfaceObj = surfObj.object;
         pointMat = surfObj.pointMat;
         disposeFns.push(surfObj.dispose);
 
         const ffObj = createFreeFloorOverlayMesh(scannedRoom);
+        ffObj.mesh.position.y = 0.008;
+        ffObj.mesh.renderOrder = 2;
         ffObj.mesh.visible = showFreeFloorRef.current;
         scene.add(ffObj.mesh);
         freeFloorMesh = ffObj.mesh;
@@ -1054,6 +1075,7 @@ export const Room3DStudio: React.FC<Props> = ({
         floorRgb,
         pointMat,
         roomSurfaceObj,
+        sparkRenderer,
         freeFloorMesh,
         borderLines,
         groups: new Map(),
@@ -1260,6 +1282,7 @@ export const Room3DStudio: React.FC<Props> = ({
       s.scene.background = null;
       s.renderer.setClearColor(0x000000, 0);
       if (s.roomSurfaceObj) s.roomSurfaceObj.visible = false;
+      if (s.sparkRenderer) s.sparkRenderer.visible = false;
       s.borderLines.visible = false;
       s.floorMesh.visible = true;
       s.controls.enabled = false;
@@ -1284,6 +1307,7 @@ export const Room3DStudio: React.FC<Props> = ({
     s.scene.background = new THREE.Color(bgHex);
     s.renderer.setClearColor(bgHex, 1);
     if (s.roomSurfaceObj) s.roomSurfaceObj.visible = true;
+    if (s.sparkRenderer) s.sparkRenderer.visible = true;
     if (hostRef.current && hostRef.current.clientWidth > 0 && hostRef.current.clientHeight > 0) {
       const nw = hostRef.current.clientWidth;
       const nh = hostRef.current.clientHeight;
@@ -1399,14 +1423,11 @@ export const Room3DStudio: React.FC<Props> = ({
         const others = itemsRef.current
           .filter((o) => o.id !== item.id && (!o.isScanned || !emptyRoomRef.current))
           .map(toOBB);
-        const settled = resolveMoveOBB(
-          { id: item.id, x: px, z: pz, rot: prot, halfW: exactHalfW, halfD: exactHalfD },
-          px,
-          pz,
-          others,
-          rw,
-          rd
-        );
+        const sr = scannedRoomRef.current;
+        const candObb = { id: item.id, x: px, z: pz, rot: prot, halfW: exactHalfW, halfD: exactHalfD };
+        const settled = sr
+          ? resolveMoveInScannedRoom(candObb, px, pz, others, sr)
+          : resolveMoveOBB(candObb, px, pz, others, rw, rd);
         px = settled.x;
         pz = settled.z;
         const updated = itemsRef.current.map((it) =>
@@ -1845,7 +1866,9 @@ export const Room3DStudio: React.FC<Props> = ({
               ? activeKf && activeHdUrl
                 ? `${visibleItems.length} mobilya • HD Açı ${(activeKeyframeIdx ?? 0) + 1} • Derinlik & Çarpışma Korumalı`
                 : `${visibleItems.length} mobilya • ${
-                    scannedRoom.mesh
+                    scannedRoom.splatSpzBytes
+                      ? `${scannedRoom.splatCount.toLocaleString('tr-TR')} 3D Gaussian Splat`
+                      : scannedRoom.mesh
                       ? `${scannedRoom.mesh.faceCount.toLocaleString('tr-TR')} katı 3D yüzey`
                       : `${scannedRoom.pointCount.toLocaleString('tr-TR')} nokta`
                   }`
@@ -2021,7 +2044,7 @@ export const Room3DStudio: React.FC<Props> = ({
                         : 'Oda Videosu Çek veya Seç (MP4 / MOV)'}
                     </span>
                     <span className="text-[11px] text-zinc-400">
-                      Telefonu göz hizasında tutup odanın içinde yavaşça yürüyerek 15–20 saniyelik video çekin; tarayıcı en iyi ~20 kareyi seçip küçültür.
+                      Telefonu göz hizasında tutup odanın içinde yavaşça yürüyerek 15–30 saniyelik video çekin; tarayıcı en iyi ~32 kareyi seçip 3D Gaussian Splatting için hazırlar.
                     </span>
                     <input
                       type="file"
@@ -2374,7 +2397,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   ? { width: `${stageBoxSize.w}px`, height: `${stageBoxSize.h}px` }
                   : undefined
               }
-              className={`relative overflow-hidden ${activeKf && activeHdUrl ? 'shrink-0' : 'w-full h-full'}`}
+              className={`relative overflow-hidden ${activeKf && activeHdUrl && stageBoxSize ? 'shrink-0' : 'w-full h-full'}`}
             >
               {activeKf && activeHdUrl && (
                 <img

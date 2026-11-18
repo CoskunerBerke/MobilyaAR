@@ -5,3 +5,7 @@ dist/
 .env.*
 *.log
 WhatsApp Image*.jpeg
+*.mp4
+*.mov
+__pycache__/
+*.pyc

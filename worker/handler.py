@@ -114,7 +114,7 @@ def handler(job):
                 }
             )
 
-        payload = build_room_payload(views_data)
+        payload = build_room_payload(views_data, enable_gs=True)
         if payload.get("ok"):
             payload["stats"].update(
                 {
@@ -124,6 +124,12 @@ def handler(job):
                     "model": MODEL_ID,
                     "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
                 }
+            )
+            print(
+                f"[worker] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
+                f"gs={payload['stats'].get('gsSec', 0)}s splats={payload['stats'].get('splatCount', 0)} "
+                f"total={payload['stats']['totalSec']}s",
+                flush=True,
             )
         return payload
     except Exception as exc:

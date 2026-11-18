@@ -2,6 +2,12 @@ name: Build RunPod Serverless Worker
 
 on:
   workflow_dispatch:
+    inputs:
+      rebuild_gsbase:
+        description: "Force rebuild cu128-gs base image (AOT gsplat CUDA 12.8)"
+        required: false
+        default: "false"
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -17,7 +23,57 @@ permissions:
   packages: write
 
 jobs:
+  build-gsbase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether cu128-gs base needs build
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.rebuild_gsbase }}" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q "worker/Dockerfile.gsbase"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif ! docker manifest inspect ghcr.io/coskunerberke/mobilya-ar-worker:cu128-gs >/dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space on runner
+        if: steps.check.outputs.build == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af
+          df -h
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push cu128-gs base image
+        if: steps.check.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          file: ./worker/Dockerfile.gsbase
+          push: true
+          tags: |
+            ghcr.io/coskunerberke/mobilya-ar-worker:cu128-gs
+
   build-and-push:
+    needs: build-gsbase
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -40,6 +96,5 @@ jobs:
           file: ./worker/Dockerfile
           push: true
           tags: |
-            ghcr.io/coskunerberke/mobilya-ar-worker:v4
-            ghcr.io/coskunerberke/mobilya-ar-worker:v3
+            ghcr.io/coskunerberke/mobilya-ar-worker:v5
             ghcr.io/coskunerberke/mobilya-ar-worker:latest

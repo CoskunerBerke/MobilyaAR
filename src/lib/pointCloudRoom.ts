@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SparkRenderer, SplatFileType, SplatMesh } from '@sparkjsdev/spark';
 import {
   getOBBAxes,
   hasAnyCollision,
@@ -49,6 +50,8 @@ export interface ScannedRoomPayload {
   colors: string; // base64 uint8 rgb
   wallRgb?: [number, number, number];
   floorRgb?: string; // base64 uint8 gd*gw*3
+  splatSpz?: string; // base64 Niantic SPZ v2 (gzip) 3D Gaussian Splatting
+  splatCount?: number;
   mesh?: {
     faceCount: number;
     faces: string; // base64 uint16 triangle indices
@@ -74,6 +77,9 @@ export interface ScannedRoomPayload {
     meshFaces?: number;
     meshVerts?: number;
     voxelM?: number;
+    splatCount?: number;
+    gsSec?: number;
+    gsFallback?: string;
     views?: number;
     inferSec?: number;
     totalSec?: number;
@@ -89,6 +95,8 @@ export interface DecodedScannedRoom {
   srgbColors: Float32Array; // raw 0..1 sRGB vertex colors for projective shader
   wallRgb: [number, number, number];
   floorRgb?: Uint8Array;
+  splatSpzBytes?: Uint8Array;
+  splatCount: number;
   mesh?: {
     faceCount: number;
     indices: Uint16Array;
@@ -180,6 +188,8 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
   const wallRgb: [number, number, number] =
     raw.wallRgb && raw.wallRgb.length >= 3 ? [raw.wallRgb[0], raw.wallRgb[1], raw.wallRgb[2]] : [224, 218, 208];
   const floorRgb = raw.floorRgb ? decodeBase64Bytes(raw.floorRgb) : undefined;
+  const splatSpzBytes = raw.splatSpz ? decodeBase64Bytes(raw.splatSpz) : undefined;
+  const splatCount = Number(raw.splatCount || raw.stats?.splatCount || 0);
 
   return {
     pointCount: count,
@@ -188,6 +198,8 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
     srgbColors,
     wallRgb,
     floorRgb,
+    splatSpzBytes: splatSpzBytes && splatSpzBytes.byteLength > 32 ? splatSpzBytes : undefined,
+    splatCount,
     mesh,
     keyframes,
     bounds: raw.bounds,
@@ -510,11 +522,75 @@ function addUniformVertexColors(geo: THREE.BufferGeometry, rgb: [number, number,
 export async function createScannedRoomSurfaceObject(
   room: DecodedScannedRoom,
   hdFrames: string[],
-  clipPlane?: THREE.Plane
-): Promise<{ object: THREE.Object3D; pointMat?: THREE.PointsMaterial; dispose: () => void }> {
+  clipPlane?: THREE.Plane,
+  renderer?: THREE.WebGLRenderer,
+  scene?: THREE.Scene
+): Promise<{
+  object: THREE.Object3D;
+  pointMat?: THREE.PointsMaterial;
+  sparkRenderer?: SparkRenderer;
+  isSplat?: boolean;
+  dispose: () => void;
+}> {
   const disposeFns: Array<() => void> = [];
   const root = new THREE.Group();
   root.userData.isHelper = true;
+
+  // 1. Öncelik: Fotogerçekçi 3D Gaussian Splatting (SPZ v2 + SparkRenderer WebGL2)
+  if (room.splatSpzBytes && room.splatSpzBytes.byteLength > 32 && renderer && scene) {
+    try {
+      const spark = new SparkRenderer({ renderer });
+      spark.userData.isHelper = true;
+      spark.renderOrder = 0;
+      scene.add(spark);
+
+      const bytesCopy = new Uint8Array(room.splatSpzBytes.byteLength);
+      bytesCopy.set(room.splatSpzBytes);
+
+      const splatMesh = new SplatMesh({
+        fileBytes: bytesCopy,
+        fileType: SplatFileType.SPZ,
+        raycastable: false,
+      });
+      splatMesh.userData.isHelper = true;
+      root.add(splatMesh);
+
+      await splatMesh.initialized;
+
+      // Çok dik açılarda zemin altında karanlık sızıntı kalmaması için derin zemin tabanı (y = -0.045)
+      const underlayGeo = buildWatertightFloorGeometry(room, false);
+      const underlayMat = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      const underlayMesh = new THREE.Mesh(underlayGeo, underlayMat);
+      underlayMesh.position.y = -0.045;
+      underlayMesh.userData.isHelper = true;
+      root.add(underlayMesh);
+
+      disposeFns.push(
+        () => underlayGeo.dispose(),
+        () => underlayMat.dispose(),
+        () => splatMesh.dispose(),
+        () => {
+          scene.remove(spark);
+          spark.dispose();
+        }
+      );
+
+      return {
+        object: root,
+        sparkRenderer: spark,
+        isSplat: true,
+        dispose: () => {
+          disposeFns.forEach((fn) => fn());
+        },
+      };
+    } catch (err) {
+      console.warn('[Spark] 3D Gaussian Splat başlatılamadı, TSDF/nokta yedeğine dönülüyor:', err);
+    }
+  }
 
   if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
     const atlas = await createProjectiveAtlasMaterial(room.keyframes, hdFrames, clipPlane);
