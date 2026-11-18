@@ -45,9 +45,15 @@ export const DEFAULT_PUBLIC_ORIGIN = 'https://mobilya-ar.vercel.app';
 export function getPublicOrigin(): string {
   if (typeof window === 'undefined') return DEFAULT_PUBLIC_ORIGIN;
   const h = window.location.hostname;
-  return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')
-    ? DEFAULT_PUBLIC_ORIGIN
-    : window.location.origin;
+  if (
+    h === 'localhost' ||
+    h === '127.0.0.1' ||
+    h.startsWith('192.168.') ||
+    h.endsWith('.vercel.app')
+  ) {
+    return DEFAULT_PUBLIC_ORIGIN;
+  }
+  return window.location.origin;
 }
 
 export function buildShareUrl(opts: {

@@ -1903,7 +1903,7 @@ export const Room3DStudio: React.FC<Props> = ({
                         : 'Oda Videosu Çek veya Seç (MP4 / MOV)'}
                     </span>
                     <span className="text-[11px] text-zinc-400">
-                      Telefonu göz hizasında tutup odanın içinde yavaşça 360° dönerek 15–20 saniyelik video çekin; tarayıcı en iyi ~24 kareyi seçip küçültür.
+                      Telefonu göz hizasında tutup odanın içinde yavaşça yürüyerek 15–20 saniyelik video çekin; tarayıcı en iyi ~20 kareyi seçip küçültür.
                     </span>
                     <input
                       type="file"
