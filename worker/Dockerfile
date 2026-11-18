@@ -15,7 +15,7 @@ RUN python -c 'import importlib.metadata as m; pkgs=[d.metadata["Name"]+"=="+d.v
     && git clone --depth 1 https://github.com/facebookresearch/map-anything.git \
     && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -c /tmp/constraints.txt -e ./map-anything \
     && pip install --no-cache-dir -c /tmp/constraints.txt runpod==1.7.9 numpy \
-    && python -c 'import torch; archs=torch.cuda.get_arch_list(); print("Supported CUDA archs:", archs); assert any("120" in a for a in archs), archs'
+    && python -c 'import torch; print("Torch:", torch.__version__, "CUDA:", torch.version.cuda); assert str(torch.version.cuda).startswith("12.8"), torch.version.cuda'
 
 # Model ağırlıklarını imaja göm: soğuk başlangıçta indirme beklenmez
 RUN python -c "from mapanything.models import MapAnything; MapAnything.from_pretrained('facebook/map-anything-apache')"

@@ -40,6 +40,8 @@ jobs:
           context: ./worker
           file: ./worker/Dockerfile
           push: true
-          tags: ghcr.io/coskunerberke/mobilya-ar-worker:latest
+          tags: |
+            ghcr.io/coskunerberke/mobilya-ar-worker:latest
+            ghcr.io/coskunerberke/mobilya-ar-worker:cu128
           cache-from: type=gha
           cache-to: type=gha,mode=max
