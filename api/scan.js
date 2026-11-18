@@ -20,6 +20,23 @@ function cleanEndpointId(raw) {
     .trim();
 }
 
+function formatRunpodError(rawErr) {
+  if (!rawErr) return undefined;
+  let msg = typeof rawErr === 'string' ? rawErr : JSON.stringify(rawErr);
+  if (typeof rawErr === 'string' && rawErr.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawErr);
+      msg = parsed.error_message || parsed.error || rawErr;
+    } catch {
+      /* keep raw string */
+    }
+  }
+  if (/no kernel image is available/i.test(msg)) {
+    return 'Seçili GPU nesli (Blackwell) için CUDA 12.8 imajı yükleniyor — hemen denemek için RunPod Edit Endpoint ekranında GPU sekmesini Previous generation (L40S / RTX 4090 / A6000) olarak değiştirin.';
+  }
+  return msg.split('\n')[0].slice(0, 260);
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') {
@@ -89,7 +106,7 @@ export default async function handler(req, res) {
         delayTimeMs: delayMs,
         estimatedCostUsd,
         output: data.output,
-        error: data.error,
+        error: formatRunpodError(data.error),
       });
     } catch (err) {
       return res.status(502).json({

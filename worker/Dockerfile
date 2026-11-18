@@ -1,5 +1,5 @@
 # Odanda Gör — RunPod Serverless GPU worker (MapAnything, Apache 2.0)
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 LABEL org.opencontainers.image.source="https://github.com/CoskunerBerke/MobilyaAR"
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -11,9 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-RUN git clone --depth 1 https://github.com/facebookresearch/map-anything.git \
-    && pip install --no-cache-dir -e ./map-anything \
-    && pip install --no-cache-dir runpod==1.7.9 numpy
+RUN python -c 'import importlib.metadata as m; pkgs=[d.metadata["Name"]+"=="+d.version for d in m.distributions() if d.metadata["Name"].lower() in ("torch","torchvision","torchaudio")]; open("/tmp/constraints.txt","w").write("\n".join(pkgs)+"\n"); print("Pinned:", pkgs)' \
+    && git clone --depth 1 https://github.com/facebookresearch/map-anything.git \
+    && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -c /tmp/constraints.txt -e ./map-anything \
+    && pip install --no-cache-dir -c /tmp/constraints.txt runpod==1.7.9 numpy \
+    && python -c 'import torch; archs=torch.cuda.get_arch_list(); print("Supported CUDA archs:", archs); assert any("120" in a for a in archs), archs'
 
 # Model ağırlıklarını imaja göm: soğuk başlangıçta indirme beklenmez
 RUN python -c "from mapanything.models import MapAnything; MapAnything.from_pretrained('facebook/map-anything-apache')"

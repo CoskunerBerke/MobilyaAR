@@ -11,6 +11,7 @@ import base64
 import os
 import tempfile
 import time
+import traceback
 
 os.environ.setdefault("HF_HOME", "/models/hf")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -52,60 +53,64 @@ def handler(job):
         return {"ok": False, "error": "En az 4 fotoğraf veya video karesi gerekli."}
     images = images[:MAX_IMAGES]
 
-    from mapanything.utils.image import load_images
+    try:
+        from mapanything.utils.image import load_images
 
-    with tempfile.TemporaryDirectory() as tmp:
-        paths = []
-        for i, b64 in enumerate(images):
-            if "," in b64[:100]:
-                b64 = b64.split(",", 1)[1]
-            p = os.path.join(tmp, f"{i:03d}.jpg")
-            with open(p, "wb") as f:
-                f.write(base64.b64decode(b64))
-            paths.append(p)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for i, b64 in enumerate(images):
+                if "," in b64[:100]:
+                    b64 = b64.split(",", 1)[1]
+                p = os.path.join(tmp, f"{i:03d}.jpg")
+                with open(p, "wb") as f:
+                    f.write(base64.b64decode(b64))
+                paths.append(p)
 
-        views = load_images(paths)
-        model = get_model()
-        t_inf = time.time()
-        with torch.no_grad():
-            preds = model.infer(
-                views,
-                memory_efficient_inference=True,
-                use_amp=True,
-                amp_dtype="bf16",
-                apply_mask=True,
-                mask_edges=True,
-                apply_confidence_mask=True,
-                confidence_percentile=15,
-            )
-        infer_s = time.time() - t_inf
+            views = load_images(paths)
+            model = get_model()
+            t_inf = time.time()
+            with torch.no_grad():
+                preds = model.infer(
+                    views,
+                    memory_efficient_inference=True,
+                    use_amp=True,
+                    amp_dtype="bf16",
+                    apply_mask=True,
+                    mask_edges=True,
+                    apply_confidence_mask=True,
+                    confidence_percentile=15,
+                )
+            infer_s = time.time() - t_inf
 
-    pts_list, col_list, cam_list = [], [], []
-    for pred in preds:
-        pts = _to_np(pred["pts3d"])[0].reshape(-1, 3)
-        img = _to_np(pred["img_no_norm"])[0].reshape(-1, 3)
-        if img.max() <= 1.5:
-            img = img * 255.0
-        mask = _to_np(pred["mask"])[0].reshape(-1) > 0.5
-        pts_list.append(pts[mask])
-        col_list.append(np.clip(img[mask], 0, 255).astype(np.uint8))
-        cam_list.append(_to_np(pred["camera_poses"])[0])
+        pts_list, col_list, cam_list = [], [], []
+        for pred in preds:
+            pts = _to_np(pred["pts3d"])[0].reshape(-1, 3)
+            img = _to_np(pred["img_no_norm"])[0].reshape(-1, 3)
+            if img.max() <= 1.5:
+                img = img * 255.0
+            mask = _to_np(pred["mask"])[0].reshape(-1) > 0.5
+            pts_list.append(pts[mask])
+            col_list.append(np.clip(img[mask], 0, 255).astype(np.uint8))
+            cam_list.append(_to_np(pred["camera_poses"])[0])
 
-    payload = build_room_payload(
-        np.concatenate(pts_list, axis=0),
-        np.concatenate(col_list, axis=0),
-        np.stack(cam_list, axis=0),
-    )
-    payload["stats"].update(
-        {
-            "views": len(images),
-            "inferSec": round(infer_s, 2),
-            "totalSec": round(time.time() - t_start, 2),
-            "model": MODEL_ID,
-            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        }
-    )
-    return payload
+        payload = build_room_payload(
+            np.concatenate(pts_list, axis=0),
+            np.concatenate(col_list, axis=0),
+            np.stack(cam_list, axis=0),
+        )
+        payload["stats"].update(
+            {
+                "views": len(images),
+                "inferSec": round(infer_s, 2),
+                "totalSec": round(time.time() - t_start, 2),
+                "model": MODEL_ID,
+                "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+            }
+        )
+        return payload
+    except Exception as exc:
+        traceback.print_exc()
+        return {"ok": False, "error": f"3D oda hesaplama hatası ({type(exc).__name__}): {exc}"}
 
 
 if __name__ == "__main__":
