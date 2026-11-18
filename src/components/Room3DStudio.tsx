@@ -524,7 +524,7 @@ export const Room3DStudio: React.FC<Props> = ({
     if (!file) return;
     setExtractPct(0);
     try {
-      const frames = await extractFramesFromVideo(file, 24, 518, (pct) => {
+      const frames = await extractFramesFromVideo(file, 20, 518, (pct) => {
         if (alive.current) setExtractPct(pct);
       });
       if (frames.length < 4) {
@@ -620,7 +620,11 @@ export const Room3DStudio: React.FC<Props> = ({
       });
       const startJson = await startRes.json().catch(() => ({}));
       if (!startRes.ok || !startJson.ok || !startJson.jobId) {
-        throw new Error(startJson.error || 'RunPod tarama işi başlatılamadı');
+        const msg =
+          startRes.status === 413
+            ? 'Kare boyutu sınırı aşıldı, lütfen daha az fotoğraf seçin'
+            : startJson.error || `RunPod tarama işi başlatılamadı (${startRes.status})`;
+        throw new Error(msg);
       }
 
       const jobId = startJson.jobId as string;
@@ -629,7 +633,7 @@ export const Room3DStudio: React.FC<Props> = ({
       let billedSec = 0;
       let costUsd = 0;
 
-      for (let attempt = 0; attempt < 96; attempt++) {
+      for (let attempt = 0; attempt < 168; attempt++) {
         await new Promise((r) => setTimeout(r, 2500));
         if (!alive.current) return;
 
@@ -646,7 +650,7 @@ export const Room3DStudio: React.FC<Props> = ({
         });
         const stJson = await stRes.json().catch(() => ({}));
         if (!stRes.ok || !stJson.ok) {
-          throw new Error(stJson.error || 'RunPod tarama durumu alınamadı');
+          throw new Error(stJson.error || `RunPod tarama durumu alınamadı (${stRes.status})`);
         }
 
         const st = stJson.status as string;
@@ -671,7 +675,7 @@ export const Room3DStudio: React.FC<Props> = ({
       }
 
       if (!payload) {
-        throw new Error('Tarama zaman aşımına uğradı (240 sn). Lütfen daha az kare veya sıcak worker ile tekrar deneyin.');
+        throw new Error('Tarama zaman aşımına uğradı (420 sn). İlk RunPod başlatması bittiyse lütfen tekrar deneyin.');
       }
 
       const decoded = decodeScannedRoom(payload);
