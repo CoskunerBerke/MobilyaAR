@@ -532,7 +532,13 @@ function sampleDominantColorsFromDataUrl(dataUrl: string): Promise<SampledPhotoM
 }
 
 export async function buildClientStudioFromPhotos(
-  views: Array<{ dataUrl: string; exifFocal35mm?: number }>
+  views: Array<{ dataUrl: string; exifFocal35mm?: number }>,
+  layout?: {
+    existingObjects: ReconstructRoomResult['existingObjects'];
+    roomWidthM: number;
+    roomDepthM: number;
+    cameraPositions: Array<[number, number, number]>;
+  }
 ): Promise<ReconstructRoomResult> {
   const metas = await Promise.all(views.map((v) => sampleDominantColorsFromDataUrl(v.dataUrl)));
   const pooledFloor = metas.flatMap((m) => m.floorSamples);
@@ -547,7 +553,7 @@ export async function buildClientStudioFromPhotos(
   const cameras: ReconstructedCamera[] = views.map((v, i) => {
     const m = metas[i];
     const analysis = buildClientPhotoAnalysis(m.width, m.height, v.exifFocal35mm, 13);
-    const yaw = (i / Math.max(1, n)) * Math.PI * 2;
+    const yaw = -(i / Math.max(1, n)) * Math.PI * 2;
     const cy = Math.cos(yaw);
     const sy = Math.sin(yaw);
     const radius = 2.05;
@@ -563,7 +569,7 @@ export async function buildClientStudioFromPhotos(
     return {
       index: i,
       label: i < dirLabels.length ? dirLabels[i] : `${i + 1}. Açı ${i + 1}`,
-      pos: [camX, analysis.cameraHeightM, camZ],
+      pos: layout?.cameraPositions[i] || [camX, analysis.cameraHeightM, camZ],
       lookAt: [0, 0.72, 0],
       vfovDeg: analysis.vfovDeg,
       imageWidth: m.width,
@@ -589,8 +595,8 @@ export async function buildClientStudioFromPhotos(
     elapsedMs: 42,
     viewCount: n,
     matchedViews: n,
-    roomWidthM: 4.8,
-    roomDepthM: 5.4,
+    roomWidthM: layout?.roomWidthM ?? 4.8,
+    roomDepthM: layout?.roomDepthM ?? 5.4,
     ceilingHeightM: 2.75,
     floorTexture: renderDemoFloorTexture({
       plankRgb: floorRgb,
@@ -602,7 +608,7 @@ export async function buildClientStudioFromPhotos(
       south: renderDemoWallTexture({ paintRgb: southMeta.wallRgb, windowSpan: southMeta.windowSpan }),
       west: renderDemoWallTexture({ paintRgb: westMeta.wallRgb, windowSpan: westMeta.windowSpan }),
     },
-    existingObjects: [],
+    existingObjects: layout?.existingObjects ?? [],
     spawnXZ: [0, 0],
     cameras,
     lightDir: [-0.45, 0.82, 0.35],

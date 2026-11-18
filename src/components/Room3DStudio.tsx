@@ -40,6 +40,7 @@ import {
   type FloorSurfaceKind,
 } from '../lib/demoRooms';
 import { convertCadFileToGlb } from '../lib/cadImport';
+import { detectRoomFurniture } from '../lib/roomObjectDetection';
 import {
   findOpenSpawnPosition,
   parseProductFootprintM,
@@ -290,6 +291,7 @@ export const Room3DStudio: React.FC<Props> = ({
   const [uploadingCad, setUploadingCad] = useState(false);
   const [saving, setSaving] = useState(false);
   const [addingPhotos, setAddingPhotos] = useState(false);
+  const [reconstructMsg, setReconstructMsg] = useState('');
   const [showMobileQr, setShowMobileQr] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -421,7 +423,7 @@ export const Room3DStudio: React.FC<Props> = ({
   const applyRoomResult = useCallback((res: ReconstructRoomResult) => {
     roomDimsRef.current = { w: res.roomWidthM, d: res.roomDepthM, ch: res.ceilingHeightM };
     setRoomData(res);
-    setEmptyRoom(true);
+    setEmptyRoom((res.existingObjects || []).length === 0);
     setClipAxis('none');
     setShowClipBar(false);
     setShowSizeBar(false);
@@ -470,9 +472,11 @@ export const Room3DStudio: React.FC<Props> = ({
     if (views.length < 4) return;
     disposeStudio();
     setStep('reconstructing');
+    setReconstructMsg('Fotoğraflar hazırlanıyor...');
     try {
       if (serverOnline) {
         try {
+          setReconstructMsg('GPU sunucusunda derinlik ve eşya analizi yapılıyor...');
           const res = await reconstructRoom3D(
             serverUrl,
             views.map((v) => v.dataUrl),
@@ -481,12 +485,35 @@ export const Room3DStudio: React.FC<Props> = ({
           applyRoomResult(res);
           return;
         } catch {
-          /* Sunucu çevrimdışıysa yerel stüdyoya düş */
+          /* Sunucu çevrimdışıysa tarayıcı içi analize düş */
         }
       }
-      const fallback = await buildClientStudioFromPhotos(views);
+
+      let layout: Awaited<ReturnType<typeof detectRoomFurniture>> | undefined;
+      try {
+        layout = await detectRoomFurniture(views, setReconstructMsg);
+      } catch {
+        layout = undefined;
+      }
+
+      setReconstructMsg('3D oda, zemin ve duvarlar kuruluyor...');
+      const fallback = await buildClientStudioFromPhotos(views, layout);
       applyRoomResult(fallback);
-      showToast('3D mini-map simülasyonu hazır — katalogdan ürün ekleyip sürükleyin');
+
+      if (!layout) {
+        showToast('Eşya tanıma modeli yüklenemedi — oda boş kuruldu');
+      } else if (layout.existingObjects.length === 0) {
+        showToast('Fotoğraflarda zemine oturan eşya bulunamadı — oda boş kuruldu');
+      } else {
+        const counts = layout.existingObjects.reduce<Record<string, number>>((acc, o) => {
+          acc[o.label] = (acc[o.label] || 0) + 1;
+          return acc;
+        }, {});
+        const summary = Object.entries(counts)
+          .map(([k, c]) => `${c} ${k}`)
+          .join(', ');
+        showToast(`Odadaki mevcut eşyalar yerleştirildi: ${summary}`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '3D oda oluşturulamadı');
       setStep('error');
@@ -1452,7 +1479,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   Odanızı 4–5 Farklı Açıdan Çekin (3D Mini-Map Simülasyonu)
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Odanın 4 cephesini ve zemini görecek şekilde en az 4 fotoğraf çekin veya galeriden seçin. Sistem fotoğraflardan odanızın 3D mini-map simülasyonunu kurar.
+                  Her fotoğrafı bir duvarın ortasında durup karşı duvara doğru, telefon göz hizasında ve zemin görünecek şekilde çekin; saat yönünde ilerleyin. Sıra, masa, sandalye ve koltuk gibi mevcut eşyalar tespit edilip 3D odaya yerleştirilir, siz de boş alanlara yeni mobilya deneyebilirsiniz.
                 </p>
               </div>
 
@@ -1639,9 +1666,7 @@ export const Room3DStudio: React.FC<Props> = ({
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
           <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
           <p className="text-sm font-semibold">{views.length} açı birleştirilip 3D oda kuruluyor...</p>
-          <p className="text-xs text-zinc-400 max-w-xs">
-            Depth Pro, SIFT+Manhattan hizalama ve LaMa temizleme ile boş zemin ve 4 duvar hazırlanıyor.
-          </p>
+          <p className="text-xs text-zinc-400 max-w-xs">{reconstructMsg}</p>
         </div>
       )}
 
@@ -1835,7 +1860,7 @@ export const Room3DStudio: React.FC<Props> = ({
                               y={-it.halfD}
                               width={it.halfW * 2}
                               height={it.halfD * 2}
-                              fill={isSel ? '#10b981' : '#e4e4e7'}
+                              fill={isSel ? '#10b981' : it.isScanned ? '#71717a' : '#e4e4e7'}
                               fillOpacity={isSel ? 0.85 : 0.65}
                               stroke={isSel ? '#ffffff' : '#52525b'}
                               strokeWidth={0.06}
@@ -2028,7 +2053,7 @@ export const Room3DStudio: React.FC<Props> = ({
             )}
 
             {toastMsg && (
-              <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-black/90 border border-zinc-700 px-3.5 py-2 rounded-lg text-xs font-medium text-white shadow-xl pointer-events-none whitespace-nowrap z-30">
+              <div className="absolute top-14 left-1/2 -translate-x-1/2 w-max max-w-[90%] text-center bg-black/90 border border-zinc-700 px-3.5 py-2 rounded-lg text-xs font-medium text-white shadow-xl pointer-events-none z-30">
                 {toastMsg}
               </div>
             )}
@@ -2147,7 +2172,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   }`}
                 >
                   <Layers className="w-3.5 h-3.5 shrink-0" />
-                  <span>{emptyRoom ? 'Eski Eşyaları Aç' : 'Eski Eşyaları Gizle'}</span>
+                  <span>{emptyRoom ? 'Mevcut Eşyaları Göster' : 'Mevcut Eşyaları Gizle'}</span>
                 </button>
               )}
 
