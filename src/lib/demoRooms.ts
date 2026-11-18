@@ -160,8 +160,11 @@ export const DEMO_STUDIO_PRESETS: DemoStudioPresetInfo[] = [
   },
 ];
 
+export type FloorSurfaceKind = 'tile' | 'wood' | 'matte';
+
 function renderDemoFloorTexture(opts: {
   plankRgb: [number, number, number];
+  floorKind?: FloorSurfaceKind;
   rugColor?: string;
   rugBorder?: string;
   herringbone?: boolean;
@@ -172,29 +175,61 @@ function renderDemoFloorTexture(opts: {
   c.height = size;
   const ctx = c.getContext('2d')!;
   const [r, g, b] = opts.plankRgb;
+  const kind = opts.floorKind || 'wood';
 
   ctx.fillStyle = `rgb(${r},${g},${b})`;
   ctx.fillRect(0, 0, size, size);
 
-  // Parke tahta dokusu
-  const stripH = 44;
   let seed = 17;
   const rand = () => {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
 
-  for (let y = 0; y < size; y += stripH) {
-    const shade = 0.94 + rand() * 0.12;
-    ctx.fillStyle = `rgb(${Math.min(245, Math.round(r * shade))},${Math.min(245, Math.round(g * shade))},${Math.min(245, Math.round(b * shade))})`;
-    ctx.fillRect(0, y, size, stripH - 1);
-    ctx.fillStyle = 'rgba(70, 52, 34, 0.14)';
-    ctx.fillRect(0, y + stripH - 1, size, 1);
+  if (kind === 'tile') {
+    const tiles = 8;
+    const step = size / tiles;
+    for (let ty = 0; ty < tiles; ty++) {
+      for (let tx = 0; tx < tiles; tx++) {
+        const shade = 0.97 + rand() * 0.06;
+        ctx.fillStyle = `rgb(${Math.min(246, Math.round(r * shade))},${Math.min(246, Math.round(g * shade))},${Math.min(246, Math.round(b * shade))})`;
+        ctx.fillRect(tx * step + 1, ty * step + 1, step - 2, step - 2);
+      }
+    }
+    ctx.strokeStyle = 'rgba(90, 86, 80, 0.22)';
+    ctx.lineWidth = 2;
+    for (let k = 0; k <= tiles; k++) {
+      const p = Math.round(k * step);
+      ctx.beginPath();
+      ctx.moveTo(0, p);
+      ctx.lineTo(size, p);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p, 0);
+      ctx.lineTo(p, size);
+      ctx.stroke();
+    }
+  } else if (kind === 'matte') {
+    for (let i = 0; i < 650; i++) {
+      const shade = 0.96 + rand() * 0.08;
+      ctx.fillStyle = `rgba(${Math.min(246, Math.round(r * shade))},${Math.min(246, Math.round(g * shade))},${Math.min(246, Math.round(b * shade))},0.35)`;
+      ctx.fillRect(rand() * size, rand() * size, 12 + rand() * 32, 8 + rand() * 24);
+    }
+  } else {
+    // Parke tahta dokusu
+    const stripH = 44;
+    for (let y = 0; y < size; y += stripH) {
+      const shade = 0.94 + rand() * 0.12;
+      ctx.fillStyle = `rgb(${Math.min(245, Math.round(r * shade))},${Math.min(245, Math.round(g * shade))},${Math.min(245, Math.round(b * shade))})`;
+      ctx.fillRect(0, y, size, stripH - 1);
+      ctx.fillStyle = 'rgba(70, 52, 34, 0.14)';
+      ctx.fillRect(0, y + stripH - 1, size, 1);
 
-    const stepX = opts.herringbone ? 140 : 240;
-    const offset = Math.round(((y / stripH) % 3) * (stepX * 0.35));
-    for (let x = offset; x < size; x += stepX) {
-      ctx.fillRect(x, y, 1, stripH);
+      const stepX = opts.herringbone ? 140 : 240;
+      const offset = Math.round(((y / stripH) % 3) * (stepX * 0.35));
+      for (let x = offset; x < size; x += stepX) {
+        ctx.fillRect(x, y, 1, stripH);
+      }
     }
   }
 
@@ -225,6 +260,10 @@ function renderDemoFloorTexture(opts: {
   }
 
   return c.toDataURL('image/jpeg', 0.88);
+}
+
+export function buildCustomFloorTexture(floorKind: FloorSurfaceKind, rgb: [number, number, number]): string {
+  return renderDemoFloorTexture({ plankRgb: rgb, floorKind });
 }
 
 function renderDemoWallTexture(opts: {
@@ -321,20 +360,18 @@ export function buildDemoStudioRoom(presetId: DemoStudioPresetId): ReconstructRo
   }
 
   if (presetId === 'grand') {
-    const travCam = DEMO_PHOTO_ROOMS[2];
-    const travAnalysis = buildCalibratedRoomAnalysis(travCam);
     return {
       ok: true,
       version: '6.0.0-demo',
       elapsedMs: 20,
-      viewCount: 1,
-      matchedViews: 1,
+      viewCount: 0,
+      matchedViews: 0,
       roomWidthM: 5.6,
       roomDepthM: 6.4,
       ceilingHeightM: 2.8,
       floorTexture: renderDemoFloorTexture({
         plankRgb: [210, 200, 185],
-        herringbone: true,
+        floorKind: 'tile',
       }),
       wallTextures: {
         north: renderDemoWallTexture({ paintRgb: [224, 221, 214] }),
@@ -344,63 +381,17 @@ export function buildDemoStudioRoom(presetId: DemoStudioPresetId): ReconstructRo
       },
       existingObjects: [],
       spawnXZ: [0, 0],
-      cameras: [
-        {
-          index: 0,
-          label: 'Açı 1 (Traverten)',
-          pos: [0, travCam.cameraHeightM, 4.1],
-          lookAt: [0, 0.72, 0],
-          vfovDeg: travAnalysis.vfovDeg,
-          imageWidth: travCam.width,
-          imageHeight: travCam.height,
-          basis: travAnalysis.cameraBasis,
-          photoUrl: travCam.imageUrl,
-          cleanPhotoUrl: travCam.imageUrl,
-        },
-      ],
+      cameras: [],
       lightDir: [0.62, 0.72, 0.25],
     };
   }
-
-  // 'living' — Modern Salon 4.6 x 5.2 m boş başlangıç + entegre gerçek fotoğraf açıları
-  const oakCam = DEMO_PHOTO_ROOMS[0];
-  const rugCam = DEMO_PHOTO_ROOMS[1];
-  const oakAnalysis = buildCalibratedRoomAnalysis(oakCam);
-  const rugAnalysis = buildCalibratedRoomAnalysis(rugCam);
-
-  const cameras: ReconstructedCamera[] = [
-    {
-      index: 0,
-      label: 'Açı 1 (Salon Meşe)',
-      pos: [0, oakCam.cameraHeightM, 4.1],
-      lookAt: [0, 0.72, 0],
-      vfovDeg: oakAnalysis.vfovDeg,
-      imageWidth: oakCam.width,
-      imageHeight: oakCam.height,
-      basis: oakAnalysis.cameraBasis,
-      photoUrl: oakCam.imageUrl,
-      cleanPhotoUrl: oakCam.imageUrl,
-    },
-    {
-      index: 1,
-      label: 'Açı 2 (Halılı Salon)',
-      pos: [0, rugCam.cameraHeightM, 3.9],
-      lookAt: [0, 0.72, 0],
-      vfovDeg: rugAnalysis.vfovDeg,
-      imageWidth: rugCam.width,
-      imageHeight: rugCam.height,
-      basis: rugAnalysis.cameraBasis,
-      photoUrl: rugCam.imageUrl,
-      cleanPhotoUrl: rugCam.imageUrl,
-    },
-  ];
 
   return {
     ok: true,
     version: '6.0.0-demo',
     elapsedMs: 22,
-    viewCount: 2,
-    matchedViews: 2,
+    viewCount: 0,
+    matchedViews: 0,
     roomWidthM: 4.6,
     roomDepthM: 5.2,
     ceilingHeightM: 2.7,
@@ -416,59 +407,125 @@ export function buildDemoStudioRoom(presetId: DemoStudioPresetId): ReconstructRo
     },
     existingObjects: [],
     spawnXZ: [0, 0],
-    cameras,
+    cameras: [],
     lightDir: [-0.62, 0.72, 0.3],
   };
 }
 
-function sampleDominantColorsFromDataUrl(
-  dataUrl: string
-): Promise<{ width: number; height: number; wallRgb: [number, number, number]; floorRgb: [number, number, number] }> {
+interface SampledPhotoMeta {
+  width: number;
+  height: number;
+  wallRgb: [number, number, number];
+  windowSpan?: [number, number];
+  floorSamples: Array<[number, number, number, number]>;
+}
+
+function percentileAvgRgb(
+  samples: Array<[number, number, number, number]>,
+  loPct: number,
+  hiPct: number,
+  fallback: [number, number, number]
+): { rgb: [number, number, number]; luma: number } {
+  if (samples.length === 0) {
+    return {
+      rgb: fallback,
+      luma: 0.2126 * fallback[0] + 0.7152 * fallback[1] + 0.0722 * fallback[2],
+    };
+  }
+  const sorted = [...samples].sort((a, b) => a[0] - b[0]);
+  const lo = Math.min(sorted.length - 1, Math.floor(sorted.length * loPct));
+  const hi = Math.max(lo + 1, Math.min(sorted.length, Math.floor(sorted.length * hiPct)));
+  let sr = 0;
+  let sg = 0;
+  let sb = 0;
+  let sl = 0;
+  const count = hi - lo;
+  for (let i = lo; i < hi; i++) {
+    sl += sorted[i][0];
+    sr += sorted[i][1];
+    sg += sorted[i][2];
+    sb += sorted[i][3];
+  }
+  return {
+    rgb: [
+      Math.min(240, Math.max(105, Math.round(sr / count))),
+      Math.min(240, Math.max(105, Math.round(sg / count))),
+      Math.min(240, Math.max(105, Math.round(sb / count))),
+    ],
+    luma: sl / count,
+  };
+}
+
+function sampleDominantColorsFromDataUrl(dataUrl: string): Promise<SampledPhotoMeta> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const w = img.naturalWidth || 1024;
       const h = img.naturalHeight || 768;
+      const s = 48;
       const c = document.createElement('canvas');
-      c.width = 24;
-      c.height = 24;
+      c.width = s;
+      c.height = s;
       const ctx = c.getContext('2d');
       if (!ctx) {
-        resolve({ width: w, height: h, wallRgb: [222, 219, 212], floorRgb: [186, 156, 124] });
+        resolve({ width: w, height: h, wallRgb: [222, 219, 212], floorSamples: [] });
         return;
       }
-      ctx.drawImage(img, 0, 0, 24, 24);
-      const data = ctx.getImageData(0, 0, 24, 24).data;
-      const avgRegion = (yStart: number, yEnd: number): [number, number, number] => {
-        let sr = 0;
-        let sg = 0;
-        let sb = 0;
-        let cnt = 0;
-        for (let y = yStart; y < yEnd; y++) {
-          for (let x = 4; x < 20; x++) {
-            const idx = (y * 24 + x) * 4;
-            sr += data[idx];
-            sg += data[idx + 1];
-            sb += data[idx + 2];
-            cnt++;
-          }
+      ctx.drawImage(img, 0, 0, s, s);
+      const data = ctx.getImageData(0, 0, s, s).data;
+
+      const wallSamples: Array<[number, number, number, number]> = [];
+      const thirdsLuma: [number, number, number] = [0, 0, 0];
+      const thirdsCount: [number, number, number] = [0, 0, 0];
+
+      for (let y = 6; y < 24; y++) {
+        for (let x = 4; x < 44; x++) {
+          const idx = (y * s + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          wallSamples.push([luma, r, g, b]);
+          const tIdx = x < 17 ? 0 : x < 31 ? 1 : 2;
+          thirdsLuma[tIdx] += luma;
+          thirdsCount[tIdx] += 1;
         }
-        if (!cnt) return [215, 210, 202];
-        return [
-          Math.min(238, Math.max(120, Math.round(sr / cnt))),
-          Math.min(238, Math.max(120, Math.round(sg / cnt))),
-          Math.min(238, Math.max(120, Math.round(sb / cnt))),
-        ];
-      };
+      }
+
+      const wallStats = percentileAvgRgb(wallSamples, 0.55, 0.85, [222, 219, 212]);
+      const avgThirds = thirdsLuma.map((sum, k) => sum / Math.max(1, thirdsCount[k]));
+      const spans: Array<[number, number]> = [
+        [0.14, 0.42],
+        [0.34, 0.66],
+        [0.58, 0.86],
+      ];
+      let bestThird = 0;
+      if (avgThirds[1] > avgThirds[bestThird]) bestThird = 1;
+      if (avgThirds[2] > avgThirds[bestThird]) bestThird = 2;
+      const windowSpan = avgThirds[bestThird] > wallStats.luma + 22 ? spans[bestThird] : undefined;
+
+      const floorSamples: Array<[number, number, number, number]> = [];
+      for (let y = 30; y < 46; y++) {
+        for (let x = 4; x < 44; x++) {
+          const idx = (y * s + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          floorSamples.push([luma, r, g, b]);
+        }
+      }
+
       resolve({
         width: w,
         height: h,
-        wallRgb: avgRegion(2, 9),
-        floorRgb: avgRegion(16, 23),
+        wallRgb: wallStats.rgb,
+        windowSpan,
+        floorSamples,
       });
     };
     img.onerror = () => {
-      resolve({ width: 1024, height: 768, wallRgb: [222, 219, 212], floorRgb: [186, 156, 124] });
+      resolve({ width: 1024, height: 768, wallRgb: [222, 219, 212], floorSamples: [] });
     };
     img.src = dataUrl;
   });
@@ -477,10 +534,16 @@ function sampleDominantColorsFromDataUrl(
 export async function buildClientStudioFromPhotos(
   views: Array<{ dataUrl: string; exifFocal35mm?: number }>
 ): Promise<ReconstructRoomResult> {
-  const firstMeta = await sampleDominantColorsFromDataUrl(views[0].dataUrl);
   const metas = await Promise.all(views.map((v) => sampleDominantColorsFromDataUrl(v.dataUrl)));
+  const pooledFloor = metas.flatMap((m) => m.floorSamples);
+  const { rgb: floorRgb } = percentileAvgRgb(pooledFloor, 0.6, 0.88, [196, 178, 152]);
+  const maxC = Math.max(floorRgb[0], floorRgb[1], floorRgb[2]);
+  const minC = Math.min(floorRgb[0], floorRgb[1], floorRgb[2]);
+  const sat = (maxC - minC) / Math.max(1, maxC);
+  const floorKind: FloorSurfaceKind = sat < 0.17 ? 'tile' : 'wood';
 
   const n = views.length;
+  const dirLabels = ['1. Karşı Cephe', '2. Sağ Cephe', '3. Arka Cephe', '4. Sol Cephe'];
   const cameras: ReconstructedCamera[] = views.map((v, i) => {
     const m = metas[i];
     const analysis = buildClientPhotoAnalysis(m.width, m.height, v.exifFocal35mm, 13);
@@ -499,7 +562,7 @@ export async function buildClientStudioFromPhotos(
 
     return {
       index: i,
-      label: `Açı ${i + 1}`,
+      label: i < dirLabels.length ? dirLabels[i] : `${i + 1}. Açı ${i + 1}`,
       pos: [camX, analysis.cameraHeightM, camZ],
       lookAt: [0, 0.72, 0],
       vfovDeg: analysis.vfovDeg,
@@ -515,23 +578,29 @@ export async function buildClientStudioFromPhotos(
     };
   });
 
+  const northMeta = metas[0];
+  const eastMeta = metas[1 % n];
+  const southMeta = metas[2 % n];
+  const westMeta = metas[3 % n];
+
   return {
     ok: true,
     version: '6.0.0-offline',
-    elapsedMs: 35,
+    elapsedMs: 42,
     viewCount: n,
     matchedViews: n,
-    roomWidthM: 4.0,
-    roomDepthM: 4.6,
-    ceilingHeightM: 2.65,
+    roomWidthM: 4.8,
+    roomDepthM: 5.4,
+    ceilingHeightM: 2.75,
     floorTexture: renderDemoFloorTexture({
-      plankRgb: firstMeta.floorRgb,
+      plankRgb: floorRgb,
+      floorKind,
     }),
     wallTextures: {
-      north: renderDemoWallTexture({ paintRgb: firstMeta.wallRgb }),
-      south: renderDemoWallTexture({ paintRgb: firstMeta.wallRgb }),
-      west: renderDemoWallTexture({ paintRgb: firstMeta.wallRgb, windowSpan: [0.22, 0.58] }),
-      east: renderDemoWallTexture({ paintRgb: firstMeta.wallRgb }),
+      north: renderDemoWallTexture({ paintRgb: northMeta.wallRgb, windowSpan: northMeta.windowSpan }),
+      east: renderDemoWallTexture({ paintRgb: eastMeta.wallRgb, windowSpan: eastMeta.windowSpan }),
+      south: renderDemoWallTexture({ paintRgb: southMeta.wallRgb, windowSpan: southMeta.windowSpan }),
+      west: renderDemoWallTexture({ paintRgb: westMeta.wallRgb, windowSpan: westMeta.windowSpan }),
     },
     existingObjects: [],
     spawnXZ: [0, 0],

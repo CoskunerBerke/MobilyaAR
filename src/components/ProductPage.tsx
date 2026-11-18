@@ -2,8 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import '@google/model-viewer';
 import { ArrowLeft, Camera, Layers } from 'lucide-react';
 import type { Product } from '../lib/products';
-import type { DemoPhotoRoom, DemoStudioPresetId } from '../lib/demoRooms';
-import { RoomDesigner } from './RoomDesigner';
+import type { DemoStudioPresetId } from '../lib/demoRooms';
 import { Room3DStudio } from './Room3DStudio';
 
 interface Props {
@@ -12,7 +11,6 @@ interface Props {
   serverUrl: string;
   serverOnline: boolean;
   startMode?: 'preview' | 'photo' | 'studio';
-  initialDemoRoomId?: DemoPhotoRoom['id'];
   initialStudioPreset?: DemoStudioPresetId;
   initialColorHex?: string;
   onBack: () => void;
@@ -24,13 +22,11 @@ export const ProductPage: React.FC<Props> = ({
   serverUrl,
   serverOnline,
   startMode = 'preview',
-  initialDemoRoomId,
   initialStudioPreset,
   initialColorHex,
   onBack,
 }) => {
-  const [mode, setMode] = useState<'preview' | 'photo' | 'studio'>(startMode);
-  const [photoDemoId, setPhotoDemoId] = useState<DemoPhotoRoom['id'] | undefined>(initialDemoRoomId);
+  const [mode, setMode] = useState<'preview' | 'studio'>(startMode === 'preview' ? 'preview' : 'studio');
   const [studioPreset, setStudioPreset] = useState<DemoStudioPresetId | undefined>(initialStudioPreset);
   const [colorHex, setColorHex] = useState<string | undefined>(() => initialColorHex || product.swatches?.[0]?.hex);
   const mvRef = useRef<HTMLElement | null>(null);
@@ -61,24 +57,6 @@ export const ProductPage: React.FC<Props> = ({
     return () => mv.removeEventListener('load', apply);
   }, [colorHex, product.id]);
 
-  if (mode === 'photo') {
-    return (
-      <RoomDesigner
-        product={product}
-        products={products}
-        serverUrl={serverUrl}
-        serverOnline={serverOnline}
-        initialDemoRoomId={photoDemoId}
-        initialColorHex={colorHex}
-        onBack={() => {
-          setPhotoDemoId(undefined);
-          if (startMode !== 'preview') onBack();
-          else setMode('preview');
-        }}
-      />
-    );
-  }
-
   if (mode === 'studio') {
     return (
       <Room3DStudio
@@ -87,6 +65,7 @@ export const ProductPage: React.FC<Props> = ({
         serverUrl={serverUrl}
         serverOnline={serverOnline}
         initialPreset={studioPreset}
+        initialColorHex={colorHex}
         onBack={() => {
           setStudioPreset(undefined);
           if (startMode !== 'preview') onBack();
@@ -151,48 +130,24 @@ export const ProductPage: React.FC<Props> = ({
 
         <button
           onClick={() => {
-            setPhotoDemoId(undefined);
-            setMode('photo');
+            setStudioPreset(undefined);
+            setMode('studio');
           }}
           className="w-full py-3.5 bg-zinc-950 hover:bg-zinc-800 text-white text-sm font-bold rounded-lg flex items-center justify-center gap-2"
         >
           <Camera className="w-4 h-4" />
-          <span>Kendi Odamın Fotoğrafında Gör (Çek / Yükle)</span>
+          <span>Odamı 4–5 Fotoğrafla Simüle Et (3D Mini-Map)</span>
         </button>
-
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => {
-              setStudioPreset('living');
-              setMode('studio');
-            }}
-            className="py-2.5 px-3 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Hazır 3D Salonda Gör</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setStudioPreset(undefined);
-              setMode('studio');
-            }}
-            className="py-2.5 px-3 border border-zinc-950 hover:bg-zinc-50 text-zinc-950 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>3D Odamı Modelle (Çoklu Açı)</span>
-          </button>
-        </div>
 
         <button
           onClick={() => {
-            setPhotoDemoId('oak');
-            setMode('photo');
+            setStudioPreset('living');
+            setMode('studio');
           }}
-          className="w-full py-2.5 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-950 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
+          className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
         >
-          <Camera className="w-3.5 h-3.5" />
-          <span>Örnek Fotoğrafta Gör</span>
+          <Layers className="w-3.5 h-3.5" />
+          <span>Hazır Boş 3D Odada Dene</span>
         </button>
       </div>
     </div>

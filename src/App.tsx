@@ -15,7 +15,7 @@ import {
   type ServerHealth,
 } from './lib/server';
 import { convertCadFileToGlb } from './lib/cadImport';
-import { DEMO_STUDIO_PRESETS, type DemoPhotoRoom, type DemoStudioPresetId } from './lib/demoRooms';
+import { DEMO_STUDIO_PRESETS, type DemoStudioPresetId } from './lib/demoRooms';
 import { ProductPage } from './components/ProductPage';
 
 function preprocessPhotoFor3D(file: File): Promise<string> {
@@ -53,8 +53,7 @@ function preprocessPhotoFor3D(file: File): Promise<string> {
 
 type ActiveViewState = {
   product: Product;
-  mode: 'preview' | 'photo' | 'studio';
-  demoRoomId?: DemoPhotoRoom['id'];
+  mode: 'preview' | 'studio';
   studioPreset?: DemoStudioPresetId;
   colorHex?: string;
 };
@@ -72,10 +71,9 @@ export function App() {
     const mod = q.get('mod');
     const oda = q.get('oda');
     const renk = q.get('renk') || undefined;
-    const startMode: 'preview' | 'photo' | 'studio' =
-      mod === 'studio' ? 'studio' : mod === 'photo' ? 'photo' : 'preview';
+    const startMode: 'preview' | 'studio' =
+      mod === 'studio' || mod === 'photo' ? 'studio' : 'preview';
     const studioPreset = oda === 'living' || oda === 'bedroom' || oda === 'grand' ? oda : undefined;
-    const demoRoomId = oda === 'oak' || oda === 'rug' || oda === 'travertine' ? oda : undefined;
 
     if (glb) {
       return {
@@ -89,7 +87,6 @@ export function App() {
         },
         mode: startMode,
         studioPreset,
-        demoRoomId,
         colorHex: renk,
       };
     }
@@ -99,7 +96,6 @@ export function App() {
         product: found || PRODUCTS[0],
         mode: startMode,
         studioPreset,
-        demoRoomId,
         colorHex: renk,
       };
     }
@@ -107,7 +103,7 @@ export function App() {
   });
 
   const [qrFor, setQrFor] = useState<Product | null>(null);
-  const [qrMode, setQrMode] = useState<'photo' | 'preview'>('photo');
+  const [qrMode, setQrMode] = useState<'studio' | 'preview'>('studio');
   const [showServer, setShowServer] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
   const [builderTab, setBuilderTab] = useState<'cad' | 'ai'>('cad');
@@ -155,7 +151,7 @@ export function App() {
       productName: activeState.product.name,
       dimensionsCm: activeState.product.dimensionsCm,
       mode: activeState.mode,
-      oda: activeState.studioPreset || activeState.demoRoomId,
+      oda: activeState.studioPreset,
       colorHex: activeState.colorHex,
       serverOnline: health.online,
       serverUrl,
@@ -166,7 +162,7 @@ export function App() {
     }
   }, [activeState, health.online, serverUrl]);
 
-  const qrUrl = (p: Product, mode: 'photo' | 'preview' = 'photo') =>
+  const qrUrl = (p: Product, mode: 'studio' | 'preview' = 'studio') =>
     buildShareUrl({
       productId: p.id,
       glbUrl: p.glbUrl,
@@ -288,7 +284,7 @@ export function App() {
     .filter((p): p is Product => Boolean(p));
   const heroProduct = products.find((p) => p.id === heroProductId) || products[0];
 
-  const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=photo`;
+  const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=studio`;
 
   if (activeState) {
     return (
@@ -298,7 +294,6 @@ export function App() {
         serverUrl={serverUrl}
         serverOnline={health.online}
         startMode={activeState.mode}
-        initialDemoRoomId={activeState.demoRoomId}
         initialStudioPreset={activeState.studioPreset}
         initialColorHex={activeState.colorHex}
         onBack={() => {
@@ -349,13 +344,14 @@ export function App() {
             onClick={() =>
               setActiveState({
                 product: heroProduct,
-                mode: 'photo',
+                mode: 'studio',
               })
             }
             className="flex items-center gap-1.5 px-3 py-2 border border-zinc-950 bg-white hover:bg-zinc-100 text-zinc-950 text-xs font-bold rounded whitespace-nowrap shrink-0"
           >
             <Camera className="w-3.5 h-3.5" />
-            <span>Odamı Çek</span>
+            <span className="hidden sm:inline">Odamı Simüle Et</span>
+            <span className="sm:hidden">Odamı Çek</span>
           </button>
 
           <button
@@ -418,13 +414,13 @@ export function App() {
                 onClick={() =>
                   setActiveState({
                     product: heroProduct,
-                    mode: 'photo',
+                    mode: 'studio',
                   })
                 }
                 className="px-5 py-3.5 bg-white border border-zinc-950 hover:bg-zinc-100 text-zinc-950 text-xs sm:text-sm font-bold tracking-wide flex items-center gap-2 whitespace-nowrap shrink-0"
               >
                 <Camera className="w-4 h-4" />
-                <span>Kendi Odanı Yükle</span>
+                <span>Kendi Odanı Simüle Et (4–5 Fotoğraf)</span>
               </button>
             </div>
 
@@ -779,12 +775,12 @@ export function App() {
             <div className="grid grid-cols-2 border border-zinc-200 rounded-lg p-1 gap-1 text-xs font-semibold">
               <button
                 type="button"
-                onClick={() => setQrMode('photo')}
+                onClick={() => setQrMode('studio')}
                 className={`py-2 rounded transition ${
-                  qrMode === 'photo' ? 'bg-zinc-950 text-white' : 'text-zinc-600 hover:text-zinc-950'
+                  qrMode === 'studio' ? 'bg-zinc-950 text-white' : 'text-zinc-600 hover:text-zinc-950'
                 }`}
               >
-                Odamda Çek / Yükle
+                Odamı Simüle Et (4–5 Foto)
               </button>
               <button
                 type="button"
@@ -800,8 +796,8 @@ export function App() {
               <QRCodeSVG value={qrUrl(qrFor, qrMode)} size={220} />
             </div>
             <p className="text-xs text-zinc-600">
-              {qrMode === 'photo'
-                ? 'Telefon kamerasıyla okutun; doğrudan kendi odanızın fotoğrafını çekme / yükleme ekranı açılsın.'
+              {qrMode === 'studio'
+                ? 'Telefon kamerasıyla okutun; 4–5 açılı çekim ve 3D mini-map simülasyon ekranı açılsın.'
                 : 'Telefon kamerasıyla okutun ve ürünü 360° 3D olarak inceleyin.'}
             </p>
             <button
