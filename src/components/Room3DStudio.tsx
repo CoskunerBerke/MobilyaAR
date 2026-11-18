@@ -40,10 +40,11 @@ import {
   type FloorSurfaceKind,
 } from '../lib/demoRooms';
 import { convertCadFileToGlb } from '../lib/cadImport';
-import { downscaleDataUrlForGpu, extractFramesFromVideo } from '../lib/videoFrames';
+import { extractFramesFromVideo, preparePhotoForScan, type PreparedScanFrame } from '../lib/videoFrames';
 import {
   createFreeFloorOverlayMesh,
-  createRoomPointCloudObject,
+  createKeyframeDepthOccluderMesh,
+  createScannedRoomSurfaceObject,
   decodeScannedRoom,
   findOpenSpawnInScannedRoom,
   resolveMoveInScannedRoom,
@@ -323,7 +324,10 @@ export const Room3DStudio: React.FC<Props> = ({
 }) => {
   const [step, setStep] = useState<Step>('capture');
   const [captureMode, setCaptureMode] = useState<'video' | 'photos'>('video');
-  const [videoFrames, setVideoFrames] = useState<string[]>([]);
+  const [videoFrames, setVideoFrames] = useState<PreparedScanFrame[]>([]);
+  const [scanHdFrames, setScanHdFrames] = useState<string[]>([]);
+  const [activeKeyframeIdx, setActiveKeyframeIdx] = useState<number | null>(null);
+  const [stageBoxSize, setStageBoxSize] = useState<{ w: number; h: number } | null>(null);
   const [extractPct, setExtractPct] = useState<number | null>(null);
   const [views, setViews] = useState<CapturedView[]>([]);
   const [error, setError] = useState('');
@@ -331,8 +335,7 @@ export const Room3DStudio: React.FC<Props> = ({
   const [roomData, setRoomData] = useState<ReconstructRoomResult | null>(null);
   const [scannedRoom, setScannedRoom] = useState<DecodedScannedRoom | null>(null);
   const [miniMapGridUrl, setMiniMapGridUrl] = useState<string>('');
-  const [showFreeFloor, setShowFreeFloor] = useState(true);
-  const [pointSize, setPointSize] = useState(0.042);
+  const [showFreeFloor, setShowFreeFloor] = useState(false);
   const [sceneReady, setSceneReady] = useState(0);
 
   const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
@@ -417,10 +420,10 @@ export const Room3DStudio: React.FC<Props> = ({
   emptyRoomRef.current = emptyRoom;
   const scannedRoomRef = useRef<DecodedScannedRoom | null>(null);
   scannedRoomRef.current = scannedRoom;
-  const showFreeFloorRef = useRef(true);
+  const showFreeFloorRef = useRef(false);
   showFreeFloorRef.current = showFreeFloor;
-  const pointSizeRef = useRef(0.042);
-  pointSizeRef.current = pointSize;
+  const activeKeyframeIdxRef = useRef<number | null>(null);
+  activeKeyframeIdxRef.current = activeKeyframeIdx;
   const roomDimsRef = useRef<{ w: number; d: number; ch: number }>({ w: 4.8, d: 5.4, ch: 2.75 });
   const hitObstacleRef = useRef(false);
   const blobUrlsRef = useRef<string[]>([]);
@@ -436,6 +439,8 @@ export const Room3DStudio: React.FC<Props> = ({
     floorMat?: THREE.MeshStandardMaterial;
     floorRgb?: [number, number, number];
     pointMat?: THREE.PointsMaterial;
+    roomSurfaceObj?: THREE.Object3D;
+    occluderEntry?: { mesh: THREE.Mesh; dispose: () => void };
     freeFloorMesh?: THREE.Mesh;
     borderLines: THREE.LineSegments;
     groups: Map<string, { key: string; root: THREE.Group }>;
@@ -464,6 +469,8 @@ export const Room3DStudio: React.FC<Props> = ({
     const s = sceneRef.current;
     if (!s) return;
     cancelAnimationFrame(s.rafId);
+    s.occluderEntry?.dispose();
+    s.occluderEntry = undefined;
     s.disposeFns.forEach((fn) => fn());
     s.controls.dispose();
     s.envTex?.dispose();
@@ -543,6 +550,8 @@ export const Room3DStudio: React.FC<Props> = ({
 
   const applyRoomResult = useCallback((res: ReconstructRoomResult) => {
     setScannedRoom(null);
+    setScanHdFrames([]);
+    setActiveKeyframeIdx(null);
     setMiniMapGridUrl('');
     roomDimsRef.current = { w: res.roomWidthM, d: res.roomDepthM, ch: res.ceilingHeightM };
     setRoomData(res);
@@ -578,8 +587,9 @@ export const Room3DStudio: React.FC<Props> = ({
   }, [initialPreset, loadDemoPreset]);
 
   const startGpuScan = async () => {
-    const rawFrames = captureMode === 'video' ? videoFrames : views.map((v) => v.dataUrl);
-    if (rawFrames.length < 4) return;
+    const hasVideo = captureMode === 'video';
+    const rawCount = hasVideo ? videoFrames.length : views.length;
+    if (rawCount < 4) return;
 
     const latestMem = getMembershipState();
     setMemberState(latestMem);
@@ -600,10 +610,11 @@ export const Room3DStudio: React.FC<Props> = ({
     setStep('reconstructing');
     setReconstructMsg('Kareler GPU için hazırlanıyor...');
     try {
-      const gpuFrames =
-        captureMode === 'video'
-          ? rawFrames
-          : await Promise.all(rawFrames.map((d) => downscaleDataUrlForGpu(d, 518)));
+      const prepared: PreparedScanFrame[] = hasVideo
+        ? videoFrames
+        : await Promise.all(views.map((v) => preparePhotoForScan(v.dataUrl)));
+      const gpuFrames = prepared.map((f) => f.gpuDataUrl);
+      const hdFrames = prepared.map((f) => f.hdDataUrl);
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (hasLocalCreds) {
@@ -669,7 +680,7 @@ export const Room3DStudio: React.FC<Props> = ({
         }
         setReconstructMsg(
           st === 'IN_PROGRESS'
-            ? `MapAnything gerçek 3D oda geometrisi çıkarıyor (${sec} sn)...`
+            ? `MapAnything gerçek 3D oda yüzeyini çıkarıyor (${sec} sn)...`
             : `Serverless GPU uyanıyor / sırada (${sec} sn)...`
         );
       }
@@ -684,6 +695,7 @@ export const Room3DStudio: React.FC<Props> = ({
 
       setRoomData(null);
       setScannedRoom(decoded);
+      setScanHdFrames(hdFrames);
       setMiniMapGridUrl(buildMiniMapGridDataUrl(decoded));
       roomDimsRef.current = {
         w: decoded.bounds.halfW * 2,
@@ -700,21 +712,24 @@ export const Room3DStudio: React.FC<Props> = ({
       setShowSizeBar(false);
       setWallMode('auto');
       setActiveCamIdx('free');
+      const initialKf = decoded.keyframes.length > 0 && hdFrames.length > 0 ? 0 : null;
+      setActiveKeyframeIdx(initialKf);
       setPreviewPhotoIdx(null);
-      setShowFreeFloor(true);
+      setShowFreeFloor(false);
       setStep('studio');
-      showToast(
-        `Gerçek 3D oda hazır (${decoded.pointCount.toLocaleString('tr-TR')} nokta • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`
-      );
+      const surfaceLabel = decoded.mesh
+        ? `${decoded.mesh.faceCount.toLocaleString('tr-TR')} yüzey`
+        : `${decoded.pointCount.toLocaleString('tr-TR')} nokta`;
+      showToast(`Gerçek 3D oda hazır (${surfaceLabel} • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Gerçek 3D oda oluşturulamadı');
       setStep('error');
     }
   };
 
-  // ---- 3D Oda Sahnesini Kur (Gerçek Tarama Nokta Bulutu VEYA Boş Demo Oda) ----
+  // ---- 3D Oda Sahnesini Kur (Katı 3D Tarama Yüzeyi VEYA Boş Demo Oda) ----
   const setupKey = scannedRoom
-    ? `scan:${scannedRoom.pointCount}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
+    ? `scan:${scannedRoom.pointCount}:${scannedRoom.mesh?.faceCount ?? 0}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
     : roomData
     ? `demo:${roomData.floorTexture.slice(0, 64)}:${roomData.viewCount}`
     : '';
@@ -737,15 +752,19 @@ export const Room3DStudio: React.FC<Props> = ({
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = scannedRoom ? 1.12 : 1.06;
+      renderer.toneMappingExposure = scannedRoom ? 1.06 : 1.06;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.localClippingEnabled = true;
 
+      const initialHdMode =
+        Boolean(scannedRoom) &&
+        activeKeyframeIdxRef.current !== null &&
+        Boolean(scannedRoom?.keyframes[activeKeyframeIdxRef.current]);
       const bgHex = scannedRoom ? 0x18181b : 0xf4f4f5;
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(bgHex);
-      renderer.setClearColor(bgHex, 1);
+      scene.background = initialHdMode ? null : new THREE.Color(bgHex);
+      renderer.setClearColor(initialHdMode ? 0x000000 : bgHex, initialHdMode ? 0 : 1);
 
       const camera = new THREE.PerspectiveCamera(52, w / h, 0.08, 60);
       const rw = roomDimsRef.current.w;
@@ -760,7 +779,8 @@ export const Room3DStudio: React.FC<Props> = ({
       controls.maxDistance = 16;
       controls.maxPolarAngle = Math.PI * 0.495;
       controls.target.set(0, 0.72, 0);
-      controls.update();
+      controls.enabled = !initialHdMode;
+      if (controls.enabled) controls.update();
 
       const maxAniso = renderer.capabilities.getMaxAnisotropy();
       const disposeFns: Array<() => void> = [];
@@ -771,6 +791,7 @@ export const Room3DStudio: React.FC<Props> = ({
       let floorMat: THREE.MeshStandardMaterial | undefined;
       let floorRgb: [number, number, number] | undefined;
       let pointMat: THREE.PointsMaterial | undefined;
+      let roomSurfaceObj: THREE.Object3D | undefined;
       let freeFloorMesh: THREE.Mesh | undefined;
       let borderLines: THREE.LineSegments;
       const walls: Array<{
@@ -822,16 +843,19 @@ export const Room3DStudio: React.FC<Props> = ({
         const borderMat = new THREE.LineBasicMaterial({ color: 0x52525b, transparent: true, opacity: 0.5 });
         borderLines = new THREE.LineSegments(borderGeo, borderMat);
         borderLines.position.y = 0.002;
+        borderLines.visible = !initialHdMode;
         scene.add(borderLines);
         disposeFns.push(() => {
           borderGeo.dispose();
           borderMat.dispose();
         });
 
-        const pcObj = createRoomPointCloudObject(scannedRoom, pointSizeRef.current, clipPlane);
-        scene.add(pcObj.points);
-        pointMat = pcObj.material;
-        disposeFns.push(pcObj.dispose);
+        const surfObj = createScannedRoomSurfaceObject(scannedRoom, clipPlane);
+        surfObj.object.visible = !initialHdMode;
+        scene.add(surfObj.object);
+        roomSurfaceObj = surfObj.object;
+        pointMat = surfObj.pointMat;
+        disposeFns.push(surfObj.dispose);
 
         const ffObj = createFreeFloorOverlayMesh(scannedRoom);
         ffObj.mesh.visible = showFreeFloorRef.current;
@@ -1020,6 +1044,7 @@ export const Room3DStudio: React.FC<Props> = ({
         floorMat,
         floorRgb,
         pointMat,
+        roomSurfaceObj,
         freeFloorMesh,
         borderLines,
         groups: new Map(),
@@ -1053,7 +1078,9 @@ export const Room3DStudio: React.FC<Props> = ({
       const animate = () => {
         if (!sceneRef.current) return;
         sceneRef.current.rafId = requestAnimationFrame(animate);
-        controls.update();
+        if (controls.enabled) {
+          controls.update();
+        }
         const wm = wallModeRef.current;
         for (const wall of walls) {
           if (wm === 'floor') {
@@ -1178,10 +1205,67 @@ export const Room3DStudio: React.FC<Props> = ({
     [roomData]
   );
 
-  // ---- Serbest 3D / Kuşbakışı Kamera Modu ----
+  // ---- HD Açı Kare Kutusu & Serbest 3D / Kuşbakışı Kamera Modu ----
+  useEffect(() => {
+    const stage = stageRef.current;
+    const kf =
+      step === 'studio' && scannedRoom && activeKeyframeIdx !== null
+        ? scannedRoom.keyframes[activeKeyframeIdx]
+        : undefined;
+    if (!stage || !kf) {
+      setStageBoxSize(null);
+      return;
+    }
+    const update = () => {
+      const aw = stage.clientWidth;
+      const ah = stage.clientHeight;
+      if (aw <= 0 || ah <= 0 || kf.aspect <= 0) return;
+      let bw = aw;
+      let bh = bw / kf.aspect;
+      if (bh > ah) {
+        bh = ah;
+        bw = bh * kf.aspect;
+      }
+      setStageBoxSize({ w: Math.round(bw), h: Math.round(bh) });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(stage);
+    return () => ro.disconnect();
+  }, [step, scannedRoom, activeKeyframeIdx]);
+
   useEffect(() => {
     const s = sceneRef.current;
     if (!s || (!roomData && !scannedRoom) || step !== 'studio') return;
+
+    if (s.occluderEntry) {
+      s.scene.remove(s.occluderEntry.mesh);
+      s.occluderEntry.dispose();
+      s.occluderEntry = undefined;
+    }
+
+    const kf =
+      scannedRoom && activeKeyframeIdx !== null ? scannedRoom.keyframes[activeKeyframeIdx] : undefined;
+
+    if (kf) {
+      s.scene.background = null;
+      s.renderer.setClearColor(0x000000, 0);
+      if (s.roomSurfaceObj) s.roomSurfaceObj.visible = false;
+      s.borderLines.visible = false;
+      s.floorMesh.visible = true;
+      s.controls.enabled = false;
+
+      s.camera.fov = kf.fovY;
+      s.camera.aspect = kf.aspect;
+      s.camera.position.set(kf.pos[0], kf.pos[1], kf.pos[2]);
+      s.camera.quaternion.set(kf.quat[0], kf.quat[1], kf.quat[2], kf.quat[3]);
+      s.camera.updateProjectionMatrix();
+
+      const occ = createKeyframeDepthOccluderMesh(kf);
+      s.scene.add(occ.mesh);
+      s.occluderEntry = occ;
+      return;
+    }
 
     const rw = roomDimsRef.current.w;
     const rd = roomDimsRef.current.d;
@@ -1190,6 +1274,7 @@ export const Room3DStudio: React.FC<Props> = ({
 
     s.scene.background = new THREE.Color(bgHex);
     s.renderer.setClearColor(bgHex, 1);
+    if (s.roomSurfaceObj) s.roomSurfaceObj.visible = true;
     if (hostRef.current && hostRef.current.clientWidth > 0 && hostRef.current.clientHeight > 0) {
       const nw = hostRef.current.clientWidth;
       const nh = hostRef.current.clientHeight;
@@ -1210,7 +1295,7 @@ export const Room3DStudio: React.FC<Props> = ({
       s.controls.target.set(0, 0.72, 0);
     }
     s.controls.update();
-  }, [activeCamIdx, roomData, scannedRoom, sceneReady, step]);
+  }, [activeCamIdx, activeKeyframeIdx, roomData, scannedRoom, sceneReady, step]);
 
   // ---- Kesit düzlemi ----
   useEffect(() => {
@@ -1232,15 +1317,7 @@ export const Room3DStudio: React.FC<Props> = ({
     }
   }, [clipAxis, clipPct, roomData, scannedRoom, sceneReady]);
 
-  // ---- Nokta Boyutu & Boş Zemin Vurgusu Canlı Güncellemesi ----
-  useEffect(() => {
-    const s = sceneRef.current;
-    if (s?.pointMat) {
-      s.pointMat.size = pointSize;
-      s.pointMat.needsUpdate = true;
-    }
-  }, [pointSize, sceneReady]);
-
+  // ---- Boş Zemin Vurgusu Canlı Güncellemesi ----
   useEffect(() => {
     const s = sceneRef.current;
     if (s?.freeFloorMesh) {
@@ -1274,6 +1351,7 @@ export const Room3DStudio: React.FC<Props> = ({
         if (!m.isMesh) return;
         m.castShadow = true;
         m.receiveShadow = true;
+        m.renderOrder = 1;
         m.userData.instanceId = item.id;
 
         if (item.product) {
@@ -1468,7 +1546,7 @@ export const Room3DStudio: React.FC<Props> = ({
       setItems([...itemsRef.current]);
     }
     if (sceneRef.current) {
-      sceneRef.current.controls.enabled = true;
+      sceneRef.current.controls.enabled = activeKeyframeIdxRef.current === null;
     }
   };
 
@@ -1678,7 +1756,29 @@ export const Room3DStudio: React.FC<Props> = ({
       s.selFrame.visible = false;
       s.renderer.render(s.scene, s.camera);
 
-      const url = s.renderer.domElement.toDataURL('image/jpeg', 0.92);
+      const kf =
+        scannedRoom && activeKeyframeIdx !== null ? scannedRoom.keyframes[activeKeyframeIdx] : undefined;
+      const hdUrl = kf ? scanHdFrames[kf.viewIdx] : undefined;
+      let url: string;
+      if (kf && hdUrl) {
+        const bgImg = await loadHtmlImage(hdUrl);
+        const glCanvas = s.renderer.domElement;
+        const cw = glCanvas.width || 1280;
+        const ch = glCanvas.height || 960;
+        const comp = document.createElement('canvas');
+        comp.width = cw;
+        comp.height = ch;
+        const ctx = comp.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(bgImg, 0, 0, cw, ch);
+          ctx.drawImage(glCanvas, 0, 0, cw, ch);
+          url = comp.toDataURL('image/jpeg', 0.92);
+        } else {
+          url = glCanvas.toDataURL('image/jpeg', 0.92);
+        }
+      } else {
+        url = s.renderer.domElement.toDataURL('image/jpeg', 0.92);
+      }
 
       s.selFrame.visible = prevFrame;
       s.renderer.render(s.scene, s.camera);
@@ -1709,6 +1809,9 @@ export const Room3DStudio: React.FC<Props> = ({
   const remainingTrials = Math.max(0, activePlan.perCustomerLimit - memberState.customerUsedScans);
   const gpuReady = Boolean(serverEnvConfigured || (memberState.runpodEndpointId && memberState.runpodApiKey));
   const activeFrameCount = captureMode === 'video' ? videoFrames.length : views.length;
+  const activeKf =
+    scannedRoom && activeKeyframeIdx !== null ? scannedRoom.keyframes[activeKeyframeIdx] : undefined;
+  const activeHdUrl = activeKf ? scanHdFrames[activeKf.viewIdx] : undefined;
 
   return (
     <div className="fixed inset-0 h-[100dvh] z-50 bg-zinc-950 text-white flex flex-col">
@@ -1730,7 +1833,13 @@ export const Room3DStudio: React.FC<Props> = ({
             {selectedItem
               ? `${selectedItem.label} • ${selectedItem.dimensionsCm}`
               : step === 'studio' && scannedRoom
-              ? `${visibleItems.length} mobilya • ${scannedRoom.pointCount.toLocaleString('tr-TR')} 3D nokta • Çarpışma korumalı`
+              ? activeKf && activeHdUrl
+                ? `${visibleItems.length} mobilya • HD Açı ${(activeKeyframeIdx ?? 0) + 1} • Derinlik & Çarpışma Korumalı`
+                : `${visibleItems.length} mobilya • ${
+                    scannedRoom.mesh
+                      ? `${scannedRoom.mesh.faceCount.toLocaleString('tr-TR')} katı 3D yüzey`
+                      : `${scannedRoom.pointCount.toLocaleString('tr-TR')} nokta`
+                  }`
               : step === 'studio'
               ? `${visibleItems.length} ürün odada • Çarpışma koruması açık`
               : 'Video / foto çekin veya boş oda seçin'}
@@ -1930,10 +2039,10 @@ export const Room3DStudio: React.FC<Props> = ({
                         </button>
                       </div>
                       <div className="flex gap-1.5 overflow-x-auto pb-1">
-                        {videoFrames.map((src, i) => (
+                        {videoFrames.map((vf, i) => (
                           <img
                             key={`vf-${i}`}
-                            src={src}
+                            src={vf.hdDataUrl}
                             alt={`Kare ${i + 1}`}
                             className="w-16 h-12 object-cover rounded border border-zinc-800 shrink-0"
                           />
@@ -2150,20 +2259,54 @@ export const Room3DStudio: React.FC<Props> = ({
 
       {step === 'studio' && (roomData || scannedRoom) && (
         <>
-          {/* Üst Kamera, Mini-Map & Oda Ölçü Sekmeleri */}
+          {/* Üst Kamera, HD Açı, Mini-Map & Oda Ölçü Sekmeleri */}
           <div className="bg-zinc-900 border-b border-zinc-800 px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
+            {scannedRoom && scannedRoom.keyframes.length > 0 && scanHdFrames.length > 0 && (
+              <>
+                {scannedRoom.keyframes.map((kf, kIdx) =>
+                  scanHdFrames[kf.viewIdx] ? (
+                    <button
+                      key={`hd-kf-${kf.viewIdx}`}
+                      onClick={() => {
+                        setActiveKeyframeIdx(kIdx);
+                        setActiveCamIdx('free');
+                      }}
+                      className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                        activeKeyframeIdx === kIdx
+                          ? 'bg-emerald-500 text-zinc-950'
+                          : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+                      }`}
+                    >
+                      HD Açı {kIdx + 1}
+                    </button>
+                  ) : null
+                )}
+                <span className="h-4 w-px bg-zinc-700 mx-0.5 shrink-0" />
+              </>
+            )}
+
             <button
-              onClick={() => setActiveCamIdx('free')}
+              onClick={() => {
+                setActiveKeyframeIdx(null);
+                setActiveCamIdx('free');
+              }}
               className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                activeCamIdx === 'free' ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-300'
+                activeKeyframeIdx === null && activeCamIdx === 'free'
+                  ? 'bg-white text-zinc-950'
+                  : 'bg-zinc-800 text-zinc-300'
               }`}
             >
-              Serbest 3D
+              {scannedRoom ? '3D Maket' : 'Serbest 3D'}
             </button>
             <button
-              onClick={() => setActiveCamIdx('top')}
+              onClick={() => {
+                setActiveKeyframeIdx(null);
+                setActiveCamIdx('top');
+              }}
               className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                activeCamIdx === 'top' ? 'bg-white text-zinc-950' : 'bg-zinc-800 text-zinc-300'
+                activeKeyframeIdx === null && activeCamIdx === 'top'
+                  ? 'bg-white text-zinc-950'
+                  : 'bg-zinc-800 text-zinc-300'
               }`}
             >
               Kuşbakışı
@@ -2179,34 +2322,14 @@ export const Room3DStudio: React.FC<Props> = ({
             </button>
 
             {scannedRoom ? (
-              <>
-                <button
-                  onClick={() => setShowFreeFloor((v) => !v)}
-                  className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                    showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
-                  }`}
-                >
-                  Boş Alanlar ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)} m²)
-                </button>
-                <span className="h-4 w-px bg-zinc-700 mx-1 shrink-0" />
-                {[
-                  { label: 'Nokta: İnce', v: 0.028 },
-                  { label: 'Dengeli', v: 0.042 },
-                  { label: 'Dolgun', v: 0.062 },
-                ].map((opt) => (
-                  <button
-                    key={opt.label}
-                    onClick={() => setPointSize(opt.v)}
-                    className={`px-2 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                      Math.abs(pointSize - opt.v) < 0.005
-                        ? 'bg-white text-zinc-950'
-                        : 'bg-zinc-800 text-zinc-300'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </>
+              <button
+                onClick={() => setShowFreeFloor((v) => !v)}
+                className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                  showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                Boş Alanlar ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)} m²)
+              </button>
             ) : (
               roomData && (
                 <>
@@ -2242,18 +2365,37 @@ export const Room3DStudio: React.FC<Props> = ({
             )}
           </div>
 
-          {/* 3D Zemin Simülasyonu & İnteraktif 2D Mini-Map */}
+          {/* 3D Zemin Simülasyonu, HD Gerçek Açı & İnteraktif 2D Mini-Map */}
           <div ref={stageRef} className="relative flex-1 min-h-0 flex items-center justify-center bg-zinc-950 overflow-hidden">
             <div
-              ref={hostRef}
-              className="w-full h-full cursor-grab active:cursor-grabbing"
-              onPointerDownCapture={onPointerDownCapture}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={handleStageDrop}
-            />
+              style={
+                activeKf && activeHdUrl && stageBoxSize
+                  ? { width: `${stageBoxSize.w}px`, height: `${stageBoxSize.h}px` }
+                  : undefined
+              }
+              className={`relative overflow-hidden ${activeKf && activeHdUrl ? 'shrink-0' : 'w-full h-full'}`}
+            >
+              {activeKf && activeHdUrl && (
+                <img
+                  src={activeHdUrl}
+                  alt={`Oda HD Açı ${(activeKeyframeIdx ?? 0) + 1}`}
+                  draggable={false}
+                  className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
+                />
+              )}
+              <div
+                ref={hostRef}
+                className={`relative z-10 w-full h-full ${
+                  activeKf && activeHdUrl ? 'cursor-move' : 'cursor-grab active:cursor-grabbing'
+                }`}
+                onPointerDownCapture={onPointerDownCapture}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerCancel={onPointerUp}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleStageDrop}
+              />
+            </div>
 
             {/* Açılı Referans Fotoğraf Küçük Penceresi (3D zemini bozmadan) */}
             {previewPhotoIdx !== null && roomData && roomData.cameras[previewPhotoIdx] && (
@@ -2284,10 +2426,13 @@ export const Room3DStudio: React.FC<Props> = ({
                   <span className="text-[10px] font-mono font-bold text-zinc-200">MİNİ-MAP</span>
                   <button
                     type="button"
-                    onClick={() => setActiveCamIdx((m) => (m === 'top' ? 'free' : 'top'))}
+                    onClick={() => {
+                      setActiveKeyframeIdx(null);
+                      setActiveCamIdx((m) => (m === 'top' ? 'free' : 'top'));
+                    }}
                     className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[9px] font-semibold text-zinc-100 whitespace-nowrap"
                   >
-                    {activeCamIdx === 'top' ? '3D' : '2D Plan'}
+                    {activeKeyframeIdx === null && activeCamIdx === 'top' ? '3D' : '2D Plan'}
                   </button>
                 </div>
                 {(() => {
@@ -2381,33 +2526,48 @@ export const Room3DStudio: React.FC<Props> = ({
                       })}
 
                       {scannedRoom
-                        ? scannedRoom.cameras.slice(0, 12).map(([cx, cy, cz], idx) => (
-                            <g
-                              key={`scan-cam-${idx}`}
-                              transform={`translate(${cx}, ${cz})`}
-                              onClick={() => {
-                                setActiveCamIdx('free');
-                                const s = sceneRef.current;
-                                if (s) {
-                                  s.camera.position.set(cx, Math.max(1.35, cy), cz);
-                                  s.controls.target.set(0, 0.55, 0);
-                                  s.controls.update();
-                                }
-                              }}
-                              className="cursor-pointer"
-                            >
-                              <circle r={0.2} fill="#10b981" stroke="#ffffff" strokeWidth={0.04} />
-                              <text
-                                textAnchor="middle"
-                                dominantBaseline="central"
-                                fill="#ffffff"
-                                fontSize={0.2}
-                                fontWeight="bold"
+                        ? scannedRoom.cameras.slice(0, 12).map(([cx, cy, cz], idx) => {
+                            const kfMatchIdx = scannedRoom.keyframes.findIndex((k) => k.viewIdx === idx);
+                            const activePin = kfMatchIdx >= 0 && activeKeyframeIdx === kfMatchIdx;
+                            return (
+                              <g
+                                key={`scan-cam-${idx}`}
+                                transform={`translate(${cx}, ${cz})`}
+                                onClick={() => {
+                                  if (kfMatchIdx >= 0 && scanHdFrames[idx]) {
+                                    setActiveKeyframeIdx(kfMatchIdx);
+                                    setActiveCamIdx('free');
+                                  } else {
+                                    setActiveKeyframeIdx(null);
+                                    setActiveCamIdx('free');
+                                    const s = sceneRef.current;
+                                    if (s) {
+                                      s.camera.position.set(cx, Math.max(1.35, cy), cz);
+                                      s.controls.target.set(0, 0.55, 0);
+                                      s.controls.update();
+                                    }
+                                  }
+                                }}
+                                className="cursor-pointer"
                               >
-                                {idx + 1}
-                              </text>
-                            </g>
-                          ))
+                                <circle
+                                  r={0.2}
+                                  fill={activePin ? '#10b981' : kfMatchIdx >= 0 ? '#059669' : '#27272a'}
+                                  stroke="#ffffff"
+                                  strokeWidth={0.04}
+                                />
+                                <text
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill="#ffffff"
+                                  fontSize={0.2}
+                                  fontWeight="bold"
+                                >
+                                  {idx + 1}
+                                </text>
+                              </g>
+                            );
+                          })
                         : roomData?.cameras.map((cam) => {
                             const yaw = (cam.index / totalCams) * Math.PI * 2;
                             const cx = -Math.sin(yaw) * rw * 0.45;

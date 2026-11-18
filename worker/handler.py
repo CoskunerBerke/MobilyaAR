@@ -1,10 +1,11 @@
 """
 Odanda Gör — RunPod Serverless GPU worker
 Gerçek oda 3D taraması: Meta MapAnything (facebook/map-anything-apache, Apache 2.0) ile
-4–40 fotoğraf / video karesinden metrik 3D nokta bulutu, zemin düzlemi ve doluluk haritası çıkarır.
+4–40 fotoğraf / video karesinden katı TSDF + Surface Nets 3D oda yüzeyi,
+zemin düzlemi, 10 cm doluluk haritası ve HD kamera derinlik maskeleri çıkarır.
 
 Girdi  (job["input"]):  {"images": ["<base64 jpeg>", ...]}
-Çıktı:                   {"ok": true, "points": "<b64 int16 mm xyz>", "colors": "<b64 uint8 rgb>", ...}
+Çıktı:                   {"ok": true, "mesh": {...}, "keyframes": [...], ...}
 """
 
 import base64
@@ -77,36 +78,53 @@ def handler(job):
                     amp_dtype="bf16",
                     apply_mask=True,
                     mask_edges=True,
-                    apply_confidence_mask=True,
-                    confidence_percentile=15,
+                    apply_confidence_mask=False,
                 )
             infer_s = time.time() - t_inf
 
-        pts_list, col_list, cam_list = [], [], []
+        views_data = []
         for pred in preds:
-            pts = _to_np(pred["pts3d"])[0].reshape(-1, 3)
-            img = _to_np(pred["img_no_norm"])[0].reshape(-1, 3)
+            pts = _to_np(pred["pts3d"])[0]  # (H, W, 3)
+            H, W = pts.shape[:2]
+            img = _to_np(pred["img_no_norm"])[0]
+            if img.ndim == 3 and img.shape[0] == 3 and img.shape[-1] != 3:
+                img = np.transpose(img, (1, 2, 0))
             if img.max() <= 1.5:
                 img = img * 255.0
-            mask = _to_np(pred["mask"])[0].reshape(-1) > 0.5
-            pts_list.append(pts[mask])
-            col_list.append(np.clip(img[mask], 0, 255).astype(np.uint8))
-            cam_list.append(_to_np(pred["camera_poses"])[0])
+            rgb_u8 = np.clip(img, 0, 255).astype(np.uint8)
+            mask = _to_np(pred["mask"])[0].reshape(H, W) > 0.5
+            pose = _to_np(pred["camera_poses"])[0]  # (4, 4) cam2world RDF
+            if "depth_z" in pred:
+                depth_z = _to_np(pred["depth_z"])[0].reshape(H, W)
+            else:
+                depth_z = ((pts - pose[:3, 3]) @ pose[:3, 2]).astype(np.float32)
+            if "intrinsics" in pred:
+                K = _to_np(pred["intrinsics"])[0]
+            else:
+                f = 0.85 * max(H, W)
+                K = np.array([[f, 0, W / 2.0], [0, f, H / 2.0], [0, 0, 1.0]], dtype=np.float32)
+            views_data.append(
+                {
+                    "pts3d": pts,
+                    "rgb": rgb_u8,
+                    "mask": mask,
+                    "depth_z": depth_z,
+                    "K": K,
+                    "pose": pose,
+                }
+            )
 
-        payload = build_room_payload(
-            np.concatenate(pts_list, axis=0),
-            np.concatenate(col_list, axis=0),
-            np.stack(cam_list, axis=0),
-        )
-        payload["stats"].update(
-            {
-                "views": len(images),
-                "inferSec": round(infer_s, 2),
-                "totalSec": round(time.time() - t_start, 2),
-                "model": MODEL_ID,
-                "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-            }
-        )
+        payload = build_room_payload(views_data)
+        if payload.get("ok"):
+            payload["stats"].update(
+                {
+                    "views": len(images),
+                    "inferSec": round(infer_s, 2),
+                    "totalSec": round(time.time() - t_start, 2),
+                    "model": MODEL_ID,
+                    "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+                }
+            )
         return payload
     except Exception as exc:
         traceback.print_exc()
@@ -114,6 +132,5 @@ def handler(job):
 
 
 if __name__ == "__main__":
-    # Soğuk başlangıcı kısaltmak için modeli handler'dan önce belleğe al
     get_model()
     runpod.serverless.start({"handler": handler})

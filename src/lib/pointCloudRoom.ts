@@ -9,12 +9,41 @@ import {
 } from './collision2d';
 import { decodeBase64Bytes } from './roomRendering';
 
+export interface ScannedKeyframePayload {
+  viewIdx: number;
+  pos: [number, number, number];
+  quat: [number, number, number, number];
+  fovY: number;
+  aspect: number;
+  occW: number;
+  occH: number;
+  occK: [number, number, number, number];
+  occDepthMm: string;
+}
+
+export interface DecodedKeyframe {
+  viewIdx: number;
+  pos: [number, number, number];
+  quat: [number, number, number, number];
+  fovY: number;
+  aspect: number;
+  occW: number;
+  occH: number;
+  occK: [number, number, number, number];
+  occDepthMm: Uint16Array;
+}
+
 export interface ScannedRoomPayload {
   ok: boolean;
   error?: string;
   pointCount: number;
   points: string; // base64 int16 mm xyz
   colors: string; // base64 uint8 rgb
+  mesh?: {
+    faceCount: number;
+    faces: string; // base64 uint16 triangle indices
+  };
+  keyframes?: ScannedKeyframePayload[];
   bounds: {
     halfW: number;
     halfD: number;
@@ -32,6 +61,9 @@ export interface ScannedRoomPayload {
     scaleFix?: number;
     cameraHeightM?: number;
     freeFloorM2?: number;
+    meshFaces?: number;
+    meshVerts?: number;
+    voxelM?: number;
     views?: number;
     inferSec?: number;
     totalSec?: number;
@@ -44,6 +76,11 @@ export interface DecodedScannedRoom {
   pointCount: number;
   positions: Float32Array;
   colors: Float32Array;
+  mesh?: {
+    faceCount: number;
+    indices: Uint16Array;
+  };
+  keyframes: DecodedKeyframe[];
   bounds: {
     halfW: number;
     halfD: number;
@@ -84,10 +121,43 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
     colors[o + 2] = c.b;
   }
 
+  let mesh: DecodedScannedRoom['mesh'];
+  if (raw.mesh && raw.mesh.faceCount > 0 && raw.mesh.faces) {
+    const faceBytes = decodeBase64Bytes(raw.mesh.faces);
+    const u16 = new Uint16Array(faceBytes.buffer, faceBytes.byteOffset, Math.floor(faceBytes.byteLength / 2));
+    const triLen = Math.min(raw.mesh.faceCount * 3, Math.floor(u16.length / 3) * 3);
+    if (triLen >= 3) {
+      mesh = {
+        faceCount: Math.floor(triLen / 3),
+        indices: u16.subarray(0, triLen),
+      };
+    }
+  }
+
+  const keyframes: DecodedKeyframe[] = [];
+  for (const kf of raw.keyframes || []) {
+    if (!kf.occDepthMm || !kf.occW || !kf.occH) continue;
+    const occBytes = decodeBase64Bytes(kf.occDepthMm);
+    const u16 = new Uint16Array(occBytes.buffer, occBytes.byteOffset, Math.floor(occBytes.byteLength / 2));
+    keyframes.push({
+      viewIdx: kf.viewIdx,
+      pos: kf.pos,
+      quat: kf.quat,
+      fovY: kf.fovY,
+      aspect: kf.aspect,
+      occW: kf.occW,
+      occH: kf.occH,
+      occK: kf.occK,
+      occDepthMm: u16,
+    });
+  }
+
   return {
     pointCount: count,
     positions,
     colors,
+    mesh,
+    keyframes,
     bounds: raw.bounds,
     grid: {
       w: raw.grid.w,
@@ -155,6 +225,106 @@ export function createRoomPointCloudObject(
   };
 }
 
+export function createScannedRoomSurfaceObject(
+  room: DecodedScannedRoom,
+  clipPlane?: THREE.Plane
+): { object: THREE.Object3D; pointMat?: THREE.PointsMaterial; dispose: () => void } {
+  if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(room.positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(room.colors, 3));
+    geo.setIndex(new THREE.BufferAttribute(room.mesh.indices, 1));
+    geo.computeBoundingSphere();
+
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      clippingPlanes: clipPlane ? [clipPlane] : [],
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.isHelper = true;
+    return {
+      object: mesh,
+      dispose: () => {
+        geo.dispose();
+        mat.dispose();
+      },
+    };
+  }
+
+  const fallback = createRoomPointCloudObject(room, 0.042, clipPlane);
+  return {
+    object: fallback.points,
+    pointMat: fallback.material,
+    dispose: fallback.dispose,
+  };
+}
+
+export function createKeyframeDepthOccluderMesh(
+  kf: DecodedKeyframe
+): { mesh: THREE.Mesh; dispose: () => void } {
+  const { occW: W, occH: H, occK, occDepthMm } = kf;
+  const [fx, fy, cx, cy] = occK;
+  const N = W * H;
+  const pos = new Float32Array(N * 3);
+  const depthM = new Float32Array(N);
+
+  for (let r = 0; r < H; r++) {
+    for (let c = 0; c < W; c++) {
+      const i = r * W + c;
+      const d = (occDepthMm[i] ?? 0) * 0.001;
+      depthM[i] = d;
+      if (d > 0.15) {
+        pos[i * 3] = ((c - cx) * d) / fx;
+        pos[i * 3 + 1] = -((r - cy) * d) / fy;
+        pos[i * 3 + 2] = -d;
+      }
+    }
+  }
+
+  const idxList: number[] = [];
+  for (let r = 0; r < H - 1; r++) {
+    for (let c = 0; c < W - 1; c++) {
+      const i00 = r * W + c;
+      const i01 = i00 + 1;
+      const i10 = i00 + W;
+      const i11 = i10 + 1;
+      const d00 = depthM[i00];
+      const d01 = depthM[i01];
+      const d10 = depthM[i10];
+      const d11 = depthM[i11];
+      if (d00 <= 0.15 || d01 <= 0.15 || d10 <= 0.15 || d11 <= 0.15) continue;
+      const dMin = Math.min(d00, d01, d10, d11);
+      const dMax = Math.max(d00, d01, d10, d11);
+      if (dMax - dMin >= 0.18) continue;
+      idxList.push(i00, i10, i01, i01, i10, i11);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idxList);
+  const mat = new THREE.MeshBasicMaterial({
+    colorWrite: false,
+    depthWrite: true,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(kf.pos[0], kf.pos[1], kf.pos[2]);
+  mesh.quaternion.set(kf.quat[0], kf.quat[1], kf.quat[2], kf.quat[3]);
+  mesh.renderOrder = -1;
+  mesh.userData.isHelper = true;
+
+  return {
+    mesh,
+    dispose: () => {
+      geo.dispose();
+      mat.dispose();
+    },
+  };
+}
+
 export function createFreeFloorOverlayMesh(
   room: DecodedScannedRoom
 ): { mesh: THREE.Mesh; dispose: () => void } {
@@ -169,17 +339,17 @@ export function createFreeFloorOverlayMesh(
     const val = cells[i] ?? 2;
     const o = i * 4;
     if (val === 0) {
-      // Görülen boş zemin: şeffaf zümrüt yeşili
+      // Görülen boş zemin: yumuşak şeffaf zümrüt yeşili
       imgData.data[o] = 16;
       imgData.data[o + 1] = 185;
       imgData.data[o + 2] = 129;
-      imgData.data[o + 3] = 74;
+      imgData.data[o + 3] = 46;
     } else if (val === 1) {
       // Dolu alan (mevcut eşya / duvar): hafif mercan uyarısı
       imgData.data[o] = 239;
       imgData.data[o + 1] = 68;
       imgData.data[o + 2] = 68;
-      imgData.data[o + 3] = 56;
+      imgData.data[o + 3] = 38;
     } else {
       imgData.data[o + 3] = 0;
     }
@@ -187,8 +357,8 @@ export function createFreeFloorOverlayMesh(
   ctx.putImageData(imgData, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.NearestFilter;
-  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
   tex.needsUpdate = true;
 

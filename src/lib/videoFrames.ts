@@ -1,36 +1,109 @@
 /**
- * Tarayıcı içinde mobil/masaüstü oda videosundan ~20 kare (518px JPEG) çıkarır
- * ve seçilen fotoğrafları Vercel/RunPod için kompakt boyuta indirger.
- * iOS Safari (HEVC/.MOV) donanım dekoderi için inline DOM mount + oynatma ısıtması + sıralı oynatma yedeği kullanır.
+ * Tarayıcı içinde mobil/masaüstü oda videosundan ve fotoğraflardan
+ * MapAnything oranlarına birebir hizalı 2'li kare seti üretir:
+ *  - gpuDataUrl (~518px): RunPod Serverless'a hızlı yükleme için
+ *  - hdDataUrl  (~1140px): Tarayıcı RAM'inde IKEA Kreativ tarzı cam netliğinde HD açı görünümü için
+ * iOS Safari (HEVC/.MOV) donanım dekoderi için inline DOM mount + oynatma ısıtması + sıralı oynatma yedeği içerir.
  */
+
+export interface PreparedScanFrame {
+  gpuDataUrl: string;
+  hdDataUrl: string;
+}
 
 type VideoWithRvfc = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: () => void) => number;
 };
 
-export async function downscaleDataUrlForGpu(dataUrl: string, maxEdge = 518): Promise<string> {
+const MAPANYTHING_518_BUCKETS: ReadonlyArray<readonly [number, number]> = [
+  [518, 518],
+  [518, 392],
+  [518, 336],
+  [518, 294],
+  [518, 252],
+  [518, 168],
+  [392, 518],
+  [336, 518],
+  [294, 518],
+  [252, 518],
+];
+
+const HD_SCALE = 2.2;
+
+function pickMapAnythingBucket(srcW: number, srcH: number): [number, number] {
+  const ar = Math.max(1, srcW) / Math.max(1, srcH);
+  let best = MAPANYTHING_518_BUCKETS[0];
+  let bestDiff = Infinity;
+  for (const b of MAPANYTHING_518_BUCKETS) {
+    const diff = Math.abs(b[0] / b[1] - ar);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = b;
+    }
+  }
+  return [best[0], best[1]];
+}
+
+function drawCenterCropped(
+  source: CanvasImageSource,
+  srcW: number,
+  srcH: number,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  targetW: number,
+  targetH: number,
+  quality: number
+): string {
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  const srcAr = srcW / Math.max(1, srcH);
+  const dstAr = targetW / targetH;
+  let sx = 0;
+  let sy = 0;
+  let sw = srcW;
+  let sh = srcH;
+  if (srcAr > dstAr) {
+    sw = Math.max(1, Math.round(srcH * dstAr));
+    sx = Math.round((srcW - sw) * 0.5);
+  } else if (srcAr < dstAr) {
+    sh = Math.max(1, Math.round(srcW / dstAr));
+    sy = Math.round((srcH - sh) * 0.5);
+  }
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, targetW, targetH);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+export async function preparePhotoForScan(dataUrl: string): Promise<PreparedScanFrame> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const w = img.naturalWidth || maxEdge;
-      const h = img.naturalHeight || maxEdge;
-      const s = Math.min(1, maxEdge / Math.max(w, h));
-      const cw = Math.max(1, Math.round(w * s));
-      const ch = Math.max(1, Math.round(h * s));
-      const c = document.createElement('canvas');
-      c.width = cw;
-      c.height = ch;
-      const ctx = c.getContext('2d');
-      if (!ctx) {
+      const w = img.naturalWidth || 518;
+      const h = img.naturalHeight || 518;
+      const [tw, th] = pickMapAnythingBucket(w, h);
+      const gpuC = document.createElement('canvas');
+      const hdC = document.createElement('canvas');
+      const gpuCtx = gpuC.getContext('2d');
+      const hdCtx = hdC.getContext('2d');
+      if (!gpuCtx || !hdCtx) {
         reject(new Error('Görsel kanvası oluşturulamadı'));
         return;
       }
-      ctx.drawImage(img, 0, 0, cw, ch);
-      resolve(c.toDataURL('image/jpeg', 0.8));
+      const gpuDataUrl = drawCenterCropped(img, w, h, gpuC, gpuCtx, tw, th, 0.8);
+      const hdW = Math.round(tw * HD_SCALE);
+      const hdH = Math.round(th * HD_SCALE);
+      const hdDataUrl = drawCenterCropped(img, w, h, hdC, hdCtx, hdW, hdH, 0.86);
+      resolve({ gpuDataUrl, hdDataUrl });
     };
     img.onerror = () => reject(new Error('Görsel ölçeklenemedi'));
     img.src = dataUrl;
   });
+}
+
+export async function downscaleDataUrlForGpu(dataUrl: string, _maxEdge = 518): Promise<string> {
+  const prepared = await preparePhotoForScan(dataUrl);
+  return prepared.gpuDataUrl;
 }
 
 function waitDecodedFrame(video: VideoWithRvfc, maxWaitMs = 140): Promise<void> {
@@ -62,17 +135,21 @@ function waitDecodedFrame(video: VideoWithRvfc, maxWaitMs = 140): Promise<void> 
   });
 }
 
-function captureFrame(
+function captureDualFrame(
   video: HTMLVideoElement,
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D,
-  cw: number,
-  ch: number
-): { dataUrl: string; hasSignal: boolean } {
-  ctx.drawImage(video, 0, 0, cw, ch);
+  srcW: number,
+  srcH: number,
+  tw: number,
+  th: number,
+  gpuCanvas: HTMLCanvasElement,
+  gpuCtx: CanvasRenderingContext2D,
+  hdCanvas: HTMLCanvasElement,
+  hdCtx: CanvasRenderingContext2D
+): { frame: PreparedScanFrame; hasSignal: boolean } {
+  const gpuDataUrl = drawCenterCropped(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.8);
   let hasSignal = true;
   try {
-    const data = ctx.getImageData(0, 0, cw, ch).data;
+    const data = gpuCtx.getImageData(0, 0, tw, th).data;
     const stride = Math.max(1, Math.floor(data.length / (4 * 64))) * 4;
     let lit = 0;
     for (let i = 0; i < data.length; i += stride) {
@@ -85,14 +162,17 @@ function captureFrame(
   } catch {
     hasSignal = true;
   }
-  return { dataUrl: canvas.toDataURL('image/jpeg', 0.78), hasSignal };
+  const hdW = Math.round(tw * HD_SCALE);
+  const hdH = Math.round(th * HD_SCALE);
+  const hdDataUrl = drawCenterCropped(video, srcW, srcH, hdCanvas, hdCtx, hdW, hdH, 0.86);
+  return { frame: { gpuDataUrl, hdDataUrl }, hasSignal };
 }
 
 async function primeVideoDecoder(video: VideoWithRvfc): Promise<void> {
   try {
     await video.play();
   } catch {
-    /* iOS / tarayıcı kullanıcı etkileşimi kısıtı olsa bile readyState bekle */
+    /* iOS kısıtı olsa bile readyState bekle */
   }
   if (video.readyState < 2) {
     await new Promise<void>((resolve) => {
@@ -168,13 +248,17 @@ async function seekVideoTo(video: VideoWithRvfc, targetTime: number, timeoutMs =
 
 async function extractSequentialFallback(
   video: VideoWithRvfc,
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D,
-  cw: number,
-  ch: number,
+  srcW: number,
+  srcH: number,
+  tw: number,
+  th: number,
+  gpuCanvas: HTMLCanvasElement,
+  gpuCtx: CanvasRenderingContext2D,
+  hdCanvas: HTMLCanvasElement,
+  hdCtx: CanvasRenderingContext2D,
   maxFrames: number,
   onProgress?: (pct: number) => void
-): Promise<string[]> {
+): Promise<PreparedScanFrame[]> {
   try {
     video.currentTime = 0;
   } catch {
@@ -193,7 +277,7 @@ async function extractSequentialFallback(
 
   const finiteDur = Number.isFinite(video.duration) && video.duration > 0.5 ? Math.min(45, video.duration) : 0;
   const sampleStepSec = finiteDur ? Math.max(0.25, (finiteDur * 0.92) / maxFrames) : 0.45;
-  const collected: string[] = [];
+  const collected: PreparedScanFrame[] = [];
   let lastSampledVideoT = -sampleStepSec;
   const wallStart = Date.now();
 
@@ -202,9 +286,9 @@ async function extractSequentialFallback(
     if (video.readyState < 2) continue;
     const t = video.currentTime;
     if (collected.length === 0 || t - lastSampledVideoT >= sampleStepSec) {
-      const cap = captureFrame(video, canvas, ctx, cw, ch);
+      const cap = captureDualFrame(video, srcW, srcH, tw, th, gpuCanvas, gpuCtx, hdCanvas, hdCtx);
       if (cap.hasSignal || collected.length > 0) {
-        collected.push(cap.dataUrl);
+        collected.push(cap.frame);
         lastSampledVideoT = t;
         onProgress?.(Math.min(99, Math.round((collected.length / maxFrames) * 100)));
       }
@@ -220,7 +304,7 @@ async function extractSequentialFallback(
   if (collected.length <= maxFrames) {
     return collected;
   }
-  const sampled: string[] = [];
+  const sampled: PreparedScanFrame[] = [];
   for (let i = 0; i < maxFrames; i++) {
     const idx = Math.round((i / (maxFrames - 1)) * (collected.length - 1));
     sampled.push(collected[idx]);
@@ -231,9 +315,9 @@ async function extractSequentialFallback(
 export async function extractFramesFromVideo(
   file: File,
   maxFrames = 20,
-  maxEdge = 518,
+  _maxEdge = 518,
   onProgress?: (pct: number) => void
-): Promise<string[]> {
+): Promise<PreparedScanFrame[]> {
   const url = URL.createObjectURL(file);
   const video = document.createElement('video') as VideoWithRvfc;
   video.muted = true;
@@ -287,16 +371,15 @@ export async function extractFramesFromVideo(
 
     const vw = video.videoWidth || 720;
     const vh = video.videoHeight || 1280;
-    const scale = Math.min(1, maxEdge / Math.max(vw, vh));
-    const cw = Math.max(1, Math.round(vw * scale));
-    const ch = Math.max(1, Math.round(vh * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = cw;
-    canvas.height = ch;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Video kare kanvası oluşturulamadı');
+    const [tw, th] = pickMapAnythingBucket(vw, vh);
 
-    let frames: string[] = [];
+    const gpuCanvas = document.createElement('canvas');
+    const hdCanvas = document.createElement('canvas');
+    const gpuCtx = gpuCanvas.getContext('2d');
+    const hdCtx = hdCanvas.getContext('2d');
+    if (!gpuCtx || !hdCtx) throw new Error('Video kare kanvası oluşturulamadı');
+
+    let frames: PreparedScanFrame[] = [];
     let seekFailed = false;
 
     if (Number.isFinite(video.duration) && video.duration > 0.5) {
@@ -315,12 +398,12 @@ export async function extractFramesFromVideo(
           break;
         }
 
-        let cap = captureFrame(video, canvas, ctx, cw, ch);
+        let cap = captureDualFrame(video, vw, vh, tw, th, gpuCanvas, gpuCtx, hdCanvas, hdCtx);
         if (!cap.hasSignal && i === 0) {
           await new Promise<void>((r) => setTimeout(r, 150));
-          cap = captureFrame(video, canvas, ctx, cw, ch);
+          cap = captureDualFrame(video, vw, vh, tw, th, gpuCanvas, gpuCtx, hdCanvas, hdCtx);
         }
-        frames.push(cap.dataUrl);
+        frames.push(cap.frame);
         onProgress?.(Math.round(((i + 1) / count) * 100));
       }
     } else {
@@ -328,7 +411,19 @@ export async function extractFramesFromVideo(
     }
 
     if (seekFailed || frames.length < 4) {
-      const fallbackFrames = await extractSequentialFallback(video, canvas, ctx, cw, ch, maxFrames, onProgress);
+      const fallbackFrames = await extractSequentialFallback(
+        video,
+        vw,
+        vh,
+        tw,
+        th,
+        gpuCanvas,
+        gpuCtx,
+        hdCanvas,
+        hdCtx,
+        maxFrames,
+        onProgress
+      );
       if (fallbackFrames.length >= 4) {
         frames = fallbackFrames;
       }
