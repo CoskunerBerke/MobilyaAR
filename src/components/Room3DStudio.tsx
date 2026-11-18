@@ -2,15 +2,18 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   ArrowLeft,
   Camera,
+  Copy,
   Download,
   Eye,
   ImageIcon,
   Layers,
   Loader2,
   Plus,
+  QrCode,
   RefreshCw,
   RotateCcw,
   RotateCw,
@@ -21,6 +24,7 @@ import {
 } from 'lucide-react';
 import type { Product } from '../lib/products';
 import {
+  buildShareUrl,
   reconstructRoom3D,
   type ReconstructRoomResult,
   type ReconstructedObject3D,
@@ -259,6 +263,25 @@ export const Room3DStudio: React.FC<Props> = ({
   const [activeCamIdx, setActiveCamIdx] = useState<number | 'free' | 'top'>('free');
   const [disp, setDisp] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [saving, setSaving] = useState(false);
+  const [addingPhotos, setAddingPhotos] = useState(false);
+  const [showMobileQr, setShowMobileQr] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const mobileStudioUrl = buildShareUrl({
+    productId: product.id,
+    glbUrl: product.glbUrl,
+    productName: product.name,
+    dimensionsCm: product.dimensionsCm,
+    mode: 'studio',
+    serverOnline,
+    serverUrl,
+  });
+
+  const copyMobileStudioUrl = () => {
+    navigator.clipboard?.writeText(mobileStudioUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -337,21 +360,29 @@ export const Room3DStudio: React.FC<Props> = ({
   const addFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     const picked = Array.from(fileList).slice(0, Math.max(0, 6 - views.length));
-    const parsed: CapturedView[] = [];
-    for (const f of picked) {
-      try {
-        const res = await normalizeRoomPhoto(f, 1024);
-        parsed.push({
-          id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          dataUrl: res.dataUrl,
-          exifFocal35mm: res.exifFocal35mm,
-        });
-      } catch {
-        /* ignore unreadable file */
+    if (picked.length === 0) return;
+    setAddingPhotos(true);
+    try {
+      const parsed: CapturedView[] = [];
+      for (const f of picked) {
+        try {
+          const res = await normalizeRoomPhoto(f, 1024);
+          parsed.push({
+            id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            dataUrl: res.dataUrl,
+            exifFocal35mm: res.exifFocal35mm,
+          });
+        } catch {
+          /* ignore unreadable file */
+        }
       }
-    }
-    if (parsed.length > 0) {
-      setViews((prev) => [...prev, ...parsed].slice(0, 6));
+      if (parsed.length > 0) {
+        setViews((prev) => [...prev, ...parsed].slice(0, 6));
+      } else {
+        showToast('Seçilen fotoğraf okunamadı — lütfen JPG veya PNG deneyin');
+      }
+    } finally {
+      setAddingPhotos(false);
     }
   };
 
@@ -402,11 +433,11 @@ export const Room3DStudio: React.FC<Props> = ({
   }, [initialPreset, loadDemoPreset]);
 
   const startReconstruction = async () => {
-    if (views.length < 2) return;
+    if (views.length < 1) return;
     disposeStudio();
     setStep('reconstructing');
     try {
-      if (serverOnline) {
+      if (serverOnline && views.length >= 2) {
         try {
           const res = await reconstructRoom3D(
             serverUrl,
@@ -1319,7 +1350,7 @@ export const Room3DStudio: React.FC<Props> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 bg-zinc-950 text-white flex flex-col">
+    <div className="fixed inset-0 h-[100dvh] z-50 bg-zinc-950 text-white flex flex-col">
       <header className="h-14 px-3 flex items-center justify-between gap-2 border-b border-zinc-800 shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 px-2 py-2 text-xs font-semibold whitespace-nowrap shrink-0">
           <ArrowLeft className="w-4 h-4" />
@@ -1337,16 +1368,154 @@ export const Room3DStudio: React.FC<Props> = ({
               ? `${selectedItem.label} • ${selectedItem.dimensionsCm}`
               : step === 'studio'
               ? `${visibleItems.length} ürün odada • Çarpışma koruması açık`
-              : 'Boş oda seçin veya fotoğraf yükleyin'}
+              : 'Fotoğraf çekin veya boş oda seçin'}
           </p>
         </div>
 
-        <div className="w-12 shrink-0" />
+        {step === 'studio' ? (
+          <button
+            type="button"
+            onClick={() => setStep('capture')}
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-semibold whitespace-nowrap shrink-0"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>Oda Çek</span>
+          </button>
+        ) : (
+          <div className="w-12 shrink-0" />
+        )}
       </header>
 
       {step === 'capture' && (
-        <div className="flex-1 overflow-y-auto p-5 flex items-center justify-center">
-          <div className="max-w-lg w-full space-y-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
+          <div className="min-h-full flex flex-col justify-center max-w-lg w-full mx-auto space-y-4 py-2">
+            {toastMsg && (
+              <div className="bg-zinc-900 border border-amber-700/80 px-3.5 py-2.5 rounded-lg text-xs font-medium text-amber-200 text-center">
+                {toastMsg}
+              </div>
+            )}
+
+            <div className="space-y-3 border border-zinc-800 bg-zinc-900/70 rounded-lg p-4">
+              <div className="space-y-1 text-center">
+                <h2 className="text-base font-bold text-white">Kendi odanızı fotoğraflayın veya yükleyin</h2>
+                <p className="text-xs text-zinc-400">
+                  1–6 açıdan zemini ve duvarları çekin; tek 360° 3D sahneye dönüşsün.
+                </p>
+              </div>
+
+              {views.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                  {views.map((v, idx) => (
+                    <div key={v.id} className="relative aspect-[4/3] bg-zinc-950 border border-zinc-800 rounded overflow-hidden">
+                      <img src={v.dataUrl} alt={`Açı ${idx + 1}`} className="w-full h-full object-cover" />
+                      <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/75 text-[10px] font-mono rounded">
+                        {idx + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setViews((prev) => prev.filter((item) => item.id !== v.id))}
+                        className="absolute top-1 right-1 w-5 h-5 bg-black/80 rounded-full flex items-center justify-center text-white"
+                        aria-label="Sil"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className="relative overflow-hidden py-3.5 px-3 bg-white text-zinc-950 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer">
+                  <Camera className="w-4 h-4" />
+                  <span>Kamera ile Çek</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    onChange={(e) => {
+                      addFiles(e.target.files);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+
+                <label className="relative overflow-hidden py-3.5 px-3 border border-zinc-700 hover:border-white text-zinc-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer">
+                  <ImageIcon className="w-4 h-4" />
+                  <span>Galeriden Çoklu Seç</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    onChange={(e) => {
+                      addFiles(e.target.files);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={startReconstruction}
+                disabled={views.length < 1 || addingPhotos}
+                className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-sm rounded-lg flex items-center justify-center gap-2"
+              >
+                {addingPhotos ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                <span>
+                  {addingPhotos ? 'Fotoğraflar hazırlanıyor...' : `3D Odayı Kur (${views.length}/6 Fotoğraf)`}
+                </span>
+              </button>
+            </div>
+
+            {/* Masaüstünden telefona QR geçiş kartı */}
+            <div className="hidden sm:flex items-center gap-4 p-4 border border-zinc-800 bg-zinc-900/75 rounded-lg text-left">
+              <div className="bg-white p-2 rounded shrink-0">
+                <QRCodeSVG value={mobileStudioUrl} size={104} />
+              </div>
+              <div className="min-w-0 space-y-2">
+                <p className="text-xs font-bold text-white">Telefonunuzda Odanızı Çekin veya Yükleyin</p>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Telefon kamerasıyla QR kodu okutun; çoklu açı çekim ekranı telefonunuzda açılsın.
+                </p>
+                <button
+                  type="button"
+                  onClick={copyMobileStudioUrl}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-zinc-700 hover:border-white rounded text-[11px] font-semibold text-zinc-200 whitespace-nowrap"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>{copiedLink ? 'Kopyalandı' : 'Linki Kopyala'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="sm:hidden space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowMobileQr((v) => !v)}
+                className="w-full py-2.5 px-3 border border-zinc-800 bg-zinc-900/60 hover:border-zinc-600 rounded-lg text-[11px] font-semibold text-zinc-300 flex items-center justify-center gap-1.5"
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                <span>{showMobileQr ? 'QR Kodu Gizle' : 'Başka Telefonda Açmak İçin QR Kodu Göster'}</span>
+              </button>
+              {showMobileQr && (
+                <div className="p-3.5 border border-zinc-800 bg-zinc-900/80 rounded-lg flex flex-col items-center gap-2.5">
+                  <div className="bg-white p-2 rounded">
+                    <QRCodeSVG value={mobileStudioUrl} size={136} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={copyMobileStudioUrl}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-zinc-700 rounded text-[11px] font-semibold text-zinc-200"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{copiedLink ? 'Kopyalandı' : 'Linki Kopyala'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="space-y-2 border border-zinc-800 bg-zinc-900/70 rounded-lg p-3.5">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
                 Hazır Boş 3D Odalar (Anında Başla)
@@ -1369,75 +1538,6 @@ export const Room3DStudio: React.FC<Props> = ({
                 ))}
               </div>
             </div>
-
-            <div className="space-y-1.5 text-center pt-1">
-              <h2 className="text-base font-bold">Veya kendi odanızı 4–5 farklı açıdan çekin</h2>
-              <p className="text-xs text-zinc-400">
-                Her köşeden zemini ve duvarları görecek şekilde 2–6 fotoğraf seçin; tek 360° 3D sahneye dönüşsün.
-              </p>
-            </div>
-
-            {views.length > 0 && (
-              <div className="grid grid-cols-3 gap-2">
-                {views.map((v, idx) => (
-                  <div key={v.id} className="relative aspect-[4/3] bg-zinc-900 border border-zinc-800 rounded overflow-hidden">
-                    <img src={v.dataUrl} alt={`Açı ${idx + 1}`} className="w-full h-full object-cover" />
-                    <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/75 text-[10px] font-mono rounded">
-                      {idx + 1}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setViews((prev) => prev.filter((item) => item.id !== v.id))}
-                      className="absolute top-1 right-1 w-5 h-5 bg-black/80 rounded-full flex items-center justify-center text-white"
-                      aria-label="Sil"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-2.5">
-              <label className="py-3.5 px-3 border border-zinc-700 hover:border-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer">
-                <Camera className="w-4 h-4" />
-                <span>Kamera ile Ekle</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => {
-                    addFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-
-              <label className="py-3.5 px-3 border border-zinc-700 hover:border-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer">
-                <ImageIcon className="w-4 h-4" />
-                <span>Galeriden Çoklu Seç</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    addFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={startReconstruction}
-              disabled={views.length < 2}
-              className="w-full py-4 bg-white text-zinc-950 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-sm rounded-lg flex items-center justify-center gap-2"
-            >
-              <span>3D Odayı Modelle ({views.length}/6 Açı)</span>
-            </button>
           </div>
         </div>
       )}

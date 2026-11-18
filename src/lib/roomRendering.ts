@@ -6,32 +6,47 @@ export async function normalizeRoomPhoto(
   maxEdge = 1600
 ): Promise<{ dataUrl: string; exifFocal35mm?: number }> {
   const exifFocal35mm = await extractExifFocal35mm(file);
-  let src: CanvasImageSource;
-  let w: number;
-  let h: number;
+
+  const drawScaled = (src: CanvasImageSource, w: number, h: number): string => {
+    const s = Math.min(1, maxEdge / Math.max(w, h));
+    const cw = Math.max(1, Math.round(w * s));
+    const ch = Math.max(1, Math.round(h * s));
+    const c = document.createElement('canvas');
+    c.width = cw;
+    c.height = ch;
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('Görsel kanvası oluşturulamadı');
+    ctx.drawImage(src, 0, 0, cw, ch);
+    return c.toDataURL('image/jpeg', 0.9);
+  };
+
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    src = bmp;
-    w = bmp.width;
-    h = bmp.height;
+    try {
+      if (bmp.width > 0 && bmp.height > 0) {
+        return { dataUrl: drawScaled(bmp, bmp.width, bmp.height), exifFocal35mm };
+      }
+      throw new Error('Geçersiz fotoğraf boyutu');
+    } finally {
+      bmp.close();
+    }
   } catch {
     const url = URL.createObjectURL(file);
-    const img = await new Promise<HTMLImageElement>((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = rej;
-      i.src = url;
-    });
-    src = img;
-    w = img.naturalWidth;
-    h = img.naturalHeight;
+    try {
+      const img = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = url;
+      });
+      if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+        throw new Error('Geçersiz fotoğraf boyutu');
+      }
+      return { dataUrl: drawScaled(img, img.naturalWidth, img.naturalHeight), exifFocal35mm };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
-  const s = Math.min(1, maxEdge / Math.max(w, h));
-  const c = document.createElement('canvas');
-  c.width = Math.round(w * s);
-  c.height = Math.round(h * s);
-  c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
-  return { dataUrl: c.toDataURL('image/jpeg', 0.9), exifFocal35mm };
 }
 
 export function loadHtmlImage(url: string): Promise<HTMLImageElement> {

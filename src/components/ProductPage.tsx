@@ -14,6 +14,7 @@ interface Props {
   startMode?: 'preview' | 'photo' | 'studio';
   initialDemoRoomId?: DemoPhotoRoom['id'];
   initialStudioPreset?: DemoStudioPresetId;
+  initialColorHex?: string;
   onBack: () => void;
 }
 
@@ -25,12 +26,13 @@ export const ProductPage: React.FC<Props> = ({
   startMode = 'preview',
   initialDemoRoomId,
   initialStudioPreset,
+  initialColorHex,
   onBack,
 }) => {
   const [mode, setMode] = useState<'preview' | 'photo' | 'studio'>(startMode);
   const [photoDemoId, setPhotoDemoId] = useState<DemoPhotoRoom['id'] | undefined>(initialDemoRoomId);
   const [studioPreset, setStudioPreset] = useState<DemoStudioPresetId | undefined>(initialStudioPreset);
-  const [colorHex, setColorHex] = useState<string | undefined>(() => product.swatches?.[0]?.hex);
+  const [colorHex, setColorHex] = useState<string | undefined>(() => initialColorHex || product.swatches?.[0]?.hex);
   const mvRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -95,7 +97,7 @@ export const ProductPage: React.FC<Props> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-40 bg-[#f5f5f4] text-zinc-950 flex flex-col">
+    <div className="fixed inset-0 h-[100dvh] z-40 bg-[#f5f5f4] text-zinc-950 flex flex-col">
       <header className="h-14 px-3 flex items-center border-b border-zinc-200 bg-white shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 px-2 py-2 text-xs font-semibold whitespace-nowrap">
           <ArrowLeft className="w-4 h-4" />
@@ -117,7 +119,7 @@ export const ProductPage: React.FC<Props> = ({
         />
       </div>
 
-      <div className="shrink-0 bg-white border-t border-zinc-200 p-4 space-y-2.5">
+      <div className="shrink-0 bg-white border-t border-zinc-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-2.5">
         <div>
           <p className="text-[11px] uppercase tracking-wider text-zinc-500">
             {product.source === 'ikea-cad' ? `IKEA CAD • ${product.category}` : product.source === 'studyo-cad' ? `Stüdyo CAD • ${product.category}` : product.category}
@@ -147,6 +149,17 @@ export const ProductPage: React.FC<Props> = ({
           </div>
         )}
 
+        <button
+          onClick={() => {
+            setPhotoDemoId(undefined);
+            setMode('photo');
+          }}
+          className="w-full py-3.5 bg-zinc-950 hover:bg-zinc-800 text-white text-sm font-bold rounded-lg flex items-center justify-center gap-2"
+        >
+          <Camera className="w-4 h-4" />
+          <span>Kendi Odamın Fotoğrafında Gör (Çek / Yükle)</span>
+        </button>
+
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => {
@@ -161,36 +174,25 @@ export const ProductPage: React.FC<Props> = ({
 
           <button
             onClick={() => {
-              setPhotoDemoId('oak');
-              setMode('photo');
+              setStudioPreset(undefined);
+              setMode('studio');
             }}
-            className="py-2.5 px-3 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-950 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
+            className="py-2.5 px-3 border border-zinc-950 hover:bg-zinc-50 text-zinc-950 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
           >
-            <Camera className="w-3.5 h-3.5" />
-            <span>Örnek Fotoğrafta Gör</span>
+            <Layers className="w-3.5 h-3.5" />
+            <span>3D Odamı Modelle (Çoklu Açı)</span>
           </button>
         </div>
 
         <button
           onClick={() => {
-            setStudioPreset(undefined);
-            setMode('studio');
-          }}
-          className="w-full py-3.5 bg-zinc-950 hover:bg-zinc-800 text-white text-sm font-bold rounded-lg flex items-center justify-center gap-2"
-        >
-          <Layers className="w-4 h-4" />
-          <span>3D Odamı Modelle (4–5 Fotoğrafla Döndür & Kes)</span>
-        </button>
-
-        <button
-          onClick={() => {
-            setPhotoDemoId(undefined);
+            setPhotoDemoId('oak');
             setMode('photo');
           }}
-          className="w-full py-3.5 border border-zinc-950 hover:bg-zinc-50 text-zinc-950 text-sm font-bold rounded-lg flex items-center justify-center gap-2"
+          className="w-full py-2.5 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-950 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
         >
-          <Camera className="w-4 h-4" />
-          <span>Kendi Fotoğrafımla Tasarla</span>
+          <Camera className="w-3.5 h-3.5" />
+          <span>Örnek Fotoğrafta Gör</span>
         </button>
       </div>
     </div>

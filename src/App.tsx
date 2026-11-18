@@ -4,9 +4,11 @@ import { QRCodeSVG } from 'qrcode.react';
 import { ArrowRight, Camera, Copy, Download, Layers, Loader2, Plus, QrCode, Server, Upload, X } from 'lucide-react';
 import { PRODUCTS, findProduct, type Product } from './lib/products';
 import {
+  buildShareUrl,
   checkHealth,
   generateProduct3D,
   getPodId,
+  getPublicOrigin,
   getServerUrl,
   setServerPod,
   uploadCustomGlb,
@@ -15,15 +17,6 @@ import {
 import { convertCadFileToGlb } from './lib/cadImport';
 import { DEMO_STUDIO_PRESETS, type DemoPhotoRoom, type DemoStudioPresetId } from './lib/demoRooms';
 import { ProductPage } from './components/ProductPage';
-
-const DEFAULT_PUBLIC_ORIGIN = 'https://stephanie-kinda-assessment-points.trycloudflare.com';
-
-function publicOrigin(): string {
-  const h = window.location.hostname;
-  return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')
-    ? DEFAULT_PUBLIC_ORIGIN
-    : window.location.origin;
-}
 
 function preprocessPhotoFor3D(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -63,6 +56,7 @@ type ActiveViewState = {
   mode: 'preview' | 'photo' | 'studio';
   demoRoomId?: DemoPhotoRoom['id'];
   studioPreset?: DemoStudioPresetId;
+  colorHex?: string;
 };
 
 export function App() {
@@ -77,8 +71,11 @@ export function App() {
     const urun = q.get('urun');
     const mod = q.get('mod');
     const oda = q.get('oda');
+    const renk = q.get('renk') || undefined;
     const startMode: 'preview' | 'photo' | 'studio' =
       mod === 'studio' ? 'studio' : mod === 'photo' ? 'photo' : 'preview';
+    const studioPreset = oda === 'living' || oda === 'bedroom' || oda === 'grand' ? oda : undefined;
+    const demoRoomId = oda === 'oak' || oda === 'rug' || oda === 'travertine' ? oda : undefined;
 
     if (glb) {
       return {
@@ -91,21 +88,26 @@ export function App() {
           source: 'ozel-cad',
         },
         mode: startMode,
+        studioPreset,
+        demoRoomId,
+        colorHex: renk,
       };
     }
     const found = findProduct(urun);
-    if (found) {
+    if (found || mod === 'photo' || mod === 'studio') {
       return {
-        product: found,
+        product: found || PRODUCTS[0],
         mode: startMode,
-        studioPreset: oda === 'living' || oda === 'bedroom' || oda === 'grand' ? oda : undefined,
-        demoRoomId: oda === 'oak' || oda === 'rug' || oda === 'travertine' ? oda : undefined,
+        studioPreset,
+        demoRoomId,
+        colorHex: renk,
       };
     }
     return null;
   });
 
   const [qrFor, setQrFor] = useState<Product | null>(null);
+  const [qrMode, setQrMode] = useState<'photo' | 'preview'>('photo');
   const [showServer, setShowServer] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
   const [builderTab, setBuilderTab] = useState<'cad' | 'ai'>('cad');
@@ -140,19 +142,40 @@ export function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const qrUrl = (p: Product) => {
-    const q = new URLSearchParams();
-    q.set('urun', p.id);
-    if (p.glbUrl.startsWith('http')) {
-      q.set('glb', p.glbUrl);
-      q.set('name', p.name);
-      q.set('dim', p.dimensionsCm);
+  useEffect(() => {
+    if (!activeState) {
+      if (window.location.search) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+      return;
     }
-    if (health.online) {
-      q.set('srv', getPodId(serverUrl));
+    const share = buildShareUrl({
+      productId: activeState.product.id,
+      glbUrl: activeState.product.glbUrl,
+      productName: activeState.product.name,
+      dimensionsCm: activeState.product.dimensionsCm,
+      mode: activeState.mode,
+      oda: activeState.studioPreset || activeState.demoRoomId,
+      colorHex: activeState.colorHex,
+      serverOnline: health.online,
+      serverUrl,
+    });
+    const nextSearch = new URL(share).search;
+    if (window.location.search !== nextSearch) {
+      window.history.replaceState({}, '', `${window.location.pathname}${nextSearch}`);
     }
-    return `${publicOrigin()}/?${q.toString()}`;
-  };
+  }, [activeState, health.online, serverUrl]);
+
+  const qrUrl = (p: Product, mode: 'photo' | 'preview' = 'photo') =>
+    buildShareUrl({
+      productId: p.id,
+      glbUrl: p.glbUrl,
+      productName: p.name,
+      dimensionsCm: p.dimensionsCm,
+      mode,
+      serverOnline: health.online,
+      serverUrl,
+    });
 
   const handleGenerate3D = async () => {
     if (!slots.front) return;
@@ -265,7 +288,7 @@ export function App() {
     .filter((p): p is Product => Boolean(p));
   const heroProduct = products.find((p) => p.id === heroProductId) || products[0];
 
-  const embedSampleUrl = `${typeof window !== 'undefined' ? window.location.origin : DEFAULT_PUBLIC_ORIGIN}/?urun=ikea-landskrona-sofa`;
+  const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=photo`;
 
   if (activeState) {
     return (
@@ -277,6 +300,7 @@ export function App() {
         startMode={activeState.mode}
         initialDemoRoomId={activeState.demoRoomId}
         initialStudioPreset={activeState.studioPreset}
+        initialColorHex={activeState.colorHex}
         onBack={() => {
           window.history.replaceState({}, '', window.location.pathname);
           setActiveState(null);
@@ -315,11 +339,23 @@ export function App() {
               setGenMsg(null);
               setShowBuilder(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-2 border border-zinc-300 hover:border-zinc-950 text-xs font-semibold rounded whitespace-nowrap shrink-0"
+            className="hidden md:flex items-center gap-1.5 px-3 py-2 border border-zinc-300 hover:border-zinc-950 text-xs font-semibold rounded whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">CAD Yükle</span>
-            <span className="sm:hidden">CAD</span>
+            <span>CAD Yükle</span>
+          </button>
+
+          <button
+            onClick={() =>
+              setActiveState({
+                product: heroProduct,
+                mode: 'photo',
+              })
+            }
+            className="flex items-center gap-1.5 px-3 py-2 border border-zinc-950 bg-white hover:bg-zinc-100 text-zinc-950 text-xs font-bold rounded whitespace-nowrap shrink-0"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>Odamı Çek</span>
           </button>
 
           <button
@@ -330,7 +366,7 @@ export function App() {
                 studioPreset: 'living',
               })
             }
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-bold rounded whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 px-3 sm:px-3.5 py-2 bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-bold rounded whitespace-nowrap shrink-0"
           >
             <Layers className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">3D Oda Stüdyosu</span>
@@ -734,19 +770,43 @@ export function App() {
       {qrFor && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setQrFor(null)}>
           <div className="bg-white rounded-xl p-6 max-w-sm w-full text-center space-y-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-left">{qrFor.name}</h3>
-              <button onClick={() => setQrFor(null)} aria-label="Kapat">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-left truncate">{qrFor.name}</h3>
+              <button onClick={() => setQrFor(null)} aria-label="Kapat" className="shrink-0">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="inline-block p-3 border-2 border-zinc-950 rounded-lg">
-              <QRCodeSVG value={qrUrl(qrFor)} size={220} />
+            <div className="grid grid-cols-2 border border-zinc-200 rounded-lg p-1 gap-1 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setQrMode('photo')}
+                className={`py-2 rounded transition ${
+                  qrMode === 'photo' ? 'bg-zinc-950 text-white' : 'text-zinc-600 hover:text-zinc-950'
+                }`}
+              >
+                Odamda Çek / Yükle
+              </button>
+              <button
+                type="button"
+                onClick={() => setQrMode('preview')}
+                className={`py-2 rounded transition ${
+                  qrMode === 'preview' ? 'bg-zinc-950 text-white' : 'text-zinc-600 hover:text-zinc-950'
+                }`}
+              >
+                3D Ürün İncele
+              </button>
             </div>
-            <p className="text-xs text-zinc-600">Telefon kamerasıyla okutun ve doğrudan kendi odanızda deneyin.</p>
+            <div className="inline-block p-3 border-2 border-zinc-950 rounded-lg">
+              <QRCodeSVG value={qrUrl(qrFor, qrMode)} size={220} />
+            </div>
+            <p className="text-xs text-zinc-600">
+              {qrMode === 'photo'
+                ? 'Telefon kamerasıyla okutun; doğrudan kendi odanızın fotoğrafını çekme / yükleme ekranı açılsın.'
+                : 'Telefon kamerasıyla okutun ve ürünü 360° 3D olarak inceleyin.'}
+            </p>
             <button
               onClick={() => {
-                setActiveState({ product: qrFor, mode: 'preview' });
+                setActiveState({ product: qrFor, mode: qrMode });
                 setQrFor(null);
               }}
               className="w-full py-3 border border-zinc-300 hover:border-zinc-950 text-xs font-semibold rounded"

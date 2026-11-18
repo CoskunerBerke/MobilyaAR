@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   ArrowLeft,
   Camera,
+  Copy,
   Download,
   Eraser,
   ImageIcon,
   Info,
   Loader2,
   Plus,
+  QrCode,
   RefreshCw,
   RotateCcw,
   RotateCw,
@@ -18,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Product } from '../lib/products';
-import { analyzeRoom, eraseObjectInRoom, type RoomAnalysis } from '../lib/server';
+import { analyzeRoom, buildShareUrl, eraseObjectInRoom, type RoomAnalysis } from '../lib/server';
 import {
   buildCalibratedRoomAnalysis,
   buildClientPhotoAnalysis,
@@ -159,6 +162,25 @@ export const RoomDesigner: React.FC<Props> = ({
   const [isClientFallback, setIsClientFallback] = useState(false);
   const [pitchDeg, setPitchDeg] = useState(13);
   const [disp, setDisp] = useState({ w: 0, h: 0 });
+  const [showMobileQr, setShowMobileQr] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const mobilePhotoUrl = buildShareUrl({
+    productId: product.id,
+    glbUrl: product.glbUrl,
+    productName: product.name,
+    dimensionsCm: product.dimensionsCm,
+    mode: 'photo',
+    colorHex: initialColorHex,
+    serverOnline,
+    serverUrl,
+  });
+
+  const copyMobilePhotoUrl = () => {
+    navigator.clipboard?.writeText(mobilePhotoUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
@@ -946,7 +968,7 @@ export const RoomDesigner: React.FC<Props> = ({
     analysis && (analysis.cameraHeightM < 0.6 || analysis.cameraHeightM > 2.4 || analysis.floorInlierRatio < 0.35);
 
   return (
-    <div className="fixed inset-0 z-50 bg-zinc-950 text-white flex flex-col">
+    <div className="fixed inset-0 h-[100dvh] z-50 bg-zinc-950 text-white flex flex-col">
       <header className="h-14 px-3 flex items-center justify-between gap-2 border-b border-zinc-800 shrink-0">
         <button onClick={onBack} className="flex items-center gap-1.5 px-2 py-2 text-xs font-semibold whitespace-nowrap shrink-0">
           <ArrowLeft className="w-4 h-4" />
@@ -971,6 +993,16 @@ export const RoomDesigner: React.FC<Props> = ({
               <span className="hidden sm:inline">Geri Al</span>
             </button>
           )}
+          {step === 'design' && (
+            <button
+              type="button"
+              onClick={() => setStep('capture')}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-100 whitespace-nowrap shrink-0"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Yeni Oda</span>
+            </button>
+          )}
           <button
             onClick={() => setShowInfo((v) => !v)}
             disabled={!analysis}
@@ -983,8 +1015,8 @@ export const RoomDesigner: React.FC<Props> = ({
       </header>
 
       {step === 'capture' && (
-        <div className="flex-1 overflow-y-auto p-6 flex items-center justify-center">
-          <div className="max-w-lg w-full space-y-5 text-center">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
+          <div className="min-h-full flex flex-col justify-center max-w-lg w-full mx-auto space-y-5 text-center py-2">
             <div className="space-y-2">
               <h2 className="text-lg font-bold">Kendi odanı yükle veya örnek salonda dene</h2>
               <p className="text-xs text-zinc-400">
@@ -993,29 +1025,90 @@ export const RoomDesigner: React.FC<Props> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <label className="w-full py-3.5 px-4 bg-white text-zinc-950 font-bold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2 cursor-pointer">
+              <label className="relative overflow-hidden w-full py-3.5 px-4 bg-white text-zinc-950 font-bold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2 cursor-pointer">
                 <Camera className="w-4 h-4" />
                 <span>Fotoğraf Çek</span>
                 <input
                   type="file"
                   accept="image/*"
                   capture="environment"
-                  className="hidden"
-                  onChange={(e) => onFile(e.target.files?.[0] || null)}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    e.currentTarget.value = '';
+                    onFile(f);
+                  }}
                 />
               </label>
-              <label className="w-full py-3.5 px-4 border border-zinc-700 hover:border-white text-zinc-200 font-semibold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2 cursor-pointer">
+              <label className="relative overflow-hidden w-full py-3.5 px-4 border border-zinc-700 hover:border-white text-zinc-200 font-semibold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2 cursor-pointer">
                 <ImageIcon className="w-4 h-4" />
-                <span>Galeriden Seç</span>
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0] || null)} />
+                <span>Galeriden Yükle</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] || null;
+                    e.currentTarget.value = '';
+                    onFile(f);
+                  }}
+                />
               </label>
+            </div>
+
+            {/* Masaüstünden telefona QR geçiş kartı */}
+            <div className="hidden sm:flex items-center gap-4 p-4 border border-zinc-800 bg-zinc-900/75 rounded-lg text-left">
+              <div className="bg-white p-2 rounded shrink-0">
+                <QRCodeSVG value={mobilePhotoUrl} size={112} />
+              </div>
+              <div className="min-w-0 space-y-2">
+                <p className="text-xs font-bold text-white">Telefonunuzda Odanızı Çekin veya Yükleyin</p>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Telefon kamerasıyla QR kodu okutun; doğrudan bu ekran telefonunuzda açılsın, odanızın fotoğrafını çekip veya galeriden seçip 1:1 ürünü yerleştirin.
+                </p>
+                <button
+                  type="button"
+                  onClick={copyMobilePhotoUrl}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-zinc-700 hover:border-white rounded text-[11px] font-semibold text-zinc-200 whitespace-nowrap"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>{copiedLink ? 'Kopyalandı' : 'Linki Kopyala'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Mobilde isteğe bağlı QR paylaşım açma/kapama */}
+            <div className="sm:hidden space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowMobileQr((v) => !v)}
+                className="w-full py-2.5 px-3 border border-zinc-800 bg-zinc-900/60 hover:border-zinc-600 rounded-lg text-[11px] font-semibold text-zinc-300 flex items-center justify-center gap-1.5"
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                <span>{showMobileQr ? 'QR Kodu Gizle' : 'Başka Telefonda Açmak İçin QR Kodu Göster'}</span>
+              </button>
+              {showMobileQr && (
+                <div className="p-3.5 border border-zinc-800 bg-zinc-900/80 rounded-lg flex flex-col items-center gap-2.5">
+                  <div className="bg-white p-2 rounded">
+                    <QRCodeSVG value={mobilePhotoUrl} size={140} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={copyMobilePhotoUrl}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-zinc-700 rounded text-[11px] font-semibold text-zinc-200"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{copiedLink ? 'Kopyalandı' : 'Linki Kopyala'}</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="pt-2 border-t border-zinc-800 space-y-2.5 text-left">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
                 Hazır Örnek Salonda Anında Dene
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-3 gap-2 sm:gap-2.5">
                 {DEMO_PHOTO_ROOMS.map((room, idx) => (
                   <button
                     key={room.id}
@@ -1030,11 +1123,11 @@ export const RoomDesigner: React.FC<Props> = ({
                         className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                       />
                     </div>
-                    <div className="p-2.5">
+                    <div className="p-2">
                       <p className="text-[10px] font-mono text-zinc-400">
-                        {String(idx + 1).padStart(2, '0')} • ÖRNEK ODA
+                        {String(idx + 1).padStart(2, '0')}
                       </p>
-                      <p className="text-xs font-bold text-white leading-snug mt-0.5">{room.title}</p>
+                      <p className="text-[11px] sm:text-xs font-bold text-white leading-snug mt-0.5 line-clamp-2">{room.title}</p>
                     </div>
                   </button>
                 ))}
@@ -1315,16 +1408,14 @@ export const RoomDesigner: React.FC<Props> = ({
                 <Trash2 className="w-4 h-4" />
               </button>
 
-              <label className="p-3 rounded-lg bg-zinc-800 text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0" title="Yeni Fotoğraf">
+              <button
+                type="button"
+                onClick={() => setStep('capture')}
+                className="p-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+                title="Yeni Oda Fotoğrafı Çek veya Yükle"
+              >
                 <Camera className="w-4 h-4" />
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => onFile(e.target.files?.[0] || null)}
-                />
-              </label>
+              </button>
 
               <button
                 onClick={save}

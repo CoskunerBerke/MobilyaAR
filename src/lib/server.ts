@@ -40,6 +40,45 @@ export function getPodId(url: string): string {
   return m ? m[1] : url;
 }
 
+export const DEFAULT_PUBLIC_ORIGIN = 'https://mobilya-ar.vercel.app';
+
+export function getPublicOrigin(): string {
+  if (typeof window === 'undefined') return DEFAULT_PUBLIC_ORIGIN;
+  const h = window.location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')
+    ? DEFAULT_PUBLIC_ORIGIN
+    : window.location.origin;
+}
+
+export function buildShareUrl(opts: {
+  productId: string;
+  glbUrl?: string;
+  productName?: string;
+  dimensionsCm?: string;
+  mode?: 'preview' | 'photo' | 'studio';
+  oda?: string;
+  colorHex?: string;
+  serverOnline?: boolean;
+  serverUrl?: string;
+}): string {
+  const q = new URLSearchParams();
+  const hasRemoteGlb = Boolean(opts.glbUrl && opts.glbUrl.startsWith('http'));
+  const safeId = !hasRemoteGlb && opts.productId.startsWith('cad-local-') ? 'ikea-landskrona-sofa' : opts.productId;
+  q.set('urun', safeId);
+  if (opts.mode && opts.mode !== 'preview') q.set('mod', opts.mode);
+  if (opts.oda) q.set('oda', opts.oda);
+  if (opts.colorHex) q.set('renk', opts.colorHex);
+  if (hasRemoteGlb && opts.glbUrl) {
+    q.set('glb', opts.glbUrl);
+    if (opts.productName) q.set('name', opts.productName);
+    if (opts.dimensionsCm) q.set('dim', opts.dimensionsCm);
+  }
+  if (opts.serverOnline && opts.serverUrl) {
+    q.set('srv', getPodId(opts.serverUrl));
+  }
+  return `${getPublicOrigin()}/?${q.toString()}`;
+}
+
 export interface ServerHealth {
   online: boolean;
   version?: string;
