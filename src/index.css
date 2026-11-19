@@ -6,10 +6,37 @@ html, body {
   overflow-x: hidden;
   margin: 0;
   padding: 0;
-  background-color: #ffffff;
-  color: #09090b;
+  background-color: #faf9f6;
+  color: #111110;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   scroll-behavior: smooth;
+}
+
+.font-display {
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+@keyframes river-continuous {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.animate-river-continuous {
+  display: flex;
+  width: max-content;
+  animation: river-continuous 44s linear infinite;
+}
+
+.animate-river-continuous:hover {
+  animation-play-state: paused;
 }
 
 /* Custom sleek scrollbars */
@@ -19,16 +46,16 @@ html, body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #18181b;
+  background: #1c1917;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: #57534e;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: #78716c;
 }
 
 model-viewer {

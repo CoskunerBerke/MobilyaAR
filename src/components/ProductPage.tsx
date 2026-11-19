@@ -79,15 +79,21 @@ export const ProductPage: React.FC<Props> = ({
   }
 
   return (
-    <div className="fixed inset-0 h-[100dvh] z-40 bg-[#f5f5f4] text-zinc-950 flex flex-col">
-      <header className="h-14 px-3 flex items-center border-b border-zinc-200 bg-white shrink-0">
-        <button onClick={onBack} className="flex items-center gap-1.5 px-2 py-2 text-xs font-semibold whitespace-nowrap">
+    <div className="fixed inset-0 h-[100dvh] z-40 bg-[#f5f4f0] text-stone-950 flex flex-col">
+      <header className="h-14 px-4 flex items-center justify-between border-b border-stone-200 bg-white shrink-0">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 px-2 py-2 text-xs font-semibold text-stone-700 hover:text-stone-950 whitespace-nowrap"
+        >
           <ArrowLeft className="w-4 h-4" />
-          <span>Ürünler</span>
+          <span>Kataloğa Dön</span>
         </button>
+        <span className="text-[11px] font-mono text-stone-500 whitespace-nowrap">
+          1:1 3B İnceleme · {product.dimensionsCm}
+        </span>
       </header>
 
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0 bg-gradient-to-b from-[#f5f4f0] to-[#eae7e0]">
         {/* @ts-expect-error model-viewer web component */}
         <model-viewer
           ref={mvRef}
@@ -97,17 +103,25 @@ export const ProductPage: React.FC<Props> = ({
           shadow-intensity="1"
           environment-image="neutral"
           camera-orbit="25deg 75deg auto"
-          style={{ width: '100%', height: '100%', backgroundColor: '#f5f5f4' }}
+          style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
         />
       </div>
 
-      <div className="shrink-0 bg-white border-t border-zinc-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-2.5">
-        <div>
-          <p className="text-[11px] uppercase tracking-wider text-zinc-500">
-            {product.source === 'ikea-cad' ? `IKEA CAD • ${product.category}` : product.source === 'studyo-cad' ? `Stüdyo CAD • ${product.category}` : product.category}
-          </p>
-          <h1 className="text-base font-bold">{product.name}</h1>
-          <p className="text-xs text-zinc-500 font-mono">{product.dimensionsCm}</p>
+      <div className="shrink-0 bg-white border-t border-stone-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3 max-w-2xl w-full mx-auto">
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              {product.source === 'ikea-cad'
+                ? `Resmi CAD · ${product.category}`
+                : product.source === 'studyo-cad'
+                ? `Stüdyo PBR · ${product.category}`
+                : product.category}
+            </p>
+            <h1 className="font-display text-base sm:text-lg font-bold text-stone-950 truncate">
+              {product.name}
+            </h1>
+          </div>
+          <p className="text-xs text-stone-600 font-mono shrink-0">{product.dimensionsCm}</p>
         </div>
 
         {product.swatches && (
@@ -119,11 +133,16 @@ export const ProductPage: React.FC<Props> = ({
                   key={sw.name}
                   type="button"
                   onClick={() => setColorHex(sw.hex)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium border whitespace-nowrap shrink-0 ${
-                    active ? 'border-zinc-950 bg-zinc-950 text-white' : 'border-zinc-300 bg-white text-zinc-700'
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border whitespace-nowrap shrink-0 transition ${
+                    active
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-300 bg-[#faf9f6] text-stone-700 hover:border-stone-500'
                   }`}
                 >
-                  <span className="w-3 h-3 rounded-full border border-black/15 shrink-0" style={{ backgroundColor: sw.hex }} />
+                  <span
+                    className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                    style={{ backgroundColor: sw.hex }}
+                  />
                   <span>{sw.name}</span>
                 </button>
               );
@@ -131,27 +150,29 @@ export const ProductPage: React.FC<Props> = ({
           </div>
         )}
 
-        <button
-          onClick={() => {
-            setStudioPreset(undefined);
-            setMode('studio');
-          }}
-          className="w-full py-3.5 bg-zinc-950 hover:bg-zinc-800 text-white text-sm font-bold rounded-lg flex items-center justify-center gap-2"
-        >
-          <Camera className="w-4 h-4" />
-          <span>Odamı 4–5 Fotoğrafla Simüle Et (3D Mini-Map)</span>
-        </button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            onClick={() => {
+              setStudioPreset(undefined);
+              setMode('studio');
+            }}
+            className="w-full py-3.5 bg-stone-950 hover:bg-stone-800 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition"
+          >
+            <Camera className="w-4 h-4" />
+            <span>Kendi Gerçek Mekânında Gör</span>
+          </button>
 
-        <button
-          onClick={() => {
-            setStudioPreset('living');
-            setMode('studio');
-          }}
-          className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5"
-        >
-          <Layers className="w-3.5 h-3.5" />
-          <span>Hazır Boş 3D Odada Dene</span>
-        </button>
+          <button
+            onClick={() => {
+              setStudioPreset('living');
+              setMode('studio');
+            }}
+            className="w-full py-3.5 border border-stone-950 bg-white hover:bg-stone-100 text-stone-950 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition"
+          >
+            <Layers className="w-4 h-4" />
+            <span>Hazır 3B Salonda Dene</span>
+          </button>
+        </div>
       </div>
     </div>
   );
