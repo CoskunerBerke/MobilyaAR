@@ -138,6 +138,22 @@ def _mat3_to_quat(m: np.ndarray) -> list[float]:
     return [round(float(v), 6) for v in q]
 
 
+def _quat_mul_wxyz(q_left: np.ndarray, q_right: np.ndarray) -> np.ndarray:
+    """Sol çarpım Hamilton kuaterniyonu: R(q_left * q_right) = R(q_left) @ R(q_right), wxyz biçimi."""
+    w1, x1, y1, z1 = float(q_left[0]), float(q_left[1]), float(q_left[2]), float(q_left[3])
+    w2 = q_right[:, 0]
+    x2 = q_right[:, 1]
+    y2 = q_right[:, 2]
+    z2 = q_right[:, 3]
+    out = np.empty_like(q_right, dtype=np.float32)
+    out[:, 0] = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    out[:, 1] = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    out[:, 2] = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    out[:, 3] = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    n = np.linalg.norm(out, axis=1, keepdims=True)
+    return np.divide(out, np.maximum(n, 1e-8))
+
+
 def _fit_floor(P: np.ndarray, up: np.ndarray, rng: np.random.Generator):
     """Normali yukarı yöne yakın, altında az nokta kalan en büyük düzlemi RANSAC ile bulur."""
     h = P @ up
@@ -958,8 +974,10 @@ def _build_keyframes(
 
 def build_room_payload(
     views_data: list[dict],
-    enable_gs: bool = False,
-    clean_arch_only: bool = True,
+    enable_gs: bool = True,
+    clean_arch_only: bool = False,
+    gs_init: dict | None = None,
+    difix_pipe=None,
 ) -> dict:
     rng = np.random.default_rng(7)
     if not views_data:
@@ -1023,8 +1041,8 @@ def build_room_payload(
     P = P @ Ry.T
     cams = cams @ Ry.T
 
-    ceil = float(min(3.4, np.percentile(P[:, 1], 98)))
-    ceil_cut = max(1.85, ceil - 0.12)
+    ceil = float(min(5.0, max(2.2, np.percentile(P[:, 1], 98))))
+    ceil_cut = max(2.0, ceil + 0.15)
     keep = (P[:, 1] > -0.10) & (P[:, 1] < ceil_cut)
     P, C = P[keep], C[keep]
     if len(P) < 500:
@@ -1089,14 +1107,33 @@ def build_room_payload(
             }
         )
 
-    # 1. Öncelik: Yüksek Keskinlikli Per-Scene 3D Gaussian Splatting (gsplat v6 -> SPZ v2)
+    # 1. Öncelik: v9 Gerçek Mekân 3DGS (DA3 Neural Init + gsplat HD + NVIDIA Difix3D+ -> SPZ v2)
     splat_spz_b64 = None
     splat_count = 0
     gs_sec = 0.0
+    difix_sec = 0.0
+    difix_views = 0
+    da3_init_used = False
     gs_error = None
     if enable_gs and len(views_cam) >= 4:
         try:
             from splat_trainer import train_room_splats
+
+            gs_init_aligned = None
+            if gs_init is not None and len(gs_init.get("positions", [])) >= 1000:
+                q_xyzw = _mat3_to_quat(R_tot)
+                q_tot_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=np.float64)
+                raw_pos = np.asarray(gs_init["positions"], dtype=np.float64)
+                aligned_pos = (scale * (raw_pos @ R_tot.T) - shift).astype(np.float32)
+                aligned_scales = (np.asarray(gs_init["scales"], dtype=np.float32) * float(scale))
+                aligned_quats = _quat_mul_wxyz(q_tot_wxyz, np.asarray(gs_init["quats_wxyz"], dtype=np.float32))
+                gs_init_aligned = {
+                    "positions": aligned_pos,
+                    "scales": aligned_scales,
+                    "quats_wxyz": aligned_quats,
+                    "sh_dc": np.asarray(gs_init["sh_dc"], dtype=np.float32),
+                    "opacities": np.asarray(gs_init["opacities"], dtype=np.float32),
+                }
 
             gs_out = train_room_splats(
                 P_init=P_surf,
@@ -1106,8 +1143,11 @@ def build_room_payload(
                 half_d=half_d,
                 ceil_cut=ceil_cut,
                 n_real_pts=len(P),
-                max_splats=155_000,
-                num_steps=2600,
+                gs_init=gs_init_aligned,
+                difix_pipe=difix_pipe,
+                max_splats=210_000,
+                phase1_steps=1350,
+                phase2_steps=1150,
             )
             spz_bytes = pack_spz_v2(
                 positions=gs_out["positions"],
@@ -1117,9 +1157,9 @@ def build_room_payload(
                 rgb=gs_out["rgb"],
                 antialiased=True,
             )
-            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.65 MB (~3.53 MB base64)
-            if len(spz_bytes) > 2_650_000:
-                keep_n = max(40_000, int(len(gs_out["positions"]) * (2_450_000 / len(spz_bytes))))
+            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.85 MB (~3.80 MB base64)
+            if len(spz_bytes) > 2_850_000:
+                keep_n = max(60_000, int(len(gs_out["positions"]) * (2_650_000 / len(spz_bytes))))
                 score = gs_out["alphas"] * np.power(
                     np.maximum(1e-9, np.exp(gs_out["log_scales"]).prod(axis=1)), 0.12
                 )
@@ -1138,20 +1178,26 @@ def build_room_payload(
 
             splat_spz_b64 = base64.b64encode(spz_bytes).decode("ascii")
             gs_sec = float(gs_out["gs_sec"])
-            print(f"[postprocess] SPZ v2 paketlendi: {splat_count} splat, {len(spz_bytes)/1e6:.2f} MB", flush=True)
+            difix_sec = float(gs_out.get("difix_sec", 0.0))
+            difix_views = int(gs_out.get("difix_views", 0))
+            da3_init_used = bool(gs_out.get("da3_init", False))
+            print(
+                f"[postprocess-v9] SPZ v2 paketlendi: {splat_count} splat, {len(spz_bytes)/1e6:.2f} MB "
+                f"(difix={difix_views} açı/{difix_sec}s)",
+                flush=True,
+            )
         except Exception as exc:
             gs_error = f"{type(exc).__name__}: {exc}"
-            print(f"[postprocess] 3DGS atlandı, TSDF yedeğine dönülüyor: {gs_error}", flush=True)
+            print(f"[postprocess-v9] 3DGS atlandı, TSDF yedeğine dönülüyor: {gs_error}", flush=True)
 
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
     keyframes, best_kf_idx = _build_keyframes(views_cam, grid, half_w, half_d, max_kf=10)
-    arch_blocks = _extract_arch_blocks(P, C, grid, half_w, half_d, ceil)
+    arch_blocks = []
 
     mesh_payload = None
     vox = 0.0
-    if splat_spz_b64 is not None or clean_arch_only:
-        # v8 Sıfır-Bulanıklık Hibrit Mod: ağır/bulanık TSDF üçgenleri yerine temiz mimari bloklar + 220px HD derinlik maskeleri
+    if splat_spz_b64 is not None:
         out_P = np.zeros((0, 3), dtype=np.float64)
         out_C = np.zeros((0, 3), dtype=np.uint8)
         faces_count = 0
@@ -1190,7 +1236,7 @@ def build_room_payload(
 
     res = {
         "ok": True,
-        "mode": "hybrid-v8" if clean_arch_only else "legacy",
+        "mode": "gaussian-difix-v9" if splat_spz_b64 is not None else "tsdf-fallback",
         "pointCount": int(len(out_P)),
         "points": _b64(q),
         "colors": _b64(out_C.astype(np.uint8)),
@@ -1207,13 +1253,16 @@ def build_room_payload(
             "scaleFix": round(scale, 3),
             "cameraHeightM": round(float(np.median(cams[:, 1])), 2),
             "freeFloorM2": round(free_m2, 1),
-            "archBlockCount": int(len(arch_blocks)),
+            "archBlockCount": 0,
             "keyframeCount": int(len(keyframes)),
             "meshFaces": faces_count,
             "meshVerts": int(len(out_P)),
             "voxelM": round(vox, 4),
             "splatCount": splat_count,
             "gsSec": gs_sec,
+            "difixSec": difix_sec,
+            "difixViews": difix_views,
+            "da3Init": da3_init_used,
         },
     }
     if gs_error is not None:

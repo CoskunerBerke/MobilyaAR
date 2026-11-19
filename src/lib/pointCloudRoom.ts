@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SparkRenderer, SplatFileType, SplatMesh } from '@sparkjsdev/spark';
 import {
   getOBBAxes,
   hasAnyCollision,
@@ -93,6 +94,9 @@ export interface ScannedRoomPayload {
     voxelM?: number;
     splatCount?: number;
     gsSec?: number;
+    difixSec?: number;
+    difixViews?: number;
+    da3Init?: boolean;
     gsFallback?: string;
     views?: number;
     inferSec?: number;
@@ -298,87 +302,6 @@ export function createRoomPointCloudObject(
   };
 }
 
-function buildCleanArchFloorTexture(room: DecodedScannedRoom): THREE.CanvasTexture {
-  const size = 1024;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-
-  // Gerçek odadan örneklenen zemin renk dağılımını yumuşakça tuvale yay
-  const gw = Math.max(1, room.grid.w);
-  const gd = Math.max(1, room.grid.d);
-  if (room.floorRgb && room.floorRgb.length >= gw * gd * 3) {
-    const tmp = document.createElement('canvas');
-    tmp.width = gw;
-    tmp.height = gd;
-    const tctx = tmp.getContext('2d')!;
-    const imgD = tctx.createImageData(gw, gd);
-    for (let i = 0; i < gw * gd; i++) {
-      // Gerçek zemin rengini temiz sıcak mimari tona hafifçe dengele (koyu/çamurlu gürültüyü yumuşat)
-      const r = Math.round(room.floorRgb[i * 3] * 0.72 + 216 * 0.28);
-      const g = Math.round(room.floorRgb[i * 3 + 1] * 0.72 + 208 * 0.28);
-      const b = Math.round(room.floorRgb[i * 3 + 2] * 0.72 + 198 * 0.28);
-      imgD.data[i * 4] = r;
-      imgD.data[i * 4 + 1] = g;
-      imgD.data[i * 4 + 2] = b;
-      imgD.data[i * 4 + 3] = 255;
-    }
-    tctx.putImageData(imgD, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(tmp, 0, 0, size, size);
-  } else {
-    ctx.fillStyle = '#ddd6ca';
-    ctx.fillRect(0, 0, size, size);
-  }
-
-  // İnce mimari parke derz dokusu
-  ctx.strokeStyle = 'rgba(60, 52, 42, 0.075)';
-  ctx.lineWidth = 1.5;
-  const plankCount = 26;
-  for (let i = 0; i < plankCount; i++) {
-    const y = (i / plankCount) * size;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(size, y);
-    ctx.stroke();
-    const off = (i % 3) * (size / 6);
-    for (let x = off; x < size; x += size / 3) {
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x, y + size / plankCount);
-      ctx.stroke();
-    }
-  }
-
-  // 0.5 m mimari ölçü çizgileri (çok zarif)
-  const rw = room.bounds.halfW * 2;
-  const rd = room.bounds.halfD * 2;
-  ctx.strokeStyle = 'rgba(24, 24, 27, 0.055)';
-  ctx.lineWidth = 1;
-  for (let m = 0.5; m < rw; m += 0.5) {
-    const px = (m / rw) * size;
-    ctx.beginPath();
-    ctx.moveTo(px, 0);
-    ctx.lineTo(px, size);
-    ctx.stroke();
-  }
-  for (let m = 0.5; m < rd; m += 0.5) {
-    const py = (m / rd) * size;
-    ctx.beginPath();
-    ctx.moveTo(0, py);
-    ctx.lineTo(size, py);
-    ctx.stroke();
-  }
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
-  tex.needsUpdate = true;
-  return tex;
-}
-
 export interface ArchWallEntry {
   side: 'north' | 'south' | 'west' | 'east';
   mesh: THREE.Mesh;
@@ -389,189 +312,105 @@ export interface ArchWallEntry {
 export async function createScannedRoomSurfaceObject(
   room: DecodedScannedRoom,
   _hdFrames: string[],
-  clipPlane?: THREE.Plane
+  clipPlane?: THREE.Plane,
+  renderer?: THREE.WebGLRenderer,
+  scene?: THREE.Scene
 ): Promise<{
   object: THREE.Object3D;
   existingGroup?: THREE.Group;
   walls?: ArchWallEntry[];
   pointMat?: THREE.PointsMaterial;
-  isCleanArch?: boolean;
+  sparkRenderer?: SparkRenderer;
+  isSplat?: boolean;
   dispose: () => void;
 }> {
   const disposeFns: Array<() => void> = [];
   const root = new THREE.Group();
   root.userData.isHelper = true;
 
-  // v8 Sıfır-Bulanıklık Temiz Mimari 3B İkiz (Apple RoomPlan / Planner 5D standardı)
-  const rw = room.bounds.halfW * 2;
-  const rd = room.bounds.halfD * 2;
-  const wallH = Math.min(2.75, Math.max(2.1, room.bounds.ceilingM));
+  // 1. Öncelik (v9): Gerçek Mekân 3D Gaussian Splatting (DA3 + gsplat + NVIDIA Difix3D+ -> SPZ v2 + Spark WebGL2)
+  if (room.splatSpzBytes && room.splatSpzBytes.byteLength > 32 && renderer && scene) {
+    try {
+      const spark = new SparkRenderer({
+        renderer,
+        blurAmount: 0.05,
+        maxStdDev: Math.sqrt(6.5),
+      });
+      spark.userData.isHelper = true;
+      spark.renderOrder = 0;
+      scene.add(spark);
 
-  // 1. Temiz mimari zemin (gerçek oda tonunda + zarif parke ve 50 cm ölçü çizgisi)
-  const floorTex = buildCleanArchFloorTexture(room);
-  const floorGeo = new THREE.PlaneGeometry(rw, rd).rotateX(-Math.PI / 2);
-  const floorMat = new THREE.MeshStandardMaterial({
-    map: floorTex,
-    roughness: 0.88,
-    metalness: 0.0,
-    side: THREE.DoubleSide,
-  });
-  const floorMesh = new THREE.Mesh(floorGeo, floorMat);
-  floorMesh.position.y = -0.002;
-  floorMesh.receiveShadow = true;
-  floorMesh.userData.isHelper = true;
-  root.add(floorMesh);
-  disposeFns.push(
-    () => floorTex.dispose(),
-    () => floorGeo.dispose(),
-    () => floorMat.dispose()
-  );
+      const bytesCopy = new Uint8Array(room.splatSpzBytes.byteLength);
+      bytesCopy.set(room.splatSpzBytes);
 
-  // 2. Otomatik açılıp kapanan temiz mimari duvarlar + 8 cm süpürgelik
-  const wallCol = new THREE.Color(
-    room.wallRgb[0] / 255,
-    room.wallRgb[1] / 255,
-    room.wallRgb[2] / 255
-  ).lerp(new THREE.Color(0xf4f2ed), 0.28);
+      const splatMesh = new SplatMesh({
+        fileBytes: bytesCopy,
+        fileType: SplatFileType.SPZ,
+        raycastable: false,
+      });
+      splatMesh.userData.isHelper = true;
+      root.add(splatMesh);
 
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: wallCol,
-    roughness: 0.94,
-    metalness: 0.0,
-    side: THREE.DoubleSide,
-    clippingPlanes: clipPlane ? [clipPlane] : [],
-  });
-  const trimMat = new THREE.MeshStandardMaterial({
-    color: 0xf7f6f2,
-    roughness: 0.65,
-    metalness: 0.0,
-    clippingPlanes: clipPlane ? [clipPlane] : [],
-  });
-  disposeFns.push(
-    () => wallMat.dispose(),
-    () => trimMat.dispose()
-  );
+      await splatMesh.initialized;
 
-  const hw = room.bounds.halfW;
-  const hd = room.bounds.halfD;
-  const wallSpecs = [
-    {
-      side: 'north' as const,
-      w: rw,
-      pos: new THREE.Vector3(0, wallH * 0.5, -hd),
-      rotY: 0,
-      normal: new THREE.Vector3(0, 0, 1),
-    },
-    {
-      side: 'south' as const,
-      w: rw,
-      pos: new THREE.Vector3(0, wallH * 0.5, hd),
-      rotY: Math.PI,
-      normal: new THREE.Vector3(0, 0, -1),
-    },
-    {
-      side: 'west' as const,
-      w: rd,
-      pos: new THREE.Vector3(-hw, wallH * 0.5, 0),
-      rotY: Math.PI / 2,
-      normal: new THREE.Vector3(1, 0, 0),
-    },
-    {
-      side: 'east' as const,
-      w: rd,
-      pos: new THREE.Vector3(hw, wallH * 0.5, 0),
-      rotY: -Math.PI / 2,
-      normal: new THREE.Vector3(-1, 0, 0),
-    },
-  ];
+      disposeFns.push(
+        () => splatMesh.dispose(),
+        () => {
+          scene.remove(spark);
+          spark.dispose();
+        }
+      );
 
-  const walls: ArchWallEntry[] = [];
-  for (const ws of wallSpecs) {
-    const wGeo = new THREE.PlaneGeometry(ws.w, wallH);
-    const wMesh = new THREE.Mesh(wGeo, wallMat);
-    wMesh.position.copy(ws.pos);
-    wMesh.rotation.y = ws.rotY;
-    wMesh.receiveShadow = true;
-    wMesh.userData.isHelper = true;
-
-    // 8 cm beyaz mimari süpürgelik
-    const baseGeo = new THREE.BoxGeometry(ws.w, 0.085, 0.018);
-    const baseMesh = new THREE.Mesh(baseGeo, trimMat);
-    baseMesh.position.set(0, -wallH * 0.5 + 0.0425, 0.01);
-    baseMesh.userData.isHelper = true;
-    wMesh.add(baseMesh);
-
-    // Üst duvar ince pervaz çizgisi
-    const topGeo = new THREE.BoxGeometry(ws.w, 0.024, 0.012);
-    const topMesh = new THREE.Mesh(topGeo, trimMat);
-    topMesh.position.set(0, wallH * 0.5 - 0.012, 0.006);
-    topMesh.userData.isHelper = true;
-    wMesh.add(topMesh);
-
-    root.add(wMesh);
-    walls.push({
-      side: ws.side,
-      mesh: wMesh,
-      inwardNormal: ws.normal,
-      center: ws.pos.clone(),
-    });
-    disposeFns.push(
-      () => wGeo.dispose(),
-      () => baseGeo.dispose(),
-      () => topGeo.dispose()
-    );
+      return {
+        object: root,
+        sparkRenderer: spark,
+        isSplat: true,
+        dispose: () => {
+          disposeFns.forEach((fn) => fn());
+        },
+      };
+    } catch (err) {
+      console.warn('[Spark-v9] 3D Gaussian Splat başlatılamadı, yedek yüzeye geçiliyor:', err);
+    }
   }
 
-  // 3. Mevcut Eşyaların Temiz Mimari Kütleleri (RoomPlan tarzı, gerçek konum/yükseklik/renk tonu)
-  const existingGroup = new THREE.Group();
-  existingGroup.userData.isHelper = true;
-  const edgeMat = new THREE.LineBasicMaterial({
-    color: 0x3f3f46,
-    transparent: true,
-    opacity: 0.24,
-  });
-  disposeFns.push(() => edgeMat.dispose());
+  // 2. Yedek: Gerçek renkli TSDF üçgen ağı (SPZ yoksa)
+  if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(room.positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(room.colors, 3));
+    geo.setIndex(new THREE.BufferAttribute(room.mesh.indices, 1));
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
 
-  for (const blk of room.archBlocks) {
-    const bw = Math.max(0.14, blk.w);
-    const bh = Math.max(0.22, blk.h);
-    const bd = Math.max(0.14, blk.d);
-    const col = new THREE.Color(blk.rgb[0] / 255, blk.rgb[1] / 255, blk.rgb[2] / 255).lerp(
-      new THREE.Color(0xeae6de),
-      0.32
-    );
-    const mat = new THREE.MeshStandardMaterial({
-      color: col,
-      roughness: 0.86,
-      metalness: 0.0,
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
       clippingPlanes: clipPlane ? [clipPlane] : [],
     });
-    const geo = new THREE.BoxGeometry(bw, bh, bd);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(blk.x, bh * 0.5, blk.z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
     mesh.userData.isHelper = true;
+    root.add(mesh);
 
-    const eGeo = new THREE.EdgesGeometry(geo);
-    const lines = new THREE.LineSegments(eGeo, edgeMat);
-    lines.userData.isHelper = true;
-    mesh.add(lines);
-
-    existingGroup.add(mesh);
     disposeFns.push(
       () => geo.dispose(),
-      () => eGeo.dispose(),
       () => mat.dispose()
     );
+    return {
+      object: root,
+      dispose: () => {
+        disposeFns.forEach((fn) => fn());
+      },
+    };
   }
-  root.add(existingGroup);
 
+  // 3. Yedek: Gerçek renkli nokta bulutu
+  const pc = createRoomPointCloudObject(room, 0.036, clipPlane);
+  root.add(pc.points);
+  disposeFns.push(pc.dispose);
   return {
     object: root,
-    existingGroup,
-    walls,
-    isCleanArch: true,
+    pointMat: pc.material,
     dispose: () => {
       disposeFns.forEach((fn) => fn());
     },
