@@ -903,8 +903,8 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
                 half_d=half_d,
                 ceil_cut=ceil_cut,
                 n_real_pts=len(P),
-                max_splats=160_000,
-                num_steps=2800,
+                max_splats=155_000,
+                num_steps=2600,
             )
             spz_bytes = pack_spz_v2(
                 positions=gs_out["positions"],

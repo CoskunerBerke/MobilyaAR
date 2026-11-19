@@ -541,8 +541,8 @@ export async function createScannedRoomSurfaceObject(
     try {
       const spark = new SparkRenderer({
         renderer,
-        blurAmount: 0.12,
-        maxStdDev: Math.sqrt(7),
+        blurAmount: 0.08,
+        maxStdDev: Math.sqrt(6.5),
       });
       spark.userData.isHelper = true;
       spark.renderOrder = 0;

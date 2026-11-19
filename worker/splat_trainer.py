@@ -1,11 +1,11 @@
 """
-Odanda Gör — Yüksek Keskinlikli Per-Scene 3D Gaussian Splatting (gsplat v1.5.3 + MCMCStrategy)
-v6:
-  - Tam HD giriş çözünürlüğünde (472x832 .. 530x930) kaba->ince (coarse-to-fine) eğitim
-  - Aktif SE(3) kamera poz ince ayarı (±4°, ±9 cm) ile MapAnything hizalama titremesini siler
-  - Sıkı Gaussian ölçek üst sınırı (<= 11.5 cm) ile duvar/ön-plan bulanıklık bulutlarını yok eder
-  - Görünmeyen yürüme yolu zemini için yassı 2 mm disk başlangıcı (zeminde sis lekesi oluşmaz)
-  - 2.800 adım + 160K splat bütçesi + son 650 adımda sıfır gürültülü keskinlik cilalama
+Odanda Gör — Anti-Needle / Sıfır-Leke 3D Gaussian Splatting (gsplat v1.5.3 + MCMCStrategy)
+v7:
+  - Sentetik zemin noktaları 3DGS eğitimine karıştırılmaz (halı ortasındaki gri sis lekesi tamamen biter)
+  - 2DGS / SuGaR anti-iğne cezası (s_max / s_mid <= 2.2): duvar/masa/halı yassı ve keskin kalır,
+    dış açılarda patlayan sivri diken/çizgi (needle/spike) bozulmaları yok olur
+  - Sıkı Gaussian boyut sınırı (<= 6.5 cm) + tüm adımlar boyunca aktif metrik derinlik kilidi
+  - İnce SE(3) kamera hizalaması (±1.5°, ±2.5 cm) ile derinlik bozulmadan piksel keskinliği
 """
 
 import math
@@ -49,13 +49,13 @@ def _ssim_loss_11(pred_bchw, gt_bchw, window):
     return (num / (den + 1e-8)).mean()
 
 
-def _estimate_initial_scales_gpu(pts_t, is_syn_floor_t, device):
-    """Chunked GPU 3-NN mesafesinden keskin başlangıç log-ölçeklerini hesaplar."""
+def _estimate_initial_scales_gpu(pts_t, device):
+    """Chunked GPU 3-NN mesafesinden sıkı başlangıç log-ölçeklerini hesaplar."""
     import torch
 
     n = pts_t.shape[0]
     if n < 16:
-        return torch.full((n, 3), math.log(0.014), device=device, dtype=torch.float32)
+        return torch.full((n, 3), math.log(0.012), device=device, dtype=torch.float32)
 
     ref_n = min(n, 24_000)
     if ref_n < n:
@@ -76,25 +76,16 @@ def _estimate_initial_scales_gpu(pts_t, is_syn_floor_t, device):
             avg_d = vals[:, 1:4].mean(dim=1) if vals.shape[1] >= 4 else vals[:, -1]
             dists_out[s:e] = avg_d * density_fix
 
-    scales = torch.clamp(dists_out * 0.62, min=0.004, max=0.026)
-    log_sc = torch.log(scales).unsqueeze(-1).repeat(1, 3)
-
-    # Sentetik görünmeyen zemin noktalarını 2 mm yassı disk yap (zeminde gri sis oluşmaz)
-    if is_syn_floor_t is not None and is_syn_floor_t.any():
-        log_sc[is_syn_floor_t, 0] = math.log(0.028)
-        log_sc[is_syn_floor_t, 1] = math.log(0.002)
-        log_sc[is_syn_floor_t, 2] = math.log(0.028)
-
-    return log_sc
+    scales = torch.clamp(dists_out * 0.58, min=0.004, max=0.022)
+    return torch.log(scales).unsqueeze(-1).repeat(1, 3)
 
 
 def _se3_delta_matrix(rot_vec, trans_vec):
-    """Eksen-açı rot_vec (3,) + trans_vec (3,) -> 4x4 sol-çarpım SE(3) hizalama düzeltmesi."""
+    """İnce SE(3) hizalama düzeltmesi (<= 1.5° dönüş, <= 2.5 cm öteleme — geometriyi bozmaz)."""
     import torch
 
-    # MapAnything 360° döngü kaymasını sıfırla (<= 4.0° dönüş, <= 9 cm öteleme)
-    r = torch.tanh(rot_vec) * 0.070
-    t = torch.tanh(trans_vec) * 0.090
+    r = torch.tanh(rot_vec) * 0.026
+    t = torch.tanh(trans_vec) * 0.025
 
     zero = torch.zeros_like(r[0])
     rx, ry, rz = r[0], r[1], r[2]
@@ -126,11 +117,12 @@ def train_room_splats(
     half_d: float,
     ceil_cut: float,
     n_real_pts: int | None = None,
-    max_splats: int = 160_000,
-    num_steps: int = 2800,
+    max_splats: int = 155_000,
+    num_steps: int = 2600,
 ):
     """
-    MapAnything metrik geometrisinden + tam HD video karelerinden 3D Gaussian Splatting eğitir.
+    Sadece gerçek gözlemlenmiş MapAnything 3D noktaları + tam HD karelerden
+    diken/iğne patlamasız, derinlik kilitli 3D Gaussian Splatting eğitir.
     """
     import torch
     import torch.nn.functional as F
@@ -142,25 +134,26 @@ def train_room_splats(
     t0 = time.time()
     device = torch.device("cuda")
 
-    n_total_raw = len(P_init)
-    syn_flags = np.zeros(n_total_raw, dtype=bool)
-    if n_real_pts is not None and 0 < n_real_pts < n_total_raw:
-        syn_flags[n_real_pts:] = True
+    # Sadece gerçek gözlenen 3D noktaları kullan (sentetik zemin noktaları halı üstünde gri leke yapmaz!)
+    if n_real_pts is not None and 500 <= n_real_pts <= len(P_init):
+        P_src = P_init[:n_real_pts]
+        C_src = C_init[:n_real_pts]
+    else:
+        P_src = P_init
+        C_src = C_init
 
-    # 1. Başlangıç nokta bulutunu oda sınırlarına kırp ve <= 95K başlangıç Gaussian'ına indir
-    pad_xz = 0.35
+    pad_xz = 0.30
     in_box = (
-        np.isfinite(P_init).all(axis=1)
-        & (np.abs(P_init[:, 0]) <= half_w + pad_xz)
-        & (np.abs(P_init[:, 2]) <= half_d + pad_xz)
-        & (P_init[:, 1] >= -0.08)
-        & (P_init[:, 1] <= ceil_cut + 0.06)
+        np.isfinite(P_src).all(axis=1)
+        & (np.abs(P_src[:, 0]) <= half_w + pad_xz)
+        & (np.abs(P_src[:, 2]) <= half_d + pad_xz)
+        & (P_src[:, 1] >= -0.06)
+        & (P_src[:, 1] <= ceil_cut + 0.04)
     )
-    P_use = P_init[in_box]
-    C_use = C_init[in_box]
-    S_use = syn_flags[in_box]
+    P_use = P_src[in_box]
+    C_use = C_src[in_box]
     if len(P_use) < 500:
-        raise RuntimeError("3DGS başlatmak için yeterli nokta yok")
+        raise RuntimeError("3DGS başlatmak için yeterli gerçek nokta yok")
 
     init_cap = min(95_000, max_splats - 25_000)
     if len(P_use) > init_cap:
@@ -168,22 +161,16 @@ def train_room_splats(
         sel = rng.choice(len(P_use), init_cap, replace=False)
         P_use = P_use[sel]
         C_use = C_use[sel]
-        S_use = S_use[sel]
 
     n_init = len(P_use)
     pts_t = torch.from_numpy(P_use.astype(np.float32)).to(device)
     rgb_t = torch.from_numpy(C_use.astype(np.float32) / 255.0).to(device).clamp(0.01, 0.99)
-    syn_t = torch.from_numpy(S_use).to(device)
     sh0_init = ((rgb_t - 0.5) / SH_C0).unsqueeze(1)  # (N, 1, 3)
 
-    log_scales_init = _estimate_initial_scales_gpu(pts_t, syn_t, device)
+    log_scales_init = _estimate_initial_scales_gpu(pts_t, device)
     quats_init = torch.zeros((n_init, 4), device=device, dtype=torch.float32)
-    quats_init[:, 0] = 1.0  # [w, x, y, z] birim kuaterniyon
-    opa_init = torch.where(
-        syn_t,
-        torch.full((n_init,), 0.65, device=device, dtype=torch.float32),
-        torch.full((n_init,), -0.10, device=device, dtype=torch.float32),
-    )
+    quats_init[:, 0] = 1.0  # [w, x, y, z]
+    opa_init = torch.full((n_init,), -0.10, device=device, dtype=torch.float32)
 
     params = torch.nn.ParameterDict(
         {
@@ -196,18 +183,18 @@ def train_room_splats(
     )
 
     scene_scale = max(1.5, float(max(half_w * 2.0, half_d * 2.0)))
-    means_lr_init = 1.4e-4 * scene_scale
-    means_lr_final = 1.0e-5 * scene_scale
+    means_lr_init = 1.1e-4 * scene_scale
+    means_lr_final = 8.0e-6 * scene_scale
 
     optimizers = {
         "means": torch.optim.Adam([{"params": params["means"], "lr": means_lr_init, "name": "means"}], eps=1e-15),
-        "scales": torch.optim.Adam([{"params": params["scales"], "lr": 5.5e-3, "name": "scales"}], eps=1e-15),
-        "quats": torch.optim.Adam([{"params": params["quats"], "lr": 1.2e-3, "name": "quats"}], eps=1e-15),
-        "opacities": torch.optim.Adam([{"params": params["opacities"], "lr": 5.0e-2, "name": "opacities"}], eps=1e-15),
-        "sh0": torch.optim.Adam([{"params": params["sh0"], "lr": 3.5e-3, "name": "sh0"}], eps=1e-15),
+        "scales": torch.optim.Adam([{"params": params["scales"], "lr": 4.5e-3, "name": "scales"}], eps=1e-15),
+        "quats": torch.optim.Adam([{"params": params["quats"], "lr": 1.0e-3, "name": "quats"}], eps=1e-15),
+        "opacities": torch.optim.Adam([{"params": params["opacities"], "lr": 4.5e-2, "name": "opacities"}], eps=1e-15),
+        "sh0": torch.optim.Adam([{"params": params["sh0"], "lr": 3.2e-3, "name": "sh0"}], eps=1e-15),
     }
 
-    # 2. Tam HD (rgb_hd) + 0.5x hızlı kaba tensörleri GPU'ya yükle
+    # Tam HD (rgb_hd) + 0.5x hızlı kaba tensörleri GPU'ya yükle
     train_views = []
     hd_res_sample = (0, 0)
     for vc in views_cam:
@@ -224,7 +211,6 @@ def train_room_splats(
 
         rgb_hd_u8 = np.asarray(vc.get("rgb_hd", rgb_ma), dtype=np.uint8)
         H_hd, W_hd = rgb_hd_u8.shape[:2]
-        # Aşırı büyük foto gelirse max 960px'e sınırla (VRAM + hız dengesi)
         max_side = max(H_hd, W_hd)
         if max_side > 960:
             ratio = 960.0 / float(max_side)
@@ -243,7 +229,6 @@ def train_room_splats(
 
         hd_res_sample = (W_hd, H_hd)
 
-        # K'yi MapAnything (W_ma, H_ma)'dan HD (W_hd, H_hd)'ye birebir ölçekle
         sx = float(W_hd) / max(1.0, float(W_ma))
         sy = float(H_hd) / max(1.0, float(H_ma))
         K_hd = K_ma.copy()
@@ -252,7 +237,6 @@ def train_room_splats(
         K_hd[1, 1] *= sy
         K_hd[1, 2] *= sy
 
-        # Derinlik + maskeyi HD boyuta yükselt
         d_ma_t = torch.from_numpy(np.asarray(vc["depth_m"], dtype=np.float32)).to(device)[None, None]
         m_ma_t = torch.from_numpy(np.asarray(vc["mask"], dtype=np.float32)).to(device)[None, None]
         if (H_hd, W_hd) != (H_ma, W_ma):
@@ -263,7 +247,6 @@ def train_room_splats(
             gt_mask = m_ma_t[0, 0] > 0.5
         gt_mask = gt_mask & (gt_depth > 0.22) & (gt_depth < 8.5)
 
-        # 0.5x kaba aşama (ilk 700 adım: çok hızlı hizalama & kamera oturtma)
         H_lo, W_lo = max(64, H_hd // 2), max(64, W_hd // 2)
         gt_bchw_lo = F.interpolate(gt_bchw, size=(H_lo, W_lo), mode="area").contiguous()
         gt_rgb_lo = gt_bchw_lo[0].permute(1, 2, 0).contiguous()
@@ -301,24 +284,23 @@ def train_room_splats(
     if n_views < 2:
         raise RuntimeError("3DGS için en az 2 kamera görünümü gerekli")
 
-    # Aktif kamera poz ince ayarı (çift görüntü / hayalet bulanıklığını yok eder)
     pose_rot = torch.nn.Parameter(torch.zeros((n_views, 3), device=device, dtype=torch.float32))
     pose_trans = torch.nn.Parameter(torch.zeros((n_views, 3), device=device, dtype=torch.float32))
-    pose_lr_init = 1.6e-3
-    pose_lr_final = 1.2e-4
-    pose_opt = torch.optim.Adam([pose_rot, pose_trans], lr=pose_lr_init, weight_decay=1e-4)
+    pose_lr_init = 5.0e-4
+    pose_lr_final = 6.0e-5
+    pose_opt = torch.optim.Adam([pose_rot, pose_trans], lr=pose_lr_init, weight_decay=5e-4)
 
-    coarse_steps = min(700, num_steps // 4)
+    coarse_steps = min(550, num_steps // 4)
     refine_stop = max(coarse_steps + 200, num_steps - 650)
-    pose_stop = max(coarse_steps + 300, num_steps - 500)
+    pose_stop = max(coarse_steps + 300, num_steps - 600)
 
     strategy = MCMCStrategy(
         cap_max=max_splats,
-        noise_lr=2.0e4,
+        noise_lr=1.4e4,
         refine_start_iter=150,
         refine_stop_iter=refine_stop,
         refine_every=65,
-        min_opacity=0.015,
+        min_opacity=0.018,
         verbose=False,
     )
     strategy.check_sanity(params, optimizers)
@@ -332,12 +314,13 @@ def train_room_splats(
         order.extend(rng_order.permutation(n_views).tolist())
 
     gamma_means = math.pow(means_lr_final / means_lr_init, 1.0 / max(1, num_steps))
-    gamma_pose = math.pow(pose_lr_final / pose_lr_init, 1.0 / max(1, pose_stop - 100))
+    gamma_pose = math.pow(pose_lr_final / pose_lr_init, 1.0 / max(1, pose_stop - 120))
     cur_means_lr = means_lr_init
     cur_pose_lr = pose_lr_init
 
-    # Sıkı Gaussian boyut sınırı: max exp(-2.15) = 11.6 cm (dev sis bulutlarını yasakla!)
-    MAX_LOG_SCALE = -2.15
+    # Sıkı boyut sınırı: max 6.5 cm (dev sis bulutu & uzun diken/iğne kesinlikle yasak!)
+    MIN_LOG_SCALE = math.log(0.0020)
+    MAX_LOG_SCALE = math.log(0.065)
 
     for step in range(num_steps):
         vi = order[step]
@@ -359,16 +342,16 @@ def train_room_splats(
             gt_mask = tv["gt_mask_lo"]
             H_cur, W_cur = tv["H_lo"], tv["W_lo"]
 
-        opt_pose_now = 100 <= step < pose_stop
+        opt_pose_now = 120 <= step < pose_stop
         if opt_pose_now:
             delta = _se3_delta_matrix(pose_rot[vi], pose_trans[vi])
             w2c_cur = (delta @ tv["w2c"]).unsqueeze(0)
         else:
             with torch.no_grad():
-                delta = _se3_delta_matrix(pose_rot[vi], pose_trans[vi]) if step >= 100 else None
+                delta = _se3_delta_matrix(pose_rot[vi], pose_trans[vi]) if step >= 120 else None
             w2c_cur = ((delta @ tv["w2c"]) if delta is not None else tv["w2c"]).unsqueeze(0)
 
-        scales_exp = torch.exp(params["scales"].clamp(-9.5, MAX_LOG_SCALE))
+        scales_exp = torch.exp(params["scales"].clamp(MIN_LOG_SCALE, MAX_LOG_SCALE))
         opas_sig = torch.sigmoid(params["opacities"])
 
         renders, alphas, info = rasterization(
@@ -398,16 +381,24 @@ def train_room_splats(
         ssim_val = _ssim_loss_11(pred_bchw, gt_bchw, ssim_window)
         loss = 0.80 * l1 + 0.20 * (1.0 - ssim_val)
 
-        # Erken aşamada metrik derinlik koruması, son cilalamada saf fotometrik keskinlik
-        if step < num_steps - 550:
-            valid_d = gt_mask & (alphas[0, ..., 0] > 0.50)
-            if valid_d.any():
-                d_w = 0.04 if step < coarse_steps else 0.015
-                loss = loss + d_w * F.smooth_l1_loss(pred_depth[valid_d], gt_depth[valid_d], beta=0.10)
+        # Sürekli metrik derinlik kilidi: splat'lerin havaya fırlamasını tüm eğitim boyunca engeller
+        valid_d = gt_mask & (alphas[0, ..., 0] > 0.45)
+        if valid_d.any():
+            d_w = 0.08 if step < coarse_steps else (0.045 if step < refine_stop else 0.025)
+            loss = loss + d_w * F.smooth_l1_loss(pred_depth[valid_d], gt_depth[valid_d], beta=0.08)
 
-        # Güçlü ölçek cezası: büyük bulanık Gaussian'ları küçük keskin parçalara bölmeye zorlar
-        reg_mul = 1.0 if step < refine_stop else 0.35
-        loss = loss + reg_mul * (0.004 * opas_sig.mean() + 0.014 * scales_exp.mean())
+        # 2DGS / SuGaR anti-iğne cezası: yassı disk (s0 ince, s1≈s2) serbest, sivri diken (s2 >> s1) yasak!
+        s_sorted, _ = torch.sort(scales_exp, dim=-1)
+        needle_pen = F.relu(s_sorted[:, 2] / (s_sorted[:, 1] + 1e-4) - 2.2).mean()
+        flat_pen = F.relu(s_sorted[:, 0] - 0.018).mean()
+
+        reg_mul = 1.0 if step < refine_stop else 0.50
+        loss = loss + reg_mul * (
+            0.004 * opas_sig.mean()
+            + 0.016 * scales_exp.mean()
+            + 0.06 * needle_pen
+            + 0.03 * flat_pen
+        )
 
         loss.backward()
 
@@ -416,7 +407,7 @@ def train_room_splats(
             opt.zero_grad(set_to_none=True)
 
         with torch.no_grad():
-            params["scales"].clamp_(-9.5, MAX_LOG_SCALE)
+            params["scales"].clamp_(MIN_LOG_SCALE, MAX_LOG_SCALE)
             params["opacities"].clamp_(-8.0, 8.0)
 
         if opt_pose_now:
@@ -438,26 +429,30 @@ def train_room_splats(
         cur_means_lr *= gamma_means
         optimizers["means"].param_groups[0]["lr"] = cur_means_lr
 
-    # 3. Temizlik & keskinlik filtresi
+    # Temizlik: iğne/diken kalıntılarını ve oda dışı gürültüleri ayıkla
     with torch.no_grad():
         means_np = params["means"].detach().float().cpu().numpy()
-        log_scales_np = params["scales"].detach().float().clamp(-9.5, MAX_LOG_SCALE).cpu().numpy()
-        quats_np = F.normalize(params["quats"].detach().float(), p=2, dim=-1).cpu().numpy()  # w,x,y,z
+        log_scales_np = params["scales"].detach().float().clamp(MIN_LOG_SCALE, MAX_LOG_SCALE).cpu().numpy()
+        quats_np = F.normalize(params["quats"].detach().float(), p=2, dim=-1).cpu().numpy()
         alphas_np = torch.sigmoid(params["opacities"].detach().float()).cpu().numpy()
-        sh0_np = params["sh0"].detach().float().squeeze(1).cpu().numpy()  # (N, 3)
+        sh0_np = params["sh0"].detach().float().squeeze(1).cpu().numpy()
         rgb_np = np.clip(sh0_np * SH_C0 + 0.5, 0.0, 1.0)
 
-    max_sc = np.exp(log_scales_np).max(axis=1)
+    sc_np = np.exp(log_scales_np)
+    sc_sorted = np.sort(sc_np, axis=1)
+    needle_ratio = sc_sorted[:, 2] / np.maximum(sc_sorted[:, 1], 1e-4)
+
     keep = (
         np.isfinite(means_np).all(axis=1)
         & np.isfinite(log_scales_np).all(axis=1)
         & np.isfinite(quats_np).all(axis=1)
         & np.isfinite(alphas_np)
-        & (alphas_np >= 0.06)
-        & (max_sc <= 0.115)
-        & (np.abs(means_np[:, 0]) <= half_w + 0.28)
-        & (np.abs(means_np[:, 2]) <= half_d + 0.28)
-        & (means_np[:, 1] >= -0.08)
+        & (alphas_np >= 0.07)
+        & (sc_sorted[:, 2] <= 0.068)
+        & (needle_ratio <= 4.5)
+        & (np.abs(means_np[:, 0]) <= half_w + 0.25)
+        & (np.abs(means_np[:, 2]) <= half_d + 0.25)
+        & (means_np[:, 1] >= -0.06)
         & (means_np[:, 1] <= ceil_cut)
     )
 
@@ -481,8 +476,8 @@ def train_room_splats(
 
     gs_sec = round(time.time() - t0, 2)
     print(
-        f"[gsplat-v6] {len(means_np)} splat ({hd_res_sample[0]}x{hd_res_sample[1]} HD, "
-        f"{num_steps} adım, {n_views} açı, {gs_sec} sn)",
+        f"[gsplat-v7] {len(means_np)} splat ({hd_res_sample[0]}x{hd_res_sample[1]} HD, "
+        f"anti-needle, {num_steps} adım, {n_views} açı, {gs_sec} sn)",
         flush=True,
     )
 

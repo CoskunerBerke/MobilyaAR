@@ -358,7 +358,7 @@ export const Room3DStudio: React.FC<Props> = ({
   const [showSizeBar, setShowSizeBar] = useState(false);
   const [drawerMode, setDrawerMode] = useState<'add' | 'swap' | null>(null);
   const [drawerFilter, setDrawerFilter] = useState<DrawerFilter>('all');
-  const [activeCamIdx, setActiveCamIdx] = useState<'free' | 'top'>('free');
+  const [activeCamIdx, setActiveCamIdx] = useState<'inside' | 'free' | 'top'>('free');
   const [previewPhotoIdx, setPreviewPhotoIdx] = useState<number | null>(null);
   const [showMiniMap, setShowMiniMap] = useState(true);
   const [floorStyle, setFloorStyle] = useState<FloorSurfaceKind>('wood');
@@ -732,7 +732,7 @@ export const Room3DStudio: React.FC<Props> = ({
       setShowClipBar(false);
       setShowSizeBar(false);
       setWallMode('auto');
-      setActiveCamIdx('free');
+      setActiveCamIdx(decoded.splatSpzBytes ? 'inside' : 'free');
       const initialKf =
         decoded.splatSpzBytes ? null : decoded.keyframes.length > 0 && hdFrames.length > 0 ? 0 : null;
       setActiveKeyframeIdx(initialKf);
@@ -1331,16 +1331,49 @@ export const Room3DStudio: React.FC<Props> = ({
       s.renderer.setSize(nw, nh);
       s.camera.aspect = nw / nh;
     }
-    s.camera.fov = 52;
-    s.camera.updateProjectionMatrix();
     s.floorMesh.visible = true;
-    s.borderLines.visible = true;
+    s.borderLines.visible = activeCamIdx !== 'inside';
     s.controls.enabled = true;
 
-    if (activeCamIdx === 'top') {
+    if (activeCamIdx === 'inside' && scannedRoom) {
+      let cx = 0;
+      let cy = 1.38;
+      let cz = 0;
+      if (scannedRoom.cameras.length > 0) {
+        for (const c of scannedRoom.cameras) {
+          cx += c[0];
+          cy += c[1];
+          cz += c[2];
+        }
+        const n = scannedRoom.cameras.length;
+        cx = Math.max(-rw * 0.35, Math.min(rw * 0.35, cx / n));
+        cy = Math.max(1.15, Math.min(1.58, cy / n));
+        cz = Math.max(-rd * 0.35, Math.min(rd * 0.35, cz / n));
+      }
+      s.camera.fov = 64;
+      s.camera.updateProjectionMatrix();
+      s.controls.minDistance = 0.08;
+      s.controls.maxDistance = Math.max(0.8, Math.min(rw, rd) * 0.42);
+      s.controls.minPolarAngle = Math.PI * 0.2;
+      s.controls.maxPolarAngle = Math.PI * 0.72;
+      s.camera.position.set(cx, cy, cz + 0.36);
+      s.controls.target.set(cx, cy - 0.14, cz);
+    } else if (activeCamIdx === 'top') {
+      s.camera.fov = 52;
+      s.camera.updateProjectionMatrix();
+      s.controls.minDistance = 0.9;
+      s.controls.maxDistance = 16;
+      s.controls.minPolarAngle = 0;
+      s.controls.maxPolarAngle = Math.PI * 0.495;
       s.camera.position.set(0, Math.max(rw, rd) * 1.42, 0.01);
       s.controls.target.set(0, 0, 0);
     } else {
+      s.camera.fov = 52;
+      s.camera.updateProjectionMatrix();
+      s.controls.minDistance = 0.9;
+      s.controls.maxDistance = 16;
+      s.controls.minPolarAngle = 0;
+      s.controls.maxPolarAngle = Math.PI * 0.495;
       s.camera.position.set(rw * 0.65, ch * 1.15, rd * 0.85);
       s.controls.target.set(0, 0.72, 0);
     }
@@ -2314,15 +2347,31 @@ export const Room3DStudio: React.FC<Props> = ({
               <button
                 onClick={() => {
                   setActiveKeyframeIdx((cur) => (cur !== null ? cur : 0));
-                  setActiveCamIdx('free');
+                  setActiveCamIdx('inside');
                 }}
                 className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
                   activeKeyframeIdx !== null
                     ? 'bg-emerald-500 text-zinc-950'
-                    : 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+                    : 'bg-emerald-950/70 border border-emerald-700/70 text-emerald-200 hover:bg-emerald-900/70'
                 }`}
               >
                 HD Fotoğraf
+              </button>
+            )}
+
+            {scannedRoom && (
+              <button
+                onClick={() => {
+                  setActiveKeyframeIdx(null);
+                  setActiveCamIdx('inside');
+                }}
+                className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                  activeKeyframeIdx === null && activeCamIdx === 'inside'
+                    ? 'bg-white text-zinc-950'
+                    : 'bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                Oda İçi 360°
               </button>
             )}
 
