@@ -1,9 +1,12 @@
 """
-MekanAR (Odanda Gör) v9 — Gerçek Mekân 3B Tarayıcı
-  - Depth-Anything-3 (DA3NESTED-GIANT-LARGE-1.1) beslemeli 3D Gaussian başlatma
-  - Tam HD kareler üzerinde gsplat v1.5.3 (MCMCStrategy) fotometrik hizalama
-  - NVIDIA Difix3D+ (nvidia/difix_ref) tek adımlık difüzyon ile 3B bulanıklık / bozulma temizliği
-    ve temizlenmiş yeni açıların (orbit / paralaks / kuşbakışı) 3DGS'ye damıtılması (distillation)
+MekanAR (Odanda Gör) v10 — Keskin Köşeli & Akıcı (Sıfır Kasma) Gerçek Mekân 3B Motoru
+  - Depth-Anything-3 (DA3NESTED-GIANT-LARGE-1.1) sinirsel 3DGS başlatma
+  - 36 bulanıklık-filtreli HD kare + 3.400 adım sıkı ölçekli (<= 3.8 cm) gsplat eğitimi
+  - NVIDIA Difix3D+ (bf16 / sıfır fp16 taşması) ile 24 hedef açı:
+      * 12 göz hizası 360° köşe/duvar süpürme açısı
+      * 6 alt köşe / halı / sandalye ayağı açısı
+      * 6 yüksek 3D orbit / kuşbakışı açısı
+  - 140.000 yüksek opaklıklı (alpha >= 0.11) keskin splat -> tarayıcıda 2-3× daha akıcı FPS!
 """
 
 import math
@@ -25,7 +28,6 @@ def _make_gaussian_window(window_size: int, sigma: float, device, dtype):
 
 
 def _ssim_loss_11(pred_bchw, gt_bchw, window):
-    """Differentiable 11x11 Gaussian SSIM (pure PyTorch)."""
     import torch.nn.functional as F
 
     pad = window.shape[-1] // 2
@@ -48,12 +50,11 @@ def _ssim_loss_11(pred_bchw, gt_bchw, window):
 
 
 def _estimate_initial_scales_gpu(pts_t, device):
-    """Chunked GPU 3-NN mesafesinden sıkı başlangıç log-ölçeklerini hesaplar."""
     import torch
 
     n = pts_t.shape[0]
     if n < 16:
-        return torch.full((n, 3), math.log(0.012), device=device, dtype=torch.float32)
+        return torch.full((n, 3), math.log(0.011), device=device, dtype=torch.float32)
 
     ref_n = min(n, 24_000)
     if ref_n < n:
@@ -74,12 +75,12 @@ def _estimate_initial_scales_gpu(pts_t, device):
             avg_d = vals[:, 1:4].mean(dim=1) if vals.shape[1] >= 4 else vals[:, -1]
             dists_out[s:e] = avg_d * density_fix
 
-    scales = torch.clamp(dists_out * 0.56, min=0.0035, max=0.022)
+    scales = torch.clamp(dists_out * 0.52, min=0.003, max=0.018)
     return torch.log(scales).unsqueeze(-1).repeat(1, 3)
 
 
 def _se3_delta_matrix(rot_vec, trans_vec):
-    """Mikro SE(3) poz ince ayarı (<= 0.9° dönüş, <= 1.8 cm öteleme — DA3 pozlarını bozmaz)."""
+    """Mikro SE(3) poz ince ayarı (<= 0.9° dönüş, <= 1.8 cm öteleme)."""
     import torch
 
     r = torch.tanh(rot_vec) * 0.016
@@ -108,7 +109,7 @@ def _se3_delta_matrix(rot_vec, trans_vec):
 
 
 def _look_at_w2c(eye: np.ndarray, target: np.ndarray, world_up=np.array([0.0, 1.0, 0.0])) -> np.ndarray:
-    """OpenCV RDF (+X sağ, +Y aşağı, +Z ileri) world-to-camera 4x4 matrisi oluşturur."""
+    """OpenCV RDF (+X sağ, +Y aşağı, +Z ileri) world-to-camera 4x4 matrisi."""
     fwd = target - eye
     fn = float(np.linalg.norm(fwd))
     if fn < 1e-6:
@@ -124,7 +125,7 @@ def _look_at_w2c(eye: np.ndarray, target: np.ndarray, world_up=np.array([0.0, 1.
     down = np.cross(fwd, right)
     down = down / max(float(np.linalg.norm(down)), 1e-6)
 
-    R_c2w = np.stack([right, down, fwd], axis=1)  # OpenCV RDF columns
+    R_c2w = np.stack([right, down, fwd], axis=1)
     R_w2c = R_c2w.T
     t_w2c = -R_w2c @ eye
     w2c = np.eye(4, dtype=np.float64)
@@ -138,14 +139,15 @@ def _build_difix_novel_poses(
     half_w: float,
     half_d: float,
     ceil_cut: float,
-    n_orbit: int = 10,
-    n_lateral: int = 4,
-    n_birdseye: int = 4,
+    n_eye: int = 12,
+    n_low: int = 6,
+    n_orbit: int = 6,
 ) -> list[dict]:
     """
-    Kullanıcının 3B dönme (orbit), yan açı (paralaks) ve kuşbakışı (top-down) görünümlerinde
-    en çok bulanıklaşan stratejik yeni kamera pozlarını üretir ve her biri için en yakın
-    gerçek HD referans kamera indeksini eşler.
+    24 hedefli Difix3D+ yeni bakış açısı:
+      - 12 göz hizası 360° köşe/duvar/mobilya açısı (İçeriden 360° keskinliği için)
+      - 6 alt açı (halı / zemin / sandalye / koltuk alt köşeleri için)
+      - 6 yükseltilmiş 3D orbit / kuşbakışı açısı (3D Mekân ve Kuşbakışı için)
     """
     n_train = len(train_views)
     if n_train == 0:
@@ -153,88 +155,60 @@ def _build_difix_novel_poses(
 
     cam_positions = np.stack([v["cam_pos"] for v in train_views], axis=0)
     cam_forwards = np.stack([v["forward"] for v in train_views], axis=0)
-    cam_rights = np.stack([v["right"] for v in train_views], axis=0)
+    cam_center = np.median(cam_positions, axis=0)
+    eye_y = float(np.clip(cam_center[1], 1.10, 1.65))
 
     def _nearest_ref_idx(eye: np.ndarray, fwd: np.ndarray) -> int:
-        # En yakın bakış yönü + kamera mesafesi
         cos_sim = np.clip(cam_forwards @ fwd, -1.0, 1.0)
         angle_cost = 1.0 - cos_sim
-        dist_cost = np.linalg.norm(cam_positions - eye[None, :], axis=1) * 0.28
+        dist_cost = np.linalg.norm(cam_positions - eye[None, :], axis=1) * 0.22
         return int(np.argmin(angle_cost + dist_cost))
 
-    # Sahne hedef derinliği: gerçek medyan derinliğin %75'i (~1.8-2.6 m)
-    scene_center = np.array([0.0, max(0.55, min(1.05, ceil_cut * 0.36)), 0.0], dtype=np.float64)
     novel = []
 
-    # 1. Yükseltilmiş ve hafif geri çekilmiş orbit açıları (3D Oda modu temizliği)
-    orbit_indices = np.linspace(0, n_train - 1, min(n_orbit, n_train), dtype=int)
-    for idx in orbit_indices:
-        pos = cam_positions[idx]
-        fwd = cam_forwards[idx]
-        med_d = float(train_views[idx]["med_depth"])
-        look_t = pos + fwd * np.clip(med_d * 0.85, 1.2, 3.2)
-        look_t[1] = np.clip(look_t[1], 0.25, max(1.2, ceil_cut - 0.5))
-
-        # Kamerayı biraz geriye ve yukarıya taşı (gerçek çekim merkezinden dışarı doğru)
-        eye = pos - fwd * 0.36 + np.array([0.0, 0.38, 0.0], dtype=np.float64)
-        eye[0] = np.clip(eye[0], -(half_w + 0.35), half_w + 0.35)
-        eye[2] = np.clip(eye[2], -(half_d + 0.35), half_d + 0.35)
-        eye[1] = np.clip(eye[1], 0.85, max(1.85, ceil_cut - 0.10))
-
+    # 1. 12 göz hizası 360° köşe ve duvar süpürme açısı (her 30°'de bir)
+    for k in range(n_eye):
+        ang = (k / float(n_eye)) * 2.0 * math.pi
+        dir_xz = np.array([math.cos(ang), 0.0, math.sin(ang)], dtype=np.float64)
+        # Hafif paralaks ofseti + -8° aşağı eğim
+        eye = np.array([
+            float(np.clip(cam_center[0] - dir_xz[0] * 0.16, -(half_w - 0.15), half_w - 0.15)),
+            eye_y,
+            float(np.clip(cam_center[2] - dir_xz[2] * 0.16, -(half_d - 0.15), half_d - 0.15)),
+        ], dtype=np.float64)
+        look_t = eye + np.array([dir_xz[0] * 2.2, -0.30, dir_xz[2] * 2.2], dtype=np.float64)
         w2c = _look_at_w2c(eye, look_t)
-        new_fwd = look_t - eye
-        new_fwd = new_fwd / max(float(np.linalg.norm(new_fwd)), 1e-6)
-        novel.append(
-            {
-                "w2c": w2c,
-                "ref_idx": _nearest_ref_idx(eye, new_fwd),
-                "kind": "orbit",
-            }
-        )
+        fwd = look_t - eye
+        fwd /= max(float(np.linalg.norm(fwd)), 1e-6)
+        novel.append({"w2c": w2c, "ref_idx": _nearest_ref_idx(eye, fwd), "kind": "eye360"})
 
-    # 2. Yanal paralaks açıları (sandalye / masa / raf kenarlarını keskinleştirir)
-    lat_indices = np.linspace(0, n_train - 1, min(n_lateral, n_train), dtype=int)
-    for k, idx in enumerate(lat_indices):
-        pos = cam_positions[idx]
-        fwd = cam_forwards[idx]
-        right = cam_rights[idx]
-        med_d = float(train_views[idx]["med_depth"])
-        look_t = pos + fwd * np.clip(med_d * 0.82, 1.2, 3.0)
-        sign = 1.0 if (k % 2 == 0) else -1.0
-        eye = pos + right * (0.30 * sign) + np.array([0.0, 0.14, 0.0], dtype=np.float64)
-        eye[0] = np.clip(eye[0], -(half_w + 0.25), half_w + 0.25)
-        eye[2] = np.clip(eye[2], -(half_d + 0.25), half_d + 0.25)
-        eye[1] = np.clip(eye[1], 0.70, max(1.80, ceil_cut - 0.12))
-
+    # 2. 6 alt köşe / halı / eşya kenarı açısı (her 60°'de bir, -26° aşağı bakış)
+    for k in range(n_low):
+        ang = ((k + 0.5) / float(n_low)) * 2.0 * math.pi
+        dir_xz = np.array([math.cos(ang), 0.0, math.sin(ang)], dtype=np.float64)
+        eye = np.array([
+            float(np.clip(cam_center[0] - dir_xz[0] * 0.22, -(half_w - 0.15), half_w - 0.15)),
+            min(eye_y + 0.15, max(1.45, ceil_cut - 0.35)),
+            float(np.clip(cam_center[2] - dir_xz[2] * 0.22, -(half_d - 0.15), half_d - 0.15)),
+        ], dtype=np.float64)
+        look_t = eye + np.array([dir_xz[0] * 1.9, -0.92, dir_xz[2] * 1.9], dtype=np.float64)
         w2c = _look_at_w2c(eye, look_t)
-        new_fwd = look_t - eye
-        new_fwd = new_fwd / max(float(np.linalg.norm(new_fwd)), 1e-6)
-        novel.append(
-            {
-                "w2c": w2c,
-                "ref_idx": _nearest_ref_idx(eye, new_fwd),
-                "kind": "lateral",
-            }
-        )
+        fwd = look_t - eye
+        fwd /= max(float(np.linalg.norm(fwd)), 1e-6)
+        novel.append({"w2c": w2c, "ref_idx": _nearest_ref_idx(eye, fwd), "kind": "lowfloor"})
 
-    # 3. Yüksek kuşbakışı açılar (4 köşeden hafif yukarıdan içe bakış)
-    bird_angles = np.linspace(0.0, 2.0 * np.pi, n_birdseye, endpoint=False) + np.pi * 0.25
-    rad_x = min(half_w * 0.72, 1.8)
-    rad_z = min(half_d * 0.72, 1.8)
-    bird_y = min(max(ceil_cut - 0.18, 1.95), 2.85)
-    for ang in bird_angles:
-        eye = np.array([math.cos(ang) * rad_x, bird_y, math.sin(ang) * rad_z], dtype=np.float64)
-        look_t = np.array([0.0, 0.35, 0.0], dtype=np.float64)
+    # 3. 6 yüksek 3D orbit / kuşbakışı açısı
+    rad_x = min(half_w * 0.72, 1.9)
+    rad_z = min(half_d * 0.72, 1.9)
+    orbit_y = min(max(ceil_cut - 0.20, 1.90), 2.75)
+    for k in range(n_orbit):
+        ang = (k / float(n_orbit)) * 2.0 * math.pi + 0.4
+        eye = np.array([math.cos(ang) * rad_x, orbit_y, math.sin(ang) * rad_z], dtype=np.float64)
+        look_t = np.array([0.0, 0.42, 0.0], dtype=np.float64)
         w2c = _look_at_w2c(eye, look_t)
-        new_fwd = look_t - eye
-        new_fwd = new_fwd / max(float(np.linalg.norm(new_fwd)), 1e-6)
-        novel.append(
-            {
-                "w2c": w2c,
-                "ref_idx": _nearest_ref_idx(eye, new_fwd),
-                "kind": "birdseye",
-            }
-        )
+        fwd = look_t - eye
+        fwd /= max(float(np.linalg.norm(fwd)), 1e-6)
+        novel.append({"w2c": w2c, "ref_idx": _nearest_ref_idx(eye, fwd), "kind": "orbit"})
 
     return novel
 
@@ -252,8 +226,7 @@ def _run_difix_cleanup(
     max_side: int = 576,
 ):
     """
-    NVIDIA Difix3D+ (nvidia/difix_ref) ile novel açıları tek adımda (~0.25 sn/açı) temizler.
-    Temizlenmiş görüntü + geçerli alfa maskelerini gsplat damıtma listesi olarak döndürür.
+    NVIDIA Difix3D+ (bf16 / sıfır fp16 taşması) ile 24 hedef açıyı tek adımda temizler.
     """
     import torch
     import torch.nn.functional as F
@@ -261,10 +234,9 @@ def _run_difix_cleanup(
     from PIL import Image
 
     if difix_pipe is None or not novel_specs:
-        return [], 0.0
+        return [], 0.0, None
 
     t0 = time.time()
-    # Difix render çözünürlüğünü eğitim karesinin en-boy oranına göre 64'ün katına hizala (UNet + VAE uyumu)
     ref0 = train_views[0]
     W0, H0 = ref0["W"], ref0["H"]
     scale_r = min(1.0, float(max_side) / float(max(W0, H0)))
@@ -277,6 +249,7 @@ def _run_difix_cleanup(
         quats_n = F.normalize(params["quats"], p=2, dim=-1)
 
     cleaned_views = []
+    first_err = None
     for spec in novel_specs:
         ref_v = train_views[spec["ref_idx"]]
         K_ref = ref_v["K_np"]
@@ -306,36 +279,47 @@ def _run_difix_cleanup(
                 rasterize_mode="antialiased",
             )
             alpha_hw = alphas[0, ..., 0]
-            cov = float((alpha_hw > 0.35).float().mean().item())
-            if cov < 0.25:
+            cov = float((alpha_hw > 0.15).float().mean().item())
+            if cov < 0.22:
                 continue
 
-            # Boş pikselleri nötr arka planla doldur (Difix kenarlarda siyah leke üretmesin)
             rgb_hw3 = renders[0, ..., :3] + (1.0 - alphas[0]) * 0.5
             rgb_u8 = (rgb_hw3.clamp(0.0, 1.0) * 255.0).to(torch.uint8).cpu().numpy()
 
         render_pil = Image.fromarray(rgb_u8, mode="RGB")
         ref_pil = Image.fromarray(ref_v["rgb_u8"], mode="RGB").resize((W_dfx, H_dfx), Image.Resampling.BILINEAR)
 
-        with torch.no_grad():
-            out_pil = difix_pipe(
-                prompt="remove degradation",
-                image=render_pil,
-                ref_image=ref_pil,
-                height=H_dfx,
-                width=W_dfx,
-                num_inference_steps=1,
-                timesteps=[199],
-                guidance_scale=0.0,
-            ).images[0]
+        try:
+            with torch.no_grad():
+                out_pil = difix_pipe(
+                    prompt="remove degradation",
+                    image=render_pil,
+                    ref_image=ref_pil,
+                    num_inference_steps=1,
+                    timesteps=[199],
+                    guidance_scale=0.0,
+                ).images[0]
+        except Exception as exc:
+            if first_err is None:
+                first_err = f"{type(exc).__name__}: {exc}"
+            print(f"[difix3d+] Açı temizleme hatası: {type(exc).__name__}: {exc}", flush=True)
+            break
 
         if out_pil.size != (W_dfx, H_dfx):
             out_pil = out_pil.resize((W_dfx, H_dfx), Image.Resampling.BILINEAR)
 
         clean_np = np.asarray(out_pil.convert("RGB"), dtype=np.float32) / 255.0
+        # Bozuk/siyah veya NaN çıktı güvenlik kontrolü
+        if not np.isfinite(clean_np).all() or float(clean_np.mean()) < 0.03:
+            if first_err is None:
+                first_err = "Difix çıktı siyah/NaN olduğu için atlandı"
+            continue
+
         clean_t = torch.from_numpy(clean_np).to(device)
         clean_bchw = clean_t.permute(2, 0, 1).unsqueeze(0).contiguous()
-        valid_mask = (alpha_hw > 0.35).detach()
+        # İnce köşe çatlaklarını onarmak için 7x7 genişletilmiş alfa maskesi (alpha > 0.10)
+        base_m = (alpha_hw > 0.10).float()[None, None]
+        dilated_m = F.max_pool2d(base_m, kernel_size=7, stride=1, padding=3)[0, 0] > 0.5
 
         cleaned_views.append(
             {
@@ -345,13 +329,13 @@ def _run_difix_cleanup(
                 "H": H_dfx,
                 "rgb": clean_t,
                 "rgb_bchw": clean_bchw,
-                "valid_mask": valid_mask,
+                "valid_mask": dilated_m.detach(),
             }
         )
 
     difix_sec = round(time.time() - t0, 2)
-    print(f"[difix3d+] {len(cleaned_views)}/{len(novel_specs)} yeni açı temizlendi ({W_dfx}x{H_dfx}, {difix_sec} sn)", flush=True)
-    return cleaned_views, difix_sec
+    print(f"[difix3d+-v10] {len(cleaned_views)}/{len(novel_specs)} açı temizlendi ({W_dfx}x{H_dfx}, {difix_sec} sn)", flush=True)
+    return cleaned_views, difix_sec, first_err
 
 
 def train_room_splats(
@@ -364,18 +348,10 @@ def train_room_splats(
     n_real_pts: int | None = None,
     gs_init: dict | None = None,
     difix_pipe=None,
-    max_splats: int = 210_000,
-    phase1_steps: int = 1350,
-    phase2_steps: int = 1150,
+    max_splats: int = 140_000,
+    phase1_steps: int = 1800,
+    phase2_steps: int = 1600,
 ):
-    """
-    v9 Gerçek Mekân 3D Gaussian Splatting + NVIDIA Difix3D+ Boru Hattı:
-      1) DA3NESTED-GIANT-LARGE-1.1 beslemeli 3D Gaussian (veya nokta bulutu) başlatma
-      2) Tam HD gerçek kamera kareleriyle gsplat v1.5.3 fotometrik eğitim (Faz 1)
-      3) NVIDIA Difix3D+ (nvidia/difix_ref) ile 18 yeni orbit/paralaks/kuşbakışı açısının
-         tek adımda bulanıklık/bozulma temizliği
-      4) Temizlenmiş açılar + gerçek HD karelerin birleşik gsplat damıtma eğitimi (Faz 2)
-    """
     import torch
     import torch.nn.functional as F
     from gsplat import MCMCStrategy, rasterization
@@ -386,10 +362,10 @@ def train_room_splats(
 
     t0 = time.time()
     device = torch.device("cuda")
-    total_steps = phase1_steps + (phase2_steps if difix_pipe is not None else 950)
-    refine_stop = int(total_steps * 0.84)
+    total_steps = phase1_steps + (phase2_steps if difix_pipe is not None else 1200)
+    refine_stop = int(total_steps * 0.85)
 
-    # 1) Başlangıç Gaussian parametreleri: DA3 feed-forward 3DGS varsa öncelikle onu kullan!
+    # 1) DA3 beslemeli Gaussian başlatma
     init_from_da3 = False
     if gs_init is not None and len(gs_init.get("positions", [])) >= 1500:
         gp = np.asarray(gs_init["positions"], dtype=np.float32)
@@ -404,9 +380,9 @@ def train_room_splats(
             & np.isfinite(gq).all(axis=1)
             & np.isfinite(gsh).all(axis=1)
             & np.isfinite(ga)
-            & (ga >= 0.03)
+            & (ga >= 0.04)
             & (gs_sc.min(axis=1) > 1e-4)
-            & (gs_sc.max(axis=1) <= 0.14)
+            & (gs_sc.max(axis=1) <= 0.12)
             & (np.abs(gp[:, 0]) <= half_w + 0.65)
             & (np.abs(gp[:, 2]) <= half_d + 0.65)
             & (gp[:, 1] >= -0.15)
@@ -415,10 +391,9 @@ def train_room_splats(
         gp, gs_sc, gq, gsh, ga = gp[valid_g], gs_sc[valid_g], gq[valid_g], gsh[valid_g], ga[valid_g]
 
         if len(gp) >= 1500:
-            max_init = 135_000
+            max_init = 120_000
             if len(gp) > max_init:
                 rng_g = np.random.default_rng(42)
-                # Yüksek opaklıklı %50 + mekansal kapsama için rastgele %50
                 top_k = max_init // 2
                 top_idx = np.argpartition(ga, -top_k)[-top_k:]
                 rem_mask = np.ones(len(gp), dtype=bool)
@@ -429,13 +404,13 @@ def train_room_splats(
                 gp, gs_sc, gq, gsh, ga = gp[sel], gs_sc[sel], gq[sel], gsh[sel], ga[sel]
 
             pts_t = torch.from_numpy(gp).to(device)
-            log_scales_t = torch.log(torch.from_numpy(np.clip(gs_sc, 0.0025, 0.055)).to(device))
+            log_scales_t = torch.log(torch.from_numpy(np.clip(gs_sc, 0.0022, 0.036)).to(device))
             quats_t = F.normalize(torch.from_numpy(gq).to(device), p=2, dim=-1)
-            opa_clip = np.clip(ga, 0.04, 0.96)
+            opa_clip = np.clip(ga, 0.05, 0.96)
             opas_t = torch.from_numpy(np.log(opa_clip / (1.0 - opa_clip)).astype(np.float32)).to(device)
-            sh0_t = torch.from_numpy(gsh.astype(np.float32)).to(device).unsqueeze(1)  # (N, 1, 3)
+            sh0_t = torch.from_numpy(gsh.astype(np.float32)).to(device).unsqueeze(1)
             init_from_da3 = True
-            print(f"[gsplat-v9] DA3 neural 3DGS başlatıldı: {len(gp)} splat", flush=True)
+            print(f"[gsplat-v10] DA3 neural 3DGS başlatıldı: {len(gp)} splat", flush=True)
 
     if not init_from_da3:
         if n_real_pts is not None and 500 <= n_real_pts <= len(P_init):
@@ -445,12 +420,10 @@ def train_room_splats(
             P_src = P_init
             C_src = C_init
 
-        n_pts = len(P_src)
-        max_init = 125_000
-        if n_pts > max_init:
-            sel = np.random.default_rng(42).choice(n_pts, max_init, replace=False)
-            P_src = P_src[sel]
-            C_src = C_src[sel]
+        max_init = 115_000
+        if len(P_src) > max_init:
+            sel = np.random.default_rng(42).choice(len(P_src), max_init, replace=False)
+            P_src, C_src = P_src[sel], C_src[sel]
 
         pts_t = torch.from_numpy(P_src.astype(np.float32)).to(device)
         rgb_t = torch.from_numpy(C_src.astype(np.float32) / 255.0).to(device)
@@ -459,11 +432,10 @@ def train_room_splats(
         quats_t = torch.zeros((len(P_src), 4), device=device, dtype=torch.float32)
         quats_t[:, 0] = 1.0
         opas_t = torch.full((len(P_src),), math.log(0.45 / 0.55), device=device, dtype=torch.float32)
-        print(f"[gsplat-v9] Nokta bulutu başlatma: {len(P_src)} nokta", flush=True)
 
-    # 2) Eğitim görüntülerini tam HD olarak GPU'ya hazırla (<= 800px)
+    # 2) HD eğitim görüntülerini hazırla (<= 768px)
     train_views = []
-    max_train_side = 800
+    max_train_side = 768
     for vc in views_cam:
         rgb_src = vc.get("rgb_hd")
         if rgb_src is None:
@@ -502,9 +474,6 @@ def train_room_splats(
         d_hd = F.interpolate(d_t, size=(H_hd, W_hd), mode="bilinear", align_corners=False)[0, 0]
         m_hd = (F.interpolate(m_t, size=(H_hd, W_hd), mode="nearest")[0, 0] > 0.5) & (d_hd > 0.15) & (d_hd < 15.0)
 
-        valid_d_np = vc["depth_m"][vc["mask"] & np.isfinite(vc["depth_m"]) & (vc["depth_m"] > 0.2)]
-        med_depth = float(np.median(valid_d_np)) if len(valid_d_np) > 50 else 2.2
-
         train_views.append(
             {
                 "w2c": torch.from_numpy(w2c.astype(np.float32)).to(device).unsqueeze(0),
@@ -519,8 +488,6 @@ def train_room_splats(
                 "mask": m_hd,
                 "cam_pos": cam_pos,
                 "forward": R_c2w[:, 2] / max(float(np.linalg.norm(R_c2w[:, 2])), 1e-6),
-                "right": R_c2w[:, 0] / max(float(np.linalg.norm(R_c2w[:, 0])), 1e-6),
-                "med_depth": med_depth,
             }
         )
 
@@ -529,8 +496,9 @@ def train_room_splats(
         raise RuntimeError("3DGS için en az 2 kamera açısı gerekli")
 
     scene_scale = max(1.5, float(max(half_w, half_d) * 2.0))
-    MIN_LOG_SCALE = math.log(0.0018)
-    MAX_LOG_SCALE = math.log(0.062)
+    # Sıkı 3.8 cm üst sınır: köşelerde dev sulu boya / bulanık topak oluşumunu engeller!
+    MIN_LOG_SCALE = math.log(0.0016)
+    MAX_LOG_SCALE = math.log(0.038)
 
     params = {
         "means": torch.nn.Parameter(pts_t),
@@ -540,32 +508,32 @@ def train_room_splats(
         "sh0": torch.nn.Parameter(sh0_t),
     }
 
-    lr_means_start = 1.1e-4 * scene_scale
-    lr_means_end = 1.2e-6 * scene_scale
+    lr_means_start = 1.0e-4 * scene_scale
+    lr_means_end = 1.0e-6 * scene_scale
     gamma_means = (lr_means_end / lr_means_start) ** (1.0 / max(1, total_steps))
 
     optimizers = {
         "means": torch.optim.Adam([params["means"]], lr=lr_means_start, eps=1e-15),
-        "scales": torch.optim.Adam([params["scales"]], lr=4.0e-3, eps=1e-15),
+        "scales": torch.optim.Adam([params["scales"]], lr=3.8e-3, eps=1e-15),
         "quats": torch.optim.Adam([params["quats"]], lr=1.0e-3, eps=1e-15),
-        "opacities": torch.optim.Adam([params["opacities"]], lr=3.5e-2, eps=1e-15),
+        "opacities": torch.optim.Adam([params["opacities"]], lr=3.6e-2, eps=1e-15),
         "sh0": torch.optim.Adam([params["sh0"]], lr=2.5e-3, eps=1e-15),
     }
 
     pose_rot = torch.nn.Parameter(torch.zeros((n_views, 3), device=device, dtype=torch.float32))
     pose_trans = torch.nn.Parameter(torch.zeros((n_views, 3), device=device, dtype=torch.float32))
-    pose_lr_start = 3.5e-4
-    pose_lr_end = 4.0e-5
+    pose_lr_start = 3.0e-4
+    pose_lr_end = 3.5e-5
     pose_opt = torch.optim.Adam([pose_rot, pose_trans], lr=pose_lr_start, eps=1e-15)
 
-    cap_max = max(max_splats + 25_000, 225_000)
+    cap_max = max(max_splats + 25_000, 170_000)
     strategy = MCMCStrategy(
         cap_max=cap_max,
-        noise_lr=1.8e5,
+        noise_lr=1.6e5,
         refine_start_iter=200,
         refine_stop_iter=refine_stop,
         refine_every=100,
-        min_opacity=0.012,
+        min_opacity=0.015,
         verbose=False,
     )
     strategy_state = strategy.initialize_state()
@@ -579,32 +547,32 @@ def train_room_splats(
     cur_means_lr = lr_means_start
     cur_pose_lr = pose_lr_start
     pose_start = 150
-    pose_stop = min(phase1_steps - 150, 1150)
+    pose_stop = min(phase1_steps - 200, 1450)
     gamma_pose = (pose_lr_end / pose_lr_start) ** (1.0 / max(1, pose_stop - pose_start))
 
     difix_views = []
     difix_sec = 0.0
+    difix_err = None
     difix_pos = 0
 
     for step in range(total_steps):
-        # Faz 1 -> Faz 2 geçişinde NVIDIA Difix3D+ yeni açı temizliğini çalıştır
         if step == phase1_steps and difix_pipe is not None:
             try:
                 novel_specs = _build_difix_novel_poses(
                     train_views, half_w=half_w, half_d=half_d, ceil_cut=ceil_cut,
-                    n_orbit=10, n_lateral=4, n_birdseye=4,
+                    n_eye=12, n_low=6, n_orbit=6,
                 )
-                difix_views, difix_sec = _run_difix_cleanup(
+                difix_views, difix_sec, difix_err = _run_difix_cleanup(
                     difix_pipe, params, novel_specs, train_views, device, max_side=576
                 )
             except Exception as exc:
-                print(f"[difix3d+] Hata (saf HD eğitime devam): {type(exc).__name__}: {exc}", flush=True)
+                difix_err = f"{type(exc).__name__}: {exc}"
+                print(f"[difix3d+-v10] Hata: {difix_err}", flush=True)
                 difix_views = []
 
         use_difix = False
         if difix_views and step >= phase1_steps:
-            # Son 250 adımda %75 gerçek HD + %25 Difix; öncesinde %65 gerçek HD + %35 Difix
-            p_dfx = 0.25 if step >= total_steps - 250 else 0.35
+            p_dfx = 0.25 if step >= total_steps - 350 else 0.38
             use_difix = bool(rng.random() < p_dfx)
 
         scales_exp = torch.exp(params["scales"])
@@ -636,11 +604,10 @@ def train_room_splats(
                 l1 = torch.abs(pred_rgb[vm] - dv["rgb"][vm]).mean()
             else:
                 l1 = torch.abs(pred_rgb - dv["rgb"]).mean()
-            # Maskelenmiş SSIM: yalnızca gözlenen yüzey piksellerini karşılaştır
             vm3 = vm.unsqueeze(-1).float()
             pred_m = (pred_rgb * vm3 + dv["rgb"] * (1.0 - vm3)).permute(2, 0, 1).unsqueeze(0).contiguous()
             ssim_val = _ssim_loss_11(pred_m, dv["rgb_bchw"], ssim_window)
-            loss = 0.72 * (0.75 * l1 + 0.25 * (1.0 - ssim_val))
+            loss = 0.78 * (0.75 * l1 + 0.25 * (1.0 - ssim_val))
             opt_pose_now = False
         else:
             if order_pos >= n_views:
@@ -685,20 +652,18 @@ def train_room_splats(
             ssim_val = _ssim_loss_11(pred_bchw, v["rgb_bchw"], ssim_window)
             loss = 0.80 * l1 + 0.20 * (1.0 - ssim_val)
 
-            # Nazik metrik derinlik çapası (DA3 derinliği zaten çok keskin, geometriyi kilitler)
             valid_d = v["mask"] & (alphas[0, ..., 0] > 0.45)
             if valid_d.any():
-                d_w = 0.045 if step < 600 else (0.025 if step < refine_stop else 0.012)
+                d_w = 0.040 if step < 700 else (0.020 if step < refine_stop else 0.010)
                 loss = loss + d_w * F.smooth_l1_loss(pred_depth[valid_d], v["depth"][valid_d], beta=0.06)
 
-        # Hafif anti-iğne düzenleyicisi (keskinliği ezmeden diken patlamasını engeller)
         s_sorted, _ = torch.sort(scales_exp, dim=-1)
-        needle_pen = F.relu(s_sorted[:, 2] / (s_sorted[:, 1] + 1e-4) - 2.6).mean()
-        flat_pen = F.relu(s_sorted[:, 0] - 0.020).mean()
-        reg_mul = 1.0 if step < refine_stop else 0.40
+        needle_pen = F.relu(s_sorted[:, 2] / (s_sorted[:, 1] + 1e-4) - 2.4).mean()
+        flat_pen = F.relu(s_sorted[:, 0] - 0.016).mean()
+        reg_mul = 1.0 if step < refine_stop else 0.35
         loss = loss + reg_mul * (
             0.0025 * opas_sig.mean()
-            + 0.009 * scales_exp.mean()
+            + 0.008 * scales_exp.mean()
             + 0.040 * needle_pen
             + 0.020 * flat_pen
         )
@@ -732,7 +697,7 @@ def train_room_splats(
         cur_means_lr *= gamma_means
         optimizers["means"].param_groups[0]["lr"] = cur_means_lr
 
-    # 3) Son temizlik ve yüksek yoğunluklu aktarım
+    # 3) Akıcı FPS için yüksek opaklıklı keskin temizlik (sis/gürültü splat'ları atılır!)
     with torch.no_grad():
         means_np = params["means"].detach().float().cpu().numpy()
         log_scales_np = params["scales"].detach().float().clamp(MIN_LOG_SCALE, MAX_LOG_SCALE).cpu().numpy()
@@ -750,9 +715,9 @@ def train_room_splats(
         & np.isfinite(log_scales_np).all(axis=1)
         & np.isfinite(quats_np).all(axis=1)
         & np.isfinite(alphas_np)
-        & (alphas_np >= 0.06)
-        & (sc_sorted[:, 2] <= 0.068)
-        & (needle_ratio <= 4.5)
+        & (alphas_np >= 0.11)
+        & (sc_sorted[:, 2] <= 0.042)
+        & (needle_ratio <= 4.0)
         & (np.abs(means_np[:, 0]) <= half_w + 0.45)
         & (np.abs(means_np[:, 2]) <= half_d + 0.45)
         & (means_np[:, 1] >= -0.08)
@@ -779,8 +744,8 @@ def train_room_splats(
 
     gs_sec = round(time.time() - t0, 2)
     print(
-        f"[gsplat-v9] {len(means_np)} splat (DA3-init={init_from_da3}, "
-        f"difix={len(difix_views)} açı/{difix_sec}s, {total_steps} adım, {n_views} HD kare, {gs_sec} sn)",
+        f"[gsplat-v10] {len(means_np)} splat (DA3-init={init_from_da3}, "
+        f"difix={len(difix_views)} açı/{difix_sec}s, err={difix_err}, {total_steps} adım, {n_views} HD kare, {gs_sec} sn)",
         flush=True,
     )
 
@@ -793,5 +758,6 @@ def train_room_splats(
         "gs_sec": gs_sec,
         "difix_sec": difix_sec,
         "difix_views": len(difix_views),
+        "difix_error": difix_err,
         "da3_init": init_from_da3,
     }

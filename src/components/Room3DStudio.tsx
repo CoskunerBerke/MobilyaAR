@@ -123,6 +123,17 @@ type WallMode = 'auto' | 'all' | 'floor';
 type ClipAxis = 'none' | 'x' | 'z' | 'y';
 type DrawerFilter = 'all' | 'seating' | 'tables' | 'storage';
 
+/** Geniş masaüstü ekranlarda köşelerdeki balık-gözü (fisheye) uzamasını ve kenar bulanıklığını engeller. */
+function computeNaturalFovY(aspect: number, isInside: boolean): number {
+  const safeAspect = Math.max(0.45, aspect || 1.0);
+  const maxFovXRad = THREE.MathUtils.degToRad(isInside ? 82 : 76);
+  const fovYFromMaxX = THREE.MathUtils.radToDeg(
+    2 * Math.atan(Math.tan(maxFovXRad * 0.5) / safeAspect)
+  );
+  const targetMaxY = isInside ? 56 : 50;
+  return Math.max(35, Math.min(targetMaxY, fovYFromMaxX));
+}
+
 function applyFabricSwatch(root: THREE.Object3D, hex?: string) {
   if (!hex) return;
   root.traverse((o) => {
@@ -549,7 +560,7 @@ export const Room3DStudio: React.FC<Props> = ({
     if (!file) return;
     setExtractPct(0);
     try {
-      const frames = await extractFramesFromVideo(file, 24, 768, (pct) => {
+      const frames = await extractFramesFromVideo(file, 36, 640, (pct) => {
         if (alive.current) setExtractPct(pct);
       });
       if (frames.length < 4) {
@@ -759,6 +770,8 @@ export const Room3DStudio: React.FC<Props> = ({
       const difixTag =
         decoded.stats.difixViews && decoded.stats.difixViews > 0
           ? ` • Difix3D+ (${decoded.stats.difixViews} açı)`
+          : decoded.stats.difixError
+          ? ` • Difix atlandı`
           : '';
       showToast(
         `Gerçek 3B mekân hazır (${decoded.splatCount.toLocaleString('tr-TR')} splat${difixTag} • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`
@@ -786,17 +799,23 @@ export const Room3DStudio: React.FC<Props> = ({
       const h = host.clientHeight || window.innerHeight - 180;
 
       const renderer = new THREE.WebGLRenderer({
-        antialias: true,
+        antialias: !scannedRoom,
         alpha: true,
+        powerPreference: 'high-performance',
         preserveDrawingBuffer: true,
       });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      // 3DGS splat modunda 1.25x piksel oranı: 2.5x daha akıcı FPS (sıfır kasma!)
+      renderer.setPixelRatio(
+        scannedRoom ? Math.min(window.devicePixelRatio, 1.25) : Math.min(window.devicePixelRatio, 2)
+      );
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.06;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.autoUpdate = false;
+      renderer.shadowMap.needsUpdate = true;
       renderer.localClippingEnabled = true;
 
       const initialHdMode =
@@ -808,7 +827,7 @@ export const Room3DStudio: React.FC<Props> = ({
       scene.background = initialHdMode ? null : new THREE.Color(bgHex);
       renderer.setClearColor(initialHdMode ? 0x000000 : bgHex, initialHdMode ? 0 : 1);
 
-      const camera = new THREE.PerspectiveCamera(52, w / h, 0.08, 60);
+      const camera = new THREE.PerspectiveCamera(computeNaturalFovY(w / Math.max(1, h), Boolean(scannedRoom)), w / h, 0.08, 60);
       const rw = roomDimsRef.current.w;
       const rd = roomDimsRef.current.d;
       const ch = roomDimsRef.current.ch;
@@ -1131,14 +1150,25 @@ export const Room3DStudio: React.FC<Props> = ({
       };
       setSceneReady((v) => v + 1);
 
+      let dirtyFrames = 75;
+      const onControlsChange = () => {
+        dirtyFrames = Math.max(dirtyFrames, 12);
+      };
+      controls.addEventListener('change', onControlsChange);
+      disposeFns.push(() => controls.removeEventListener('change', onControlsChange));
+
       const onResize = () => {
         if (!hostRef.current || !sceneRef.current) return;
         const nw = hostRef.current.clientWidth;
         const nh = hostRef.current.clientHeight;
         if (nw > 0 && nh > 0) {
           camera.aspect = nw / nh;
+          if (activeKeyframeIdxRef.current === null) {
+            camera.fov = computeNaturalFovY(nw / nh, controls.minDistance < 0.2);
+          }
           camera.updateProjectionMatrix();
           renderer.setSize(nw, nh);
+          dirtyFrames = Math.max(dirtyFrames, 12);
         }
       };
       const ro = new ResizeObserver(onResize);
@@ -1146,6 +1176,12 @@ export const Room3DStudio: React.FC<Props> = ({
       disposeFns.push(() => ro.disconnect());
 
       const toCam = new THREE.Vector3();
+      const prevCamPos = new THREE.Vector3(NaN, NaN, NaN);
+      const prevCamQuat = new THREE.Quaternion(NaN, NaN, NaN, NaN);
+      let prevFov = -1;
+      let prevSceneSig = '';
+      let prevShadowSig = '';
+
       const animate = () => {
         if (!sceneRef.current) return;
         sceneRef.current.rafId = requestAnimationFrame(animate);
@@ -1177,7 +1213,38 @@ export const Room3DStudio: React.FC<Props> = ({
           selFrame.visible = false;
         }
 
-        renderer.render(scene, camera);
+        // Akıllı çerçeve kontrolü: mobilya veya kamera hareket etmiyorsa gereksiz 3DGS sıralamasını durdur (sıfır kasma!)
+        let itemSum = itemsRef.current.length * 1000 + itemsRoot.children.length * 10;
+        let colorSig = '';
+        for (const it of itemsRef.current) {
+          itemSum += it.x * 13.7 + it.z * 29.3 + it.rot * 7.1;
+          if (it.colorHex) colorSig += it.colorHex;
+        }
+        const shadowSig = `${itemsRoot.children.length}:${itemSum.toFixed(3)}:${emptyRoomRef.current ? 1 : 0}`;
+        if (shadowSig !== prevShadowSig) {
+          prevShadowSig = shadowSig;
+          renderer.shadowMap.needsUpdate = true;
+          dirtyFrames = Math.max(dirtyFrames, 8);
+        }
+
+        const sceneSig = `${shadowSig}:${colorSig}:${scene.children.length}:${selectedIdRef.current || ''}:${hitObstacleRef.current ? 1 : 0}:${showFreeFloorRef.current ? 1 : 0}:${activeKeyframeIdxRef.current ?? -1}:${wm}:${clipPlane.constant.toFixed(2)}`;
+        const camMoved =
+          prevCamPos.distanceToSquared(camera.position) > 1e-8 ||
+          Math.abs(prevCamQuat.dot(camera.quaternion)) < 0.9999998 ||
+          Math.abs(prevFov - camera.fov) > 0.01;
+
+        if (camMoved || sceneSig !== prevSceneSig) {
+          prevCamPos.copy(camera.position);
+          prevCamQuat.copy(camera.quaternion);
+          prevFov = camera.fov;
+          prevSceneSig = sceneSig;
+          dirtyFrames = Math.max(dirtyFrames, isSplat ? 6 : 3);
+        }
+
+        if (dirtyFrames > 0) {
+          dirtyFrames--;
+          renderer.render(scene, camera);
+        }
       };
       animate();
     })();
@@ -1356,7 +1423,7 @@ export const Room3DStudio: React.FC<Props> = ({
       s.renderer.setSize(nw, nh);
       s.camera.aspect = nw / nh;
     }
-    s.camera.fov = activeCamIdx === 'inside' ? 62 : 52;
+    s.camera.fov = computeNaturalFovY(s.camera.aspect, activeCamIdx === 'inside');
     s.camera.updateProjectionMatrix();
     s.floorMesh.visible = true;
     s.borderLines.visible = !s.isSplat;

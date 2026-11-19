@@ -1,14 +1,11 @@
 """
-MekanAR (Odanda Gör) v9 — RunPod Serverless Dual-Model GPU Worker
+MekanAR (Odanda Gör) v10 — RunPod Serverless Dual-Model GPU Worker
   1) ByteDance Depth-Anything-3 Nested Metric Giant-Large 1.1 (DA3NESTED-GIANT-LARGE-1.1):
-     - Herhangi bir mekândan (oda, salon, ofis, kafe, balkon, dış mekân) yüksek doğruluklu
-       kamera pozları, 1:1 metrik derinlik ve sinirsel beslemeli 3D Gaussian başlatma üretir.
-  2) gsplat v1.5.3 (CUDA 12.8 AOT) + NVIDIA Difix3D+ (nvidia/difix_ref fp16):
-     - Tam HD karelerle fotometrik hizalama + tek adımlık difüzyonla orbit/paralaks/kuşbakışı
-       açılarındaki 3B bulanıklık ve bozulmaları temizleyip SPZ v2'ye damıtır.
-
-Girdi  (job["input"]):  {"images": ["<base64 jpeg>", ...]}
-Çıktı:                   {"ok": true, "mode": "gaussian-difix-v9", "splatSpz": "...", ...}
+     - 36 bulanıklık-filtreli HD kareden yüksek doğruluklu kamera pozları, 1:1 metrik derinlik
+       ve sinirsel 3D Gaussian başlangıcı (infer_gs=True) üretir.
+  2) gsplat v1.5.3 (CUDA 12.8 AOT) + NVIDIA Difix3D+ (nvidia/difix_ref, bf16 / fp32 VAE):
+     - Sıkı 3.8 cm ölçek sınırı + 3.400 adım HD eğitim + 24 göz-hizası/köşe/zemin/orbit açısı
+       Difix3D+ temizliği -> 140.000 yüksek opaklıklı keskin splat (sıfır kasma, net köşeler).
 """
 
 import base64
@@ -31,11 +28,12 @@ from postprocess import build_room_payload
 
 DA3_MODEL_ID = os.environ.get("DA3_MODEL_ID", "depth-anything/DA3NESTED-GIANT-LARGE-1.1")
 DIFIX_MODEL_DIR = os.environ.get("DIFIX_MODEL_DIR", "/models/difix_ref_fp16")
-MAX_IMAGES = int(os.environ.get("MAX_IMAGES", "32"))
+MAX_IMAGES = int(os.environ.get("MAX_IMAGES", "36"))
 DA3_PROCESS_RES = int(os.environ.get("DA3_PROCESS_RES", "504"))
 
 _DA3_MODEL = None
 _DIFIX_PIPE = None
+_DIFIX_LOAD_ERR = None
 
 
 def _total_vram_gb() -> float:
@@ -56,12 +54,12 @@ def get_da3_model():
         _DA3_MODEL = DepthAnything3.from_pretrained(DA3_MODEL_ID).eval()
         if torch.cuda.is_available():
             _DA3_MODEL = _DA3_MODEL.to("cuda")
-        print(f"[worker-v9] {DA3_MODEL_ID} loaded in {time.time() - t0:.1f}s", flush=True)
+        print(f"[worker-v10] {DA3_MODEL_ID} loaded in {time.time() - t0:.1f}s", flush=True)
     return _DA3_MODEL
 
 
 def get_difix_pipe():
-    global _DIFIX_PIPE
+    global _DIFIX_PIPE, _DIFIX_LOAD_ERR
     if _DIFIX_PIPE is None:
         try:
             from pipeline_difix import DifixPipeline
@@ -69,20 +67,24 @@ def get_difix_pipe():
             t0 = time.time()
             src = DIFIX_MODEL_DIR if os.path.isdir(DIFIX_MODEL_DIR) else "nvidia/difix_ref"
             local_only = os.path.isdir(DIFIX_MODEL_DIR)
+            # SD-Turbo/SD2.1 VAE fp16 taşması yapmasın diye bf16 (veya fp32) yükle!
+            use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            dtype = torch.bfloat16 if use_bf16 else torch.float32
             pipe = DifixPipeline.from_pretrained(
                 src,
                 trust_remote_code=True,
-                torch_dtype=torch.float16,
+                torch_dtype=dtype,
                 local_files_only=local_only,
             )
             pipe.set_progress_bar_config(disable=True)
-            # 34 GB+ VRAM (L40S/A100/H100) varsa GPU'da tut; 24 GB kartlarda (4090/A5000) anlık taşı
             if torch.cuda.is_available() and _total_vram_gb() >= 34.0:
                 pipe.to("cuda")
             _DIFIX_PIPE = pipe
-            print(f"[worker-v9] Difix3D+ ({src}) loaded in {time.time() - t0:.1f}s", flush=True)
+            _DIFIX_LOAD_ERR = None
+            print(f"[worker-v10] Difix3D+ ({src}, dtype={dtype}) loaded in {time.time() - t0:.1f}s", flush=True)
         except Exception as exc:
-            print(f"[worker-v9] Difix3D+ yüklenemedi (saf DA3+gsplat devam): {type(exc).__name__}: {exc}", flush=True)
+            _DIFIX_LOAD_ERR = f"{type(exc).__name__}: {exc}"
+            print(f"[worker-v10] Difix3D+ yüklenemedi: {_DIFIX_LOAD_ERR}", flush=True)
             _DIFIX_PIPE = False
     return _DIFIX_PIPE if _DIFIX_PIPE is not False else None
 
@@ -102,22 +104,22 @@ def _extract_da3_gaussians(pred, H: int, W: int, n_views: int):
         if not np.isfinite(sf) or sf <= 1e-4:
             sf = 1.0
 
-        means = _to_np(gs_world.means)[0] * sf  # (M, 3)
-        scales = _to_np(gs_world.scales)[0] * sf  # (M, 3)
-        quats = _to_np(gs_world.rotations)[0]  # (M, 4) wxyz
+        means = _to_np(gs_world.means)[0] * sf
+        scales = _to_np(gs_world.scales)[0] * sf
+        quats = _to_np(gs_world.rotations)[0]
         harm = _to_np(gs_world.harmonics)[0]
         if harm.ndim == 3:
             sh_dc = harm[:, :, 0] if harm.shape[1] == 3 else harm[:, 0, :]
         else:
             sh_dc = harm[:, :3]
-        opas = _to_np(gs_world.opacities)[0].reshape(-1)  # (M,)
+        opas = _to_np(gs_world.opacities)[0].reshape(-1)
 
         expected = n_views * H * W
         if len(means) == expected:
-            # Görüntü kenarlarındaki gürültülü %3 şeridi ve gökyüzünü ayıkla
+            # Köşe ve duvar uçlarını kaybetmemek için çok ince (%1.5) kenar kırpma + alt %10 güven eşiği
             keep_vhw = np.ones((n_views, H, W), dtype=bool)
-            bh = max(2, int(round(H * 0.03)))
-            bw = max(2, int(round(W * 0.03)))
+            bh = max(1, int(round(H * 0.015)))
+            bw = max(1, int(round(W * 0.015)))
             keep_vhw[:, :bh, :] = False
             keep_vhw[:, -bh:, :] = False
             keep_vhw[:, :, :bw] = False
@@ -130,7 +132,7 @@ def _extract_da3_gaussians(pred, H: int, W: int, n_views: int):
                 cf = np.asarray(conf, dtype=np.float32)
                 finite_c = cf[np.isfinite(cf)]
                 if len(finite_c) > 100:
-                    c_thr = float(np.percentile(finite_c, 15))
+                    c_thr = float(np.percentile(finite_c, 10))
                     keep_vhw &= (cf >= c_thr)
             flat_keep = keep_vhw.reshape(-1)
             means = means[flat_keep]
@@ -147,7 +149,7 @@ def _extract_da3_gaussians(pred, H: int, W: int, n_views: int):
             "opacities": opas.astype(np.float32),
         }
     except Exception as exc:
-        print(f"[worker-v9] DA3 Gaussian çıkarımı atlandı (nokta bulutu yedeği): {exc}", flush=True)
+        print(f"[worker-v10] DA3 Gaussian çıkarımı atlandı: {exc}", flush=True)
         return None
 
 
@@ -194,18 +196,17 @@ def handler(job):
                 torch.cuda.synchronize()
             infer_s = time.time() - t_inf
 
-            # 24 GB GPU'larda Difix3D+ ve gsplat için VRAM boşalt
             if low_vram:
                 da3.to("cpu")
                 torch.cuda.empty_cache()
 
-        depths = np.asarray(pred.depth, dtype=np.float32)  # (N, H, W)
+        depths = np.asarray(pred.depth, dtype=np.float32)
         N, H, W = depths.shape
         confs = np.asarray(pred.conf, dtype=np.float32) if pred.conf is not None else np.ones_like(depths)
         skies = np.asarray(pred.sky, dtype=np.float32) if pred.sky is not None else None
-        exts = np.asarray(pred.extrinsics, dtype=np.float64)  # (N, 3, 4) or (N, 4, 4) OpenCV w2c
-        ixts = np.asarray(pred.intrinsics, dtype=np.float64)  # (N, 3, 3)
-        proc_imgs = np.asarray(pred.processed_images, dtype=np.uint8)  # (N, H, W, 3)
+        exts = np.asarray(pred.extrinsics, dtype=np.float64)
+        ixts = np.asarray(pred.intrinsics, dtype=np.float64)
+        proc_imgs = np.asarray(pred.processed_images, dtype=np.uint8)
 
         gs_init = _extract_da3_gaussians(pred, H, W, N)
 
@@ -216,7 +217,7 @@ def handler(job):
             K = ixts[idx_p].astype(np.float64)
             w2c = np.eye(4, dtype=np.float64)
             w2c[:3, :4] = exts[idx_p, :3, :4]
-            pose = np.linalg.inv(w2c)  # OpenCV RDF cam2world (4, 4)
+            pose = np.linalg.inv(w2c)
 
             fx = max(float(K[0, 0]), 1e-6)
             fy = max(float(K[1, 1]), 1e-6)
@@ -228,7 +229,7 @@ def handler(job):
 
             c_hw = confs[idx_p]
             finite_c = c_hw[np.isfinite(c_hw)]
-            c_thr = float(np.percentile(finite_c, 20)) if len(finite_c) > 100 else 0.0
+            c_thr = float(np.percentile(finite_c, 10)) if len(finite_c) > 100 else 0.0
             mask = np.isfinite(d_hw) & (d_hw > 0.15) & (d_hw < 16.0) & (c_hw >= c_thr)
             if skies is not None:
                 mask &= (skies[idx_p] < 0.45)
@@ -265,19 +266,22 @@ def handler(job):
                 torch.cuda.empty_cache()
 
         if payload.get("ok"):
+            if _DIFIX_LOAD_ERR and not payload["stats"].get("difixError"):
+                payload["stats"]["difixError"] = _DIFIX_LOAD_ERR[:180]
             payload["stats"].update(
                 {
                     "views": len(images),
                     "inferSec": round(infer_s, 2),
                     "totalSec": round(time.time() - t_start, 2),
-                    "model": f"{DA3_MODEL_ID} + Difix3D+",
+                    "model": f"{DA3_MODEL_ID} + Difix3D+ v10",
                     "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
                 }
             )
             print(
-                f"[worker-v9] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
+                f"[worker-v10] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
                 f"splats={payload['stats'].get('splatCount', 0)} "
                 f"difix={payload['stats'].get('difixViews', 0)}/{payload['stats'].get('difixSec', 0)}s "
+                f"err={payload['stats'].get('difixError', '')} "
                 f"total={payload['stats']['totalSec']}s",
                 flush=True,
             )

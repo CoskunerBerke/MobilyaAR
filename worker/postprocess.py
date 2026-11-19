@@ -1113,6 +1113,7 @@ def build_room_payload(
     gs_sec = 0.0
     difix_sec = 0.0
     difix_views = 0
+    difix_error = None
     da3_init_used = False
     gs_error = None
     if enable_gs and len(views_cam) >= 4:
@@ -1145,9 +1146,9 @@ def build_room_payload(
                 n_real_pts=len(P),
                 gs_init=gs_init_aligned,
                 difix_pipe=difix_pipe,
-                max_splats=210_000,
-                phase1_steps=1350,
-                phase2_steps=1150,
+                max_splats=140_000,
+                phase1_steps=1800,
+                phase2_steps=1600,
             )
             spz_bytes = pack_spz_v2(
                 positions=gs_out["positions"],
@@ -1157,9 +1158,9 @@ def build_room_payload(
                 rgb=gs_out["rgb"],
                 antialiased=True,
             )
-            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.85 MB (~3.80 MB base64)
-            if len(spz_bytes) > 2_850_000:
-                keep_n = max(60_000, int(len(gs_out["positions"]) * (2_650_000 / len(spz_bytes))))
+            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.65 MB (~3.53 MB base64)
+            if len(spz_bytes) > 2_650_000:
+                keep_n = max(60_000, int(len(gs_out["positions"]) * (2_450_000 / len(spz_bytes))))
                 score = gs_out["alphas"] * np.power(
                     np.maximum(1e-9, np.exp(gs_out["log_scales"]).prod(axis=1)), 0.12
                 )
@@ -1180,15 +1181,16 @@ def build_room_payload(
             gs_sec = float(gs_out["gs_sec"])
             difix_sec = float(gs_out.get("difix_sec", 0.0))
             difix_views = int(gs_out.get("difix_views", 0))
+            difix_error = gs_out.get("difix_error")
             da3_init_used = bool(gs_out.get("da3_init", False))
             print(
-                f"[postprocess-v9] SPZ v2 paketlendi: {splat_count} splat, {len(spz_bytes)/1e6:.2f} MB "
-                f"(difix={difix_views} açı/{difix_sec}s)",
+                f"[postprocess-v10] SPZ v2 paketlendi: {splat_count} splat, {len(spz_bytes)/1e6:.2f} MB "
+                f"(difix={difix_views} açı/{difix_sec}s, err={difix_error})",
                 flush=True,
             )
         except Exception as exc:
             gs_error = f"{type(exc).__name__}: {exc}"
-            print(f"[postprocess-v9] 3DGS atlandı, TSDF yedeğine dönülüyor: {gs_error}", flush=True)
+            print(f"[postprocess-v10] 3DGS atlandı, TSDF yedeğine dönülüyor: {gs_error}", flush=True)
 
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
@@ -1236,7 +1238,7 @@ def build_room_payload(
 
     res = {
         "ok": True,
-        "mode": "gaussian-difix-v9" if splat_spz_b64 is not None else "tsdf-fallback",
+        "mode": "gaussian-difix-v10" if splat_spz_b64 is not None else "tsdf-fallback",
         "pointCount": int(len(out_P)),
         "points": _b64(q),
         "colors": _b64(out_C.astype(np.uint8)),
@@ -1265,6 +1267,8 @@ def build_room_payload(
             "da3Init": da3_init_used,
         },
     }
+    if difix_error:
+        res["stats"]["difixError"] = str(difix_error)[:180]
     if gs_error is not None:
         res["stats"]["gsFallback"] = gs_error[:180]
     if splat_spz_b64 is not None:

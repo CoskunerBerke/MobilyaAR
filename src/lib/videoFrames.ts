@@ -16,7 +16,7 @@ type VideoWithRvfc = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: () => void) => number;
 };
 
-const GPU_MAX_EDGE = 768;
+const GPU_MAX_EDGE = 640;
 const HD_MAX_EDGE = 1280;
 
 function round14(v: number): number {
@@ -121,7 +121,7 @@ export async function preparePhotoForScan(dataUrl: string): Promise<PreparedScan
         reject(new Error('Görsel kanvası oluşturulamadı'));
         return;
       }
-      const gpuDataUrl = drawResized(img, w, h, gpuC, gpuCtx, tw, th, 0.86);
+      const gpuDataUrl = drawResized(img, w, h, gpuC, gpuCtx, tw, th, 0.84);
       const hdDataUrl = drawResized(img, w, h, hdC, hdCtx, hdW, hdH, 0.9);
       resolve({ gpuDataUrl, hdDataUrl });
     };
@@ -180,7 +180,7 @@ function captureDualFrame(
   probeCtx: CanvasRenderingContext2D
 ): { frame: PreparedScanFrame; hasSignal: boolean; sharpness: number } {
   const { sharpness, hasSignal } = measureSharpnessAndSignal(video, srcW, srcH, probeCanvas, probeCtx);
-  const gpuDataUrl = drawResized(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.86);
+  const gpuDataUrl = drawResized(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.84);
   const hdDataUrl = drawResized(video, srcW, srcH, hdCanvas, hdCtx, hdW, hdH, 0.9);
   return { frame: { gpuDataUrl, hdDataUrl }, hasSignal, sharpness };
 }
@@ -345,7 +345,7 @@ async function extractSequentialFallback(
 
 export async function extractFramesFromVideo(
   file: File,
-  maxFrames = 24,
+  maxFrames = 36,
   _maxEdge = GPU_MAX_EDGE,
   onProgress?: (pct: number) => void
 ): Promise<PreparedScanFrame[]> {
@@ -414,17 +414,23 @@ export async function extractFramesFromVideo(
     if (!gpuCtx || !hdCtx || !probeCtx) throw new Error('Video kare kanvası oluşturulamadı');
 
     let frames: PreparedScanFrame[] = [];
+    const scoredFrames: Array<{ frame: PreparedScanFrame; sharpness: number }> = [];
     let seekFailed = false;
 
     if (Number.isFinite(video.duration) && video.duration > 0.5) {
       const duration = Math.min(60, video.duration);
-      const count = Math.min(maxFrames, Math.max(14, Math.floor(duration * 1.9)));
-      const startT = Math.min(0.2, duration * 0.04);
-      const endT = Math.max(startT + 0.25, duration - Math.min(0.25, duration * 0.05));
+      const count = Math.min(maxFrames, Math.max(16, Math.floor(duration * 2.0)));
+      const startT = Math.min(0.2, duration * 0.03);
+      const endT = Math.max(startT + 0.25, duration - Math.min(0.35, duration * 0.05));
       const span = endT - startT;
       const step = count > 1 ? span / (count - 1) : 0;
-      // Yeterince uzun videolarda her kovada 2 yakın zamanı yoklayıp en keskin (hareketsiz) kareyi seç
-      const probeOffsets = duration >= 6 && step >= 0.4 ? [-Math.min(0.14, step * 0.25), Math.min(0.14, step * 0.25)] : [0];
+      // Her zaman diliminde 3 aday yokla ve en net (hareketsiz) kareyi seç
+      const probeOffsets =
+        duration >= 7 && step >= 0.35
+          ? [-Math.min(0.16, step * 0.28), 0, Math.min(0.16, step * 0.28)]
+          : duration >= 4 && step >= 0.22
+          ? [-Math.min(0.1, step * 0.25), Math.min(0.1, step * 0.25)]
+          : [0];
 
       for (let i = 0; i < count; i++) {
         const baseT = startT + (count === 1 ? 0.5 : i / (count - 1)) * span;
@@ -432,9 +438,9 @@ export async function extractFramesFromVideo(
 
         for (const off of probeOffsets) {
           const t = Math.max(startT, Math.min(endT, baseT + off));
-          const ok = await seekVideoTo(video, t, 2000);
+          const ok = await seekVideoTo(video, t, 1900);
           if (!ok) {
-            if (!bestCap && frames.length < 6) seekFailed = true;
+            if (!bestCap && scoredFrames.length < 6) seekFailed = true;
             break;
           }
           const cap = captureDualFrame(
@@ -448,7 +454,7 @@ export async function extractFramesFromVideo(
 
         if (seekFailed) break;
         if (!bestCap) {
-          if (frames.length >= 6) break;
+          if (scoredFrames.length >= 6) break;
           seekFailed = true;
           break;
         }
@@ -459,8 +465,20 @@ export async function extractFramesFromVideo(
             gpuCanvas, gpuCtx, hdCanvas, hdCtx, probeCanvas, probeCtx
           );
         }
-        frames.push(bestCap.frame);
+        scoredFrames.push({ frame: bestCap.frame, sharpness: bestCap.sharpness });
         onProgress?.(Math.round(((i + 1) / count) * 100));
+      }
+
+      if (scoredFrames.length > 0) {
+        // Hızlı kamera savrulmasında aşırı bulanıklaşmış kareleri ele (medyanın %24'ü altı)
+        const sortedSh = [...scoredFrames].map((f) => f.sharpness).sort((a, b) => a - b);
+        const medSh = sortedSh[Math.floor(sortedSh.length / 2)] || 0;
+        const blurCutoff = medSh * 0.24;
+        const filtered =
+          scoredFrames.length >= 20 && medSh > 0
+            ? scoredFrames.filter((f, idx) => idx === 0 || idx === scoredFrames.length - 1 || f.sharpness >= blurCutoff)
+            : scoredFrames;
+        frames = (filtered.length >= 16 ? filtered : scoredFrames).map((f) => f.frame);
       }
     } else {
       seekFailed = true;

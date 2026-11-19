@@ -96,6 +96,7 @@ export interface ScannedRoomPayload {
     gsSec?: number;
     difixSec?: number;
     difixViews?: number;
+    difixError?: string;
     da3Init?: boolean;
     gsFallback?: string;
     views?: number;
@@ -333,8 +334,8 @@ export async function createScannedRoomSurfaceObject(
     try {
       const spark = new SparkRenderer({
         renderer,
-        blurAmount: 0.05,
-        maxStdDev: Math.sqrt(6.5),
+        blurAmount: 0.03,
+        maxStdDev: Math.sqrt(4.5),
       });
       spark.userData.isHelper = true;
       spark.renderOrder = 0;
