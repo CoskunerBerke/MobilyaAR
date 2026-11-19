@@ -4,8 +4,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { QRCodeSVG } from 'qrcode.react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Camera,
+  CheckCircle2,
   Copy,
   Download,
   Eraser,
@@ -42,7 +44,12 @@ import {
   type FloorSurfaceKind,
 } from '../lib/demoRooms';
 import { convertCadFileToGlb } from '../lib/cadImport';
-import { extractFramesFromVideo, preparePhotoForScan, type PreparedScanFrame } from '../lib/videoFrames';
+import {
+  extractFramesFromVideo,
+  measureDataUrlSharpness,
+  preparePhotoBatchForScan,
+  type PreparedScanFrame,
+} from '../lib/videoFrames';
 import {
   clearErasedObstaclesForKeyframe,
   inpaintPhotoRegion,
@@ -101,6 +108,7 @@ interface CapturedView {
   id: string;
   dataUrl: string;
   exifFocal35mm?: number;
+  sharpness?: number;
 }
 
 interface PlacedItem3D {
@@ -343,7 +351,11 @@ export const Room3DStudio: React.FC<Props> = ({
   const [step, setStep] = useState<Step>('capture');
   const [captureMode, setCaptureMode] = useState<'video' | 'photos'>('video');
   const [videoFrames, setVideoFrames] = useState<PreparedScanFrame[]>([]);
+  const [scanSourceFrames, setScanSourceFrames] = useState<PreparedScanFrame[]>([]);
   const [scanHdFrames, setScanHdFrames] = useState<string[]>([]);
+  const [showCoveragePanel, setShowCoveragePanel] = useState(false);
+  const [scanVersion, setScanVersion] = useState(0);
+  const [reconstructCount, setReconstructCount] = useState(0);
   const [activeKeyframeIdx, setActiveKeyframeIdx] = useState<number | null>(null);
   const [stageBoxSize, setStageBoxSize] = useState<{ w: number; h: number } | null>(null);
   const [extractPct, setExtractPct] = useState<number | null>(null);
@@ -522,7 +534,7 @@ export const Room3DStudio: React.FC<Props> = ({
       .map(toOBB);
   }, []);
 
-  const MAX_VIEWS = 16;
+  const MAX_VIEWS = 32;
 
   const addFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -536,11 +548,13 @@ export const Room3DStudio: React.FC<Props> = ({
       const parsed: CapturedView[] = [];
       for (const f of picked) {
         try {
-          const res = await normalizeRoomPhoto(f, 1080);
+          const res = await normalizeRoomPhoto(f, 1440);
+          const sharpness = await measureDataUrlSharpness(res.dataUrl);
           parsed.push({
             id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             dataUrl: res.dataUrl,
             exifFocal35mm: res.exifFocal35mm,
+            sharpness,
           });
         } catch {
           /* ignore unreadable file */
@@ -560,15 +574,15 @@ export const Room3DStudio: React.FC<Props> = ({
     if (!file) return;
     setExtractPct(0);
     try {
-      const frames = await extractFramesFromVideo(file, 36, 640, (pct) => {
+      const frames = await extractFramesFromVideo(file, 32, 784, (pct) => {
         if (alive.current) setExtractPct(pct);
       });
       if (frames.length < 4) {
-        showToast('Videodan en az 4 kare çıkarılamadı — lütfen 10–25 sn arası bir video seçin');
+        showToast('Videodan en az 4 net kare çıkarılamadı — lütfen daha yavaş çekilmiş 10–25 sn video seçin');
         setVideoFrames([]);
       } else {
         setVideoFrames(frames);
-        showToast(`${frames.length} video karesi çıkarıldı ve 3D taramaya hazır`);
+        showToast(`${frames.length} net ve farklı açılı video karesi seçildi — 3D taramaya hazır`);
       }
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Video okunamadı');
@@ -579,7 +593,9 @@ export const Room3DStudio: React.FC<Props> = ({
 
   const applyRoomResult = useCallback((res: ReconstructRoomResult) => {
     setScannedRoom(null);
+    setScanSourceFrames([]);
     setScanHdFrames([]);
+    setShowCoveragePanel(false);
     setActiveKeyframeIdx(null);
     setMiniMapGridUrl('');
     roomDimsRef.current = { w: res.roomWidthM, d: res.roomDepthM, ch: res.ceilingHeightM };
@@ -615,10 +631,8 @@ export const Room3DStudio: React.FC<Props> = ({
     }
   }, [initialPreset, loadDemoPreset]);
 
-  const startGpuScan = async () => {
-    const hasVideo = captureMode === 'video';
-    const rawCount = hasVideo ? videoFrames.length : views.length;
-    if (rawCount < 4) return;
+  const runGpuScanWithFrames = async (prepared: PreparedScanFrame[], isSupplement = false) => {
+    if (prepared.length < 4) return;
 
     const latestMem = getMembershipState();
     setMemberState(latestMem);
@@ -636,16 +650,17 @@ export const Room3DStudio: React.FC<Props> = ({
     }
 
     disposeStudio();
+    setReconstructCount(prepared.length);
     setStep('reconstructing');
-    setReconstructMsg('Kareler GPU için hazırlanıyor...');
+    setReconstructMsg(
+      isSupplement
+        ? 'Eksik bölge fotoğrafları mevcut taramaya ekleniyor...'
+        : 'Yüksek çözünürlüklü kareler GPU için hazırlanıyor...'
+    );
     try {
-      const prepared: PreparedScanFrame[] = hasVideo
-        ? videoFrames
-        : await Promise.all(views.map((v) => preparePhotoForScan(v.dataUrl)));
-
-      // Vercel 4.5 MB POST güvenlik sınırı: toplam gövde > 3.5 MB ise eşit aralıklı alt-örnekle
+      // Vercel 4.5 MB POST güvenlik sınırı (3.65 MB güvenli bütçe)
       let selectedPrepared = prepared;
-      const maxPostBytes = 3_500_000;
+      const maxPostBytes = 3_650_000;
       const calcBytes = (arr: PreparedScanFrame[]) =>
         arr.reduce((sum, f) => sum + f.gpuDataUrl.length + 4, 32);
       if (calcBytes(selectedPrepared) > maxPostBytes && selectedPrepared.length > 8) {
@@ -661,6 +676,7 @@ export const Room3DStudio: React.FC<Props> = ({
 
       const gpuFrames = selectedPrepared.map((f) => f.gpuDataUrl);
       const hdFrames = selectedPrepared.map((f) => f.hdDataUrl);
+      setReconstructCount(gpuFrames.length);
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (hasLocalCreds) {
@@ -669,7 +685,11 @@ export const Room3DStudio: React.FC<Props> = ({
         headers['x-gpu-tier'] = latestMem.gpuTier;
       }
 
-      setReconstructMsg(`${gpuFrames.length} kare RunPod Serverless GPU'ya gönderiliyor...`);
+      setReconstructMsg(
+        isSupplement
+          ? `${gpuFrames.length} birleştirilmiş kare RunPod GPU'ya gönderiliyor...`
+          : `${gpuFrames.length} kare RunPod Serverless GPU'ya gönderiliyor...`
+      );
       const startRes = await fetch('/api/scan', {
         method: 'POST',
         headers,
@@ -741,7 +761,12 @@ export const Room3DStudio: React.FC<Props> = ({
 
       setRoomData(null);
       setScannedRoom(decoded);
+      setScanSourceFrames(selectedPrepared);
       setScanHdFrames(hdFrames);
+      setScanVersion((v) => v + 1);
+      setShowCoveragePanel(
+        Boolean(decoded.coverage && decoded.coverage.missingZones.length > 0 && decoded.coverage.score < 80)
+      );
       setErasedHdMap({});
       setEraseMode(false);
       setEraseVersion(0);
@@ -761,7 +786,7 @@ export const Room3DStudio: React.FC<Props> = ({
       setShowClipBar(false);
       setShowSizeBar(false);
       setWallMode('auto');
-      // v9: Doğrudan gerçek 3B taranan mekânda (Difix3D+ 3DGS) açılır!
+      // Gerçek 3B taranan mekânda (Difix3D+ 3DGS) açılır!
       setActiveCamIdx(decoded.cameras.length > 0 ? 'inside' : 'free');
       setActiveKeyframeIdx(null);
       setPreviewPhotoIdx(null);
@@ -773,8 +798,9 @@ export const Room3DStudio: React.FC<Props> = ({
           : decoded.stats.difixError
           ? ` • Difix atlandı`
           : '';
+      const pxTag = decoded.stats.inputMaxPx ? ` • ${decoded.stats.inputMaxPx}px` : '';
       showToast(
-        `Gerçek 3B mekân hazır (${decoded.splatCount.toLocaleString('tr-TR')} splat${difixTag} • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`
+        `Gerçek 3B mekân hazır (${decoded.splatCount.toLocaleString('tr-TR')} splat${pxTag}${difixTag} • ${billedSec.toFixed(1)} sn • ~$${costUsd.toFixed(3)})`
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Gerçek 3D mekân oluşturulamadı');
@@ -782,9 +808,80 @@ export const Room3DStudio: React.FC<Props> = ({
     }
   };
 
+  const startGpuScan = async () => {
+    const hasVideo = captureMode === 'video';
+    const rawCount = hasVideo ? videoFrames.length : views.length;
+    if (rawCount < 4) return;
+
+    try {
+      let prepared: PreparedScanFrame[];
+      if (hasVideo) {
+        prepared = videoFrames;
+      } else {
+        setAddingPhotos(true);
+        try {
+          prepared = await preparePhotoBatchForScan(
+            views.map((v) => v.dataUrl),
+            3_650_000
+          );
+        } finally {
+          setAddingPhotos(false);
+        }
+      }
+      await runGpuScanWithFrames(prepared, false);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Fotoğraflar GPU için hazırlanamadı');
+    }
+  };
+
+  const handleAddMissingPhotos = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    if (scanSourceFrames.length === 0) {
+      showToast('Önce temel oda taramasını tamamlayın');
+      return;
+    }
+    const picked = Array.from(fileList).slice(0, 12);
+    setAddingPhotos(true);
+    try {
+      const extraHdUrls: string[] = [];
+      for (const f of picked) {
+        try {
+          const res = await normalizeRoomPhoto(f, 1440);
+          extraHdUrls.push(res.dataUrl);
+        } catch {
+          /* ignore unreadable file */
+        }
+      }
+      if (extraHdUrls.length === 0) {
+        showToast('Ek fotoğraf okunamadı — lütfen JPG veya PNG seçin');
+        return;
+      }
+
+      // Mevcut tarama karelerini koru + tüm yeni eksik bölge fotoğraflarını ekle (toplam <= 36 kare)
+      const maxTotal = 36;
+      const keepOldMax = Math.max(4, maxTotal - extraHdUrls.length);
+      let oldHdUrls = scanSourceFrames.map((f) => f.hdDataUrl);
+      if (oldHdUrls.length > keepOldMax) {
+        const sub: string[] = [];
+        for (let i = 0; i < keepOldMax; i++) {
+          const idx = Math.round((i / (keepOldMax - 1)) * (oldHdUrls.length - 1));
+          sub.push(oldHdUrls[idx]);
+        }
+        oldHdUrls = sub;
+      }
+
+      const mergedPrepared = await preparePhotoBatchForScan([...oldHdUrls, ...extraHdUrls], 3_650_000);
+      await runGpuScanWithFrames(mergedPrepared, true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Ek fotoğraflar birleştirilemedi');
+    } finally {
+      setAddingPhotos(false);
+    }
+  };
+
   // ---- 3D Oda / Mekân Sahnesini Kur (Gerçek 3DGS VEYA Boş Demo Oda) ----
   const setupKey = scannedRoom
-    ? `scan:${scannedRoom.mode}:${scannedRoom.splatCount}:${scannedRoom.keyframes.length}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
+    ? `scan:v${scanVersion}:${scannedRoom.mode}:${scannedRoom.splatCount}:${scannedRoom.keyframes.length}:${scannedRoom.bounds.halfW.toFixed(2)}:${scannedRoom.bounds.halfD.toFixed(2)}`
     : roomData
     ? `demo:${roomData.floorTexture.slice(0, 64)}:${roomData.viewCount}`
     : '';
@@ -2083,6 +2180,20 @@ export const Room3DStudio: React.FC<Props> = ({
   const remainingTrials = Math.max(0, activePlan.perCustomerLimit - memberState.customerUsedScans);
   const gpuReady = Boolean(serverEnvConfigured || (memberState.runpodEndpointId && memberState.runpodApiKey));
   const activeFrameCount = captureMode === 'video' ? videoFrames.length : views.length;
+  const sharpVals = views
+    .map((v) => v.sharpness)
+    .filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+    .sort((a, b) => a - b);
+  const medianSharpness = sharpVals.length > 0 ? sharpVals[Math.floor(sharpVals.length / 2)] : 100;
+  const blurryViewIds = new Set(
+    views
+      .filter(
+        (v) =>
+          typeof v.sharpness === 'number' &&
+          (v.sharpness < 28 || (sharpVals.length >= 3 && medianSharpness > 90 && v.sharpness < medianSharpness * 0.35))
+      )
+      .map((v) => v.id)
+  );
   const activeKf =
     scannedRoom && activeKeyframeIdx !== null ? scannedRoom.keyframes[activeKeyframeIdx] : undefined;
   const activeHdUrl = activeKf ? erasedHdMap[activeKf.viewIdx] || scanHdFrames[activeKf.viewIdx] : undefined;
@@ -2245,10 +2356,10 @@ export const Room3DStudio: React.FC<Props> = ({
             <div className="space-y-3 border border-zinc-800 bg-zinc-900/70 rounded-lg p-4">
               <div className="space-y-1 text-center">
                 <h2 className="text-base font-bold text-white">
-                  Odanızın Gerçek 3D Simülasyonunu Çıkarın
+                  Mekânınızın Gerçek 3D İkizini Oluşturun
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Mevcut koltuk, masa, sıra ve duvarlar fotoğraftaki görüntüsüyle gerçek 3D&apos;ye dönüşür; mobilyaları yalnızca gerçek boş alanlara koyabilirsiniz.
+                  Video <strong>veya</strong> çok açılı fotoğraflardan birini seçin; tarama sonrası eksik köşe kalırsa sistem yalnızca o bölgenin fotoğrafını ister.
                 </p>
               </div>
 
@@ -2261,7 +2372,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   }`}
                 >
                   <Video className="w-3.5 h-3.5" />
-                  <span>15–20 sn Video (Önerilen)</span>
+                  <span>Video ile Tara</span>
                 </button>
                 <button
                   type="button"
@@ -2271,7 +2382,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   }`}
                 >
                   <Camera className="w-3.5 h-3.5" />
-                  <span>4–16 Fotoğraf</span>
+                  <span>Fotoğraflarla Tara (HD)</span>
                 </button>
               </div>
 
@@ -2281,13 +2392,13 @@ export const Room3DStudio: React.FC<Props> = ({
                     <Video className="w-6 h-6 text-emerald-400" />
                     <span className="text-xs font-bold text-white">
                       {extractPct !== null
-                        ? `Video kareleri çıkarılıyor (%${extractPct})...`
+                        ? `Net ve farklı açılı kareler seçiliyor (%${extractPct})...`
                         : videoFrames.length > 0
-                        ? `${videoFrames.length} kare hazır — değiştirmek için tıklayın`
+                        ? `${videoFrames.length} net kare hazır — değiştirmek için tıklayın`
                         : 'Oda Videosu Çek veya Seç (MP4 / MOV)'}
                     </span>
-                    <span className="text-[11px] text-zinc-400">
-                      Telefonu göz hizasında tutup odanın içinde yavaşça yürüyerek 15–25 saniyelik video çekin; tarayıcı en net 16 HD kareyi ayırır (~5 sn GPU analizi).
+                    <span className="text-[11px] text-zinc-400 leading-relaxed">
+                      Tek noktada dönmek yerine odada birkaç adım yürüyerek 15–25 sn çekin; eşyaların yan yüzlerini ve zemin birleşimini gösterin. Sistem bulanık ve durağan kareleri otomatik eler.
                     </span>
                     <input
                       type="file"
@@ -2304,7 +2415,7 @@ export const Room3DStudio: React.FC<Props> = ({
                   {videoFrames.length > 0 && (
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                        <span>Çıkarılan Kareler ({videoFrames.length} adet)</span>
+                        <span>Seçilen Net Kareler ({videoFrames.length} adet)</span>
                         <button
                           type="button"
                           onClick={() => setVideoFrames([])}
@@ -2328,7 +2439,35 @@ export const Room3DStudio: React.FC<Props> = ({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="px-3 py-2 bg-zinc-950/90 border border-zinc-800 rounded-lg text-[11px] text-zinc-300 leading-relaxed">
+                    Farklı konumlardan, ardışık karelerde <strong>~%75 ortak alan</strong> bırakarak <strong>8–28 net fotoğraf</strong> yükleyin (eşya ön/yan yüzleri ve zemin birleşimi dahil). Fotoğraflar <strong>980–1280 px</strong> yüksek çözünürlükte işlenir.
+                  </div>
+
+                  {blurryViewIds.size > 0 && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-amber-950/50 border border-amber-700/70 rounded-lg text-[11px] text-amber-200">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                      <span>
+                        {blurryViewIds.size} fotoğraf bulanık görünüyor — silip daha net açı eklerseniz kenarlar daha keskin çıkar.
+                      </span>
+                    </div>
+                  )}
+
+                  {views.length > 0 && (
+                    <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                      <span>
+                        Yüklenen Fotoğraflar ({views.length}/{MAX_VIEWS})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setViews([])}
+                        className="text-red-300 hover:text-red-200 font-semibold"
+                      >
+                        Tümünü Temizle
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto pr-0.5">
                     {Array.from({
                       length: Math.min(MAX_VIEWS, Math.max(4, views.length + (views.length < MAX_VIEWS ? 1 : 0))),
                     }).map((_, idx) => {
@@ -2336,15 +2475,23 @@ export const Room3DStudio: React.FC<Props> = ({
                       const slotLabels = ['1. Açı', '2. Açı', '3. Açı', '4. Açı'];
                       const slotTitle = idx < slotLabels.length ? slotLabels[idx] : `${idx + 1}. Açı`;
                       if (view) {
+                        const isBlurry = blurryViewIds.has(view.id);
                         return (
                           <div
                             key={view.id}
-                            className="relative aspect-[4/3] bg-zinc-950 border border-emerald-500/60 rounded overflow-hidden"
+                            className={`relative aspect-[4/3] bg-zinc-950 border rounded overflow-hidden ${
+                              isBlurry ? 'border-amber-500/90' : 'border-emerald-500/60'
+                            }`}
                           >
                             <img src={view.dataUrl} alt={slotTitle} className="w-full h-full object-cover" />
                             <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/80 text-[9px] font-mono rounded text-white">
                               {idx + 1}
                             </span>
+                            {isBlurry && (
+                              <span className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-amber-600/95 text-[9px] font-bold rounded text-zinc-950">
+                                Bulanık
+                              </span>
+                            )}
                             <button
                               type="button"
                               onClick={() => setViews((prev) => prev.filter((item) => item.id !== view.id))}
@@ -2368,6 +2515,7 @@ export const Room3DStudio: React.FC<Props> = ({
                           <input
                             type="file"
                             accept="image/*"
+                            multiple
                             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                             onChange={(e) => {
                               addFiles(e.target.files);
@@ -2424,12 +2572,14 @@ export const Room3DStudio: React.FC<Props> = ({
                   {extractPct !== null
                     ? `Video İşleniyor (%${extractPct})...`
                     : addingPhotos
-                    ? 'Fotoğraflar hazırlanıyor...'
+                    ? 'Yüksek çözünürlüklü fotoğraflar hazırlanıyor...'
                     : activeFrameCount < 4
                     ? captureMode === 'video'
-                      ? 'Devam Etmek İçin 15–20 sn Oda Videosu Seçin'
+                      ? 'Devam Etmek İçin Oda Videosu Seçin'
                       : `En Az 4 Fotoğraf Ekleyin (${activeFrameCount}/4)`
-                    : `Gerçek 3D Odamı Oluştur (${activeFrameCount} Kare • Serverless GPU)`}
+                    : captureMode === 'photos'
+                    ? `Gerçek 3D Mekânı Oluştur (${activeFrameCount} HD Fotoğraf)`
+                    : `Gerçek 3D Mekânı Oluştur (${activeFrameCount} Net Kare)`}
                 </span>
               </button>
             </div>
@@ -2511,7 +2661,7 @@ export const Room3DStudio: React.FC<Props> = ({
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
           <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
           <p className="text-sm font-semibold">
-            {Math.max(activeFrameCount, 4)} kare birleştirilip gerçek 3D oda kuruluyor...
+            {reconstructCount || Math.max(activeFrameCount, 4)} kare birleştirilip gerçek 3D mekân kuruluyor...
           </p>
           <p className="text-xs text-zinc-400 max-w-xs">{reconstructMsg}</p>
         </div>
@@ -2640,14 +2790,36 @@ export const Room3DStudio: React.FC<Props> = ({
             </button>
 
             {scannedRoom ? (
-              <button
-                onClick={() => setShowFreeFloor((v) => !v)}
-                className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
-                  showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
-                }`}
-              >
-                Boş Alan ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)}m²)
-              </button>
+              <>
+                <button
+                  onClick={() => setShowFreeFloor((v) => !v)}
+                  className={`px-2.5 py-1 rounded font-semibold whitespace-nowrap shrink-0 ${
+                    showFreeFloor ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-300'
+                  }`}
+                >
+                  Boş Alan ({(scannedRoom.stats.freeFloorM2 ?? 0).toFixed(1)}m²)
+                </button>
+                {scannedRoom.coverage && (
+                  <button
+                    type="button"
+                    onClick={() => setShowCoveragePanel((v) => !v)}
+                    className={`px-2.5 py-1 rounded font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                      showCoveragePanel
+                        ? 'bg-white text-zinc-950'
+                        : scannedRoom.coverage.score >= 80
+                        ? 'bg-emerald-950/70 border border-emerald-700/70 text-emerald-200 hover:bg-emerald-900/70'
+                        : 'bg-amber-950/80 border border-amber-600/80 text-amber-200 hover:bg-amber-900/70'
+                    }`}
+                  >
+                    {scannedRoom.coverage.score >= 80 ? (
+                      <CheckCircle2 className="w-3 h-3" />
+                    ) : (
+                      <AlertTriangle className="w-3 h-3" />
+                    )}
+                    <span>Kapsama %{scannedRoom.coverage.score}</span>
+                  </button>
+                )}
+              </>
             ) : (
               roomData && (
                 <>
@@ -2682,6 +2854,92 @@ export const Room3DStudio: React.FC<Props> = ({
               )
             )}
           </div>
+
+          {scannedRoom?.coverage && showCoveragePanel && (
+            <div className="bg-zinc-950 border-b border-zinc-800 px-3.5 py-3 text-xs shrink-0 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-bold text-white">Tarama Kapsamı: %{scannedRoom.coverage.score}</span>
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Paralaks: {scannedRoom.coverage.parallaxM.toFixed(2)} m • {scanSourceFrames.length} kare
+                    {scannedRoom.stats.inputMaxPx ? ` (${scannedRoom.stats.inputMaxPx}px)` : ''}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCoveragePanel(false)}
+                  className="text-zinc-400 hover:text-white p-1"
+                  aria-label="Kapsama panelini kapat"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {scannedRoom.coverage.quadrants.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {scannedRoom.coverage.quadrants.map((q) => {
+                    const ok = q.observedPct >= 68;
+                    return (
+                      <div
+                        key={q.label}
+                        className="px-2.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded space-y-1"
+                      >
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300 truncate">{q.label}</span>
+                          <span className={`font-mono font-bold ${ok ? 'text-emerald-400' : 'text-amber-300'}`}>
+                            %{Math.round(q.observedPct)}
+                          </span>
+                        </div>
+                        <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${ok ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                            style={{ width: `${Math.min(100, Math.max(4, q.observedPct))}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {scannedRoom.coverage.missingZones.length > 0 ? (
+                <ul className="space-y-1 text-[11px] text-amber-200/95">
+                  {scannedRoom.coverage.missingZones.map((mz, idx) => (
+                    <li key={idx} className="flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400 mt-0.5" />
+                      <span>{mz}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[11px] text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Tüm köşeler yüksek kapsamla tarandı. İsterseniz belirli bir eşyanın detayını artırmak için ek fotoğraf ekleyebilirsiniz.</span>
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
+                <label className="relative overflow-hidden inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-zinc-200 text-zinc-950 font-bold rounded text-xs cursor-pointer whitespace-nowrap shrink-0">
+                  {addingPhotos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  <span>{addingPhotos ? 'Fotoğraflar ekleniyor...' : 'Eksik Bölge Fotoğrafı Ekle'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={addingPhotos}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    onChange={(e) => {
+                      handleAddMissingPhotos(e.target.files);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <span className="text-[11px] text-zinc-400">
+                  Baştan çekmenize gerek yok — yalnızca eksik açılar mevcut {scanSourceFrames.length} karenize eklenip 3D mekân yeniden netleştirilir.
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* 3D Zemin Simülasyonu, HD Gerçek Açı, Eşya Sil & İnteraktif 2D Mini-Map */}
           <div

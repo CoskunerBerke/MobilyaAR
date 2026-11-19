@@ -52,6 +52,14 @@ export interface DecodedKeyframe {
   origOccDepthMm: Uint16Array;
 }
 
+export interface ScanCoverageReport {
+  score: number;
+  parallaxM: number;
+  unseenPct: number;
+  quadrants: Array<{ label: string; observedPct: number }>;
+  missingZones: string[];
+}
+
 export interface ScannedRoomPayload {
   ok: boolean;
   mode?: string;
@@ -63,6 +71,7 @@ export interface ScannedRoomPayload {
   floorRgb?: string; // base64 uint8 gd*gw*3
   archBlocks?: ArchBlock[];
   bestKeyframeIdx?: number;
+  coverage?: ScanCoverageReport;
   splatSpz?: string;
   splatCount?: number;
   mesh?: {
@@ -100,6 +109,8 @@ export interface ScannedRoomPayload {
     da3Init?: boolean;
     gsFallback?: string;
     views?: number;
+    inputMaxPx?: number;
+    da3Res?: number;
     inferSec?: number;
     totalSec?: number;
     model?: string;
@@ -117,6 +128,7 @@ export interface DecodedScannedRoom {
   floorRgb?: Uint8Array;
   archBlocks: ArchBlock[];
   bestKeyframeIdx: number;
+  coverage?: ScanCoverageReport;
   splatSpzBytes?: Uint8Array;
   splatCount: number;
   mesh?: {
@@ -231,6 +243,7 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
     floorRgb,
     archBlocks,
     bestKeyframeIdx,
+    coverage: raw.coverage,
     splatSpzBytes: splatSpzBytes && splatSpzBytes.byteLength > 32 ? splatSpzBytes : undefined,
     splatCount,
     mesh,

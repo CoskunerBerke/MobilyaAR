@@ -433,9 +433,9 @@ def train_room_splats(
         quats_t[:, 0] = 1.0
         opas_t = torch.full((len(P_src),), math.log(0.45 / 0.55), device=device, dtype=torch.float32)
 
-    # 2) HD eğitim görüntülerini hazırla (<= 768px)
+    # 2) HD eğitim görüntülerini tam yüksek çözünürlükte hazırla (fotoğraflar 1280px'e kadar korunur!)
     train_views = []
-    max_train_side = 768
+    max_train_side = 1280
     for vc in views_cam:
         rgb_src = vc.get("rgb_hd")
         if rgb_src is None:
@@ -562,8 +562,9 @@ def train_room_splats(
                     train_views, half_w=half_w, half_d=half_d, ceil_cut=ceil_cut,
                     n_eye=12, n_low=6, n_orbit=6,
                 )
+                difix_side = 704 if (max(train_views[0]["W"], train_views[0]["H"]) >= 900 and n_views <= 26) else 576
                 difix_views, difix_sec, difix_err = _run_difix_cleanup(
-                    difix_pipe, params, novel_specs, train_views, device, max_side=576
+                    difix_pipe, params, novel_specs, train_views, device, max_side=difix_side
                 )
             except Exception as exc:
                 difix_err = f"{type(exc).__name__}: {exc}"

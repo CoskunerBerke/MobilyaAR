@@ -184,11 +184,15 @@ def handler(job):
             if low_vram:
                 da3.to("cuda")
 
+            # Yüksek çözünürlüklü durgun fotoğraflarda (<=22 kare, >=900px) DA3 çözünürlüğünü 560px'e çıkar
+            max_inp_edge = max((max(im.shape[0], im.shape[1]) for im in hd_rgbs), default=504)
+            da3_res = 560 if (len(paths) <= 22 and max_inp_edge >= 900) else DA3_PROCESS_RES
+
             t_inf = time.time()
             with torch.no_grad():
                 pred = da3.inference(
                     image=paths,
-                    process_res=DA3_PROCESS_RES,
+                    process_res=da3_res,
                     infer_gs=True,
                     ref_view_strategy="saddle_balanced",
                 )
@@ -271,16 +275,19 @@ def handler(job):
             payload["stats"].update(
                 {
                     "views": len(images),
+                    "inputMaxPx": int(max_inp_edge),
+                    "da3Res": int(da3_res),
                     "inferSec": round(infer_s, 2),
                     "totalSec": round(time.time() - t_start, 2),
-                    "model": f"{DA3_MODEL_ID} + Difix3D+ v10",
+                    "model": f"{DA3_MODEL_ID} + Difix3D+ v11",
                     "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
                 }
             )
             print(
-                f"[worker-v10] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
+                f"[worker-v11] Tamamlandı: views={len(images)} inPx={max_inp_edge} da3Res={da3_res} infer={infer_s:.1f}s "
                 f"splats={payload['stats'].get('splatCount', 0)} "
                 f"difix={payload['stats'].get('difixViews', 0)}/{payload['stats'].get('difixSec', 0)}s "
+                f"cov={payload.get('coverage', {}).get('score', '-')} "
                 f"err={payload['stats'].get('difixError', '')} "
                 f"total={payload['stats']['totalSec']}s",
                 flush=True,

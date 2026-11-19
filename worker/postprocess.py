@@ -972,6 +972,87 @@ def _build_keyframes(
     return keyframes, best_idx
 
 
+def _analyze_scan_coverage(views_cam: list[dict], grid: np.ndarray, half_w: float, half_d: float) -> dict:
+    """
+    Taranan mekânın köşe kapsamını, kamera konum çeşitliliğini (paralaks) ve
+    zemin-eşya birleşimi görünürlüğünü ölçer; yalnızca eksik bölgeler için somut öneri üretir.
+    """
+    gd, gw = grid.shape
+    if gd < 4 or gw < 4 or not views_cam:
+        return {
+            "score": 50,
+            "parallaxM": 0.0,
+            "unseenPct": 50.0,
+            "quadrants": [],
+            "missingZones": ["Daha geniş açıdan örtüşen fotoğraflar ekleyin."],
+        }
+
+    # İç ızgarayı 4 köşe bölgesine ayır (kenar 1 hücre hariç)
+    r0, r1 = 1, max(2, gd - 1)
+    c0, c1 = 1, max(2, gw - 1)
+    rm = (r0 + r1) // 2
+    cm = (c0 + c1) // 2
+
+    quad_defs = [
+        ("Ön Sol Köşe", grid[r0:rm, c0:cm]),
+        ("Ön Sağ Köşe", grid[r0:rm, cm:c1]),
+        ("Arka Sol Köşe", grid[rm:r1, c0:cm]),
+        ("Arka Sağ Köşe", grid[rm:r1, cm:c1]),
+    ]
+    quadrants = []
+    missing_zones = []
+    for label, sub in quad_defs:
+        tot = max(1, sub.size)
+        obs_pct = round(100.0 * float(np.count_nonzero(sub != 2)) / float(tot), 1)
+        quadrants.append({"label": label, "observedPct": obs_pct})
+        if obs_pct < 68.0:
+            missing_zones.append(
+                f"{label} yeterince görülmedi (%{int(round(obs_pct))}) — bu köşeyi ve eşya yanlarını gösteren 2–3 ek fotoğraf ekleyin."
+            )
+
+    inner = grid[r0:r1, c0:c1]
+    unseen_pct = round(100.0 * float(np.count_nonzero(inner == 2)) / float(max(1, inner.size)), 1)
+
+    cam_pos = np.stack([np.asarray(v["cam_pos"], dtype=np.float64) for v in views_cam], axis=0)
+    cam_xz = cam_pos[:, [0, 2]]
+    med_xz = np.median(cam_xz, axis=0)
+    dists = np.linalg.norm(cam_xz - med_xz[None, :], axis=1)
+    parallax_m = float(np.percentile(dists, 90)) if len(dists) > 1 else 0.0
+
+    # Aşağı bakış (zemin-mobilya birleşimi) kontrolü
+    down_ratio = 0.0
+    if views_cam:
+        down_cnt = 0
+        for v in views_cam:
+            fwd = np.asarray(v["R_rdf2room"], dtype=np.float64)[:, 2]
+            if fwd[1] < -0.18:  # ~10°+ aşağı bakış
+                down_cnt += 1
+        down_ratio = down_cnt / float(len(views_cam))
+
+    if parallax_m < 0.35 and len(views_cam) >= 6:
+        missing_zones.append(
+            f"Kamera neredeyse tek noktadan dönmüş ({parallax_m:.2f} m hareket) — dolap/masa yan yüzleri ve arkası için 1–2 adım yürüyerek 3–4 fotoğraf ekleyin."
+        )
+    if down_ratio < 0.22 and unseen_pct > 18.0:
+        missing_zones.append(
+            "Zemin ve mobilya ayak birleşimleri yer yer eksik — telefonu hafif aşağı eğerek 2–3 ek fotoğraf ekleyin."
+        )
+
+    # 0-100 kapsama puanı
+    obs_score = max(0.0, min(100.0, 100.0 - unseen_pct * 1.15))
+    par_score = min(100.0, (parallax_m / 0.65) * 100.0)
+    cnt_score = min(100.0, (len(views_cam) / 14.0) * 100.0)
+    score = int(round(0.55 * obs_score + 0.30 * par_score + 0.15 * cnt_score))
+
+    return {
+        "score": max(15, min(100, score)),
+        "parallaxM": round(parallax_m, 2),
+        "unseenPct": unseen_pct,
+        "quadrants": quadrants,
+        "missingZones": missing_zones[:4],
+    }
+
+
 def build_room_payload(
     views_data: list[dict],
     enable_gs: bool = True,
@@ -1195,6 +1276,7 @@ def build_room_payload(
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
     keyframes, best_kf_idx = _build_keyframes(views_cam, grid, half_w, half_d, max_kf=10)
+    coverage = _analyze_scan_coverage(views_cam, grid, half_w, half_d)
     arch_blocks = []
 
     mesh_payload = None
@@ -1238,7 +1320,7 @@ def build_room_payload(
 
     res = {
         "ok": True,
-        "mode": "gaussian-difix-v10" if splat_spz_b64 is not None else "tsdf-fallback",
+        "mode": "gaussian-difix-v11" if splat_spz_b64 is not None else "tsdf-fallback",
         "pointCount": int(len(out_P)),
         "points": _b64(q),
         "colors": _b64(out_C.astype(np.uint8)),
@@ -1246,6 +1328,7 @@ def build_room_payload(
         "floorRgb": _b64(floor_rgb_grid.astype(np.uint8)),
         "archBlocks": arch_blocks,
         "bestKeyframeIdx": int(best_kf_idx),
+        "coverage": coverage,
         "bounds": {"halfW": float(half_w), "halfD": float(half_d), "ceilingM": float(ceil)},
         "grid": {"w": gw, "d": gd, "cell": CELL_M, "data": _b64(grid)},
         "spawnXZ": spawn_xz,
