@@ -539,7 +539,11 @@ export async function createScannedRoomSurfaceObject(
   // 1. Öncelik: Fotogerçekçi 3D Gaussian Splatting (SPZ v2 + SparkRenderer WebGL2)
   if (room.splatSpzBytes && room.splatSpzBytes.byteLength > 32 && renderer && scene) {
     try {
-      const spark = new SparkRenderer({ renderer });
+      const spark = new SparkRenderer({
+        renderer,
+        blurAmount: 0.12,
+        maxStdDev: Math.sqrt(7),
+      });
       spark.userData.isHelper = true;
       spark.renderOrder = 0;
       scene.add(spark);

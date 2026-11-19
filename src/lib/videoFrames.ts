@@ -28,7 +28,16 @@ const MAPANYTHING_518_BUCKETS: ReadonlyArray<readonly [number, number]> = [
   [252, 518],
 ];
 
+const GPU_HD_SCALE = 1.8;
 const HD_SCALE = 2.2;
+
+function computeGpuHdSize(srcW: number, srcH: number, tw: number, th: number): [number, number] {
+  const nativeScale = Math.max(srcW / Math.max(1, tw), srcH / Math.max(1, th));
+  const scale = Math.max(1.0, Math.min(GPU_HD_SCALE, nativeScale));
+  const gw = Math.max(tw, Math.round((tw * scale) / 2) * 2);
+  const gh = Math.max(th, Math.round((th * scale) / 2) * 2);
+  return [gw, gh];
+}
 
 function pickMapAnythingBucket(srcW: number, srcH: number): [number, number] {
   const ar = Math.max(1, srcW) / Math.max(1, srcH);
@@ -90,7 +99,8 @@ export async function preparePhotoForScan(dataUrl: string): Promise<PreparedScan
         reject(new Error('Görsel kanvası oluşturulamadı'));
         return;
       }
-      const gpuDataUrl = drawCenterCropped(img, w, h, gpuC, gpuCtx, tw, th, 0.8);
+      const [gw, gh] = computeGpuHdSize(w, h, tw, th);
+      const gpuDataUrl = drawCenterCropped(img, w, h, gpuC, gpuCtx, gw, gh, 0.84);
       const hdW = Math.round(tw * HD_SCALE);
       const hdH = Math.round(th * HD_SCALE);
       const hdDataUrl = drawCenterCropped(img, w, h, hdC, hdCtx, hdW, hdH, 0.86);
@@ -146,10 +156,11 @@ function captureDualFrame(
   hdCanvas: HTMLCanvasElement,
   hdCtx: CanvasRenderingContext2D
 ): { frame: PreparedScanFrame; hasSignal: boolean } {
-  const gpuDataUrl = drawCenterCropped(video, srcW, srcH, gpuCanvas, gpuCtx, tw, th, 0.82);
+  const [gw, gh] = computeGpuHdSize(srcW, srcH, tw, th);
+  const gpuDataUrl = drawCenterCropped(video, srcW, srcH, gpuCanvas, gpuCtx, gw, gh, 0.84);
   let hasSignal = true;
   try {
-    const data = gpuCtx.getImageData(0, 0, tw, th).data;
+    const data = gpuCtx.getImageData(0, 0, gw, gh).data;
     const stride = Math.max(1, Math.floor(data.length / (4 * 64))) * 4;
     let lit = 0;
     for (let i = 0; i < data.length; i += stride) {

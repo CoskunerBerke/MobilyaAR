@@ -11,7 +11,7 @@ import struct
 
 import numpy as np
 
-VOXEL_M = 0.02
+VOXEL_M = 0.014
 CELL_M = 0.10
 SPZ_MAGIC = 0x5053474E  # "NGSP"
 SPZ_SH_C0 = 0.28209479177387814
@@ -879,13 +879,14 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
                 "depth_m": np.asarray(vd["depth_z"], dtype=np.float64) * scale,
                 "mask": np.asarray(vd["mask"], dtype=bool),
                 "rgb": np.asarray(vd["rgb"], dtype=np.uint8),
+                "rgb_hd": np.asarray(vd.get("rgb_hd", vd["rgb"]), dtype=np.uint8),
                 "K": np.asarray(vd["K"], dtype=np.float64),
                 "y_room": y_room,
                 "ceil_cut": ceil_cut,
             }
         )
 
-    # 1. Öncelik: Per-Scene 3D Gaussian Splatting (gsplat -> SPZ v2) — fotogerçekçi tam 3D oda
+    # 1. Öncelik: Yüksek Keskinlikli Per-Scene 3D Gaussian Splatting (gsplat v6 -> SPZ v2)
     splat_spz_b64 = None
     splat_count = 0
     gs_sec = 0.0
@@ -901,8 +902,9 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
                 half_w=half_w,
                 half_d=half_d,
                 ceil_cut=ceil_cut,
-                max_splats=110_000,
-                num_steps=1100,
+                n_real_pts=len(P),
+                max_splats=160_000,
+                num_steps=2800,
             )
             spz_bytes = pack_spz_v2(
                 positions=gs_out["positions"],
@@ -912,11 +914,11 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
                 rgb=gs_out["rgb"],
                 antialiased=True,
             )
-            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.35 MB (~3.1 MB base64)
-            if len(spz_bytes) > 2_350_000:
-                keep_n = max(30_000, int(len(gs_out["positions"]) * (2_150_000 / len(spz_bytes))))
+            # Vercel 4.5 MB yanıt sınırı güvenliği: SPZ <= 2.65 MB (~3.53 MB base64)
+            if len(spz_bytes) > 2_650_000:
+                keep_n = max(40_000, int(len(gs_out["positions"]) * (2_450_000 / len(spz_bytes))))
                 score = gs_out["alphas"] * np.power(
-                    np.maximum(1e-9, np.exp(gs_out["log_scales"]).prod(axis=1)), 0.15
+                    np.maximum(1e-9, np.exp(gs_out["log_scales"]).prod(axis=1)), 0.12
                 )
                 top_idx = np.argpartition(score, -keep_n)[-keep_n:]
                 spz_bytes = pack_spz_v2(

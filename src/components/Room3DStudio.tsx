@@ -511,7 +511,7 @@ export const Room3DStudio: React.FC<Props> = ({
       const parsed: CapturedView[] = [];
       for (const f of picked) {
         try {
-          const res = await normalizeRoomPhoto(f, 518);
+          const res = await normalizeRoomPhoto(f, 1080);
           parsed.push({
             id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             dataUrl: res.dataUrl,
@@ -617,8 +617,25 @@ export const Room3DStudio: React.FC<Props> = ({
       const prepared: PreparedScanFrame[] = hasVideo
         ? videoFrames
         : await Promise.all(views.map((v) => preparePhotoForScan(v.dataUrl)));
-      const gpuFrames = prepared.map((f) => f.gpuDataUrl);
-      const hdFrames = prepared.map((f) => f.hdDataUrl);
+
+      // Vercel 4.5 MB POST güvenlik sınırı: toplam gövde > 3.5 MB ise eşit aralıklı alt-örnekle
+      let selectedPrepared = prepared;
+      const maxPostBytes = 3_500_000;
+      const calcBytes = (arr: PreparedScanFrame[]) =>
+        arr.reduce((sum, f) => sum + f.gpuDataUrl.length + 4, 32);
+      if (calcBytes(selectedPrepared) > maxPostBytes && selectedPrepared.length > 8) {
+        const avg = calcBytes(selectedPrepared) / selectedPrepared.length;
+        const keep = Math.max(8, Math.floor(maxPostBytes / Math.max(1, avg)));
+        const sub: PreparedScanFrame[] = [];
+        for (let i = 0; i < keep; i++) {
+          const idx = Math.round((i / (keep - 1)) * (selectedPrepared.length - 1));
+          sub.push(selectedPrepared[idx]);
+        }
+        selectedPrepared = sub;
+      }
+
+      const gpuFrames = selectedPrepared.map((f) => f.gpuDataUrl);
+      const hdFrames = selectedPrepared.map((f) => f.hdDataUrl);
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (hasLocalCreds) {

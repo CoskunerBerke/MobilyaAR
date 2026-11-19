@@ -55,16 +55,20 @@ def handler(job):
     images = images[:MAX_IMAGES]
 
     try:
+        from PIL import Image
         from mapanything.utils.image import load_images
 
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
+            hd_rgbs = []
             for i, b64 in enumerate(images):
                 if "," in b64[:100]:
                     b64 = b64.split(",", 1)[1]
                 p = os.path.join(tmp, f"{i:03d}.jpg")
                 with open(p, "wb") as f:
                     f.write(base64.b64decode(b64))
+                with Image.open(p) as im:
+                    hd_rgbs.append(np.asarray(im.convert("RGB"), dtype=np.uint8))
                 paths.append(p)
 
             views = load_images(paths)
@@ -83,7 +87,7 @@ def handler(job):
             infer_s = time.time() - t_inf
 
         views_data = []
-        for pred in preds:
+        for idx_p, pred in enumerate(preds):
             pts = _to_np(pred["pts3d"])[0]  # (H, W, 3)
             H, W = pts.shape[:2]
             img = _to_np(pred["img_no_norm"])[0]
@@ -92,6 +96,7 @@ def handler(job):
             if img.max() <= 1.5:
                 img = img * 255.0
             rgb_u8 = np.clip(img, 0, 255).astype(np.uint8)
+            rgb_hd = hd_rgbs[idx_p] if idx_p < len(hd_rgbs) else rgb_u8
             mask = _to_np(pred["mask"])[0].reshape(H, W) > 0.5
             pose = _to_np(pred["camera_poses"])[0]  # (4, 4) cam2world RDF
             if "depth_z" in pred:
@@ -107,6 +112,7 @@ def handler(job):
                 {
                     "pts3d": pts,
                     "rgb": rgb_u8,
+                    "rgb_hd": rgb_hd,
                     "mask": mask,
                     "depth_z": depth_z,
                     "K": K,
