@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+# Stage 1: Reuse already AOT-compiled gsplat v1.5.3 (CUDA 12.8: Ampere/Ada/Hopper/Blackwell)
+FROM ghcr.io/coskunerberke/mobilya-ar-worker:cu128-gs AS gsplat-src
+RUN python -c "import os, shutil, gsplat; shutil.copytree(os.path.dirname(gsplat.__file__), '/tmp/gsplat_pkg'); print('Copied gsplat from', os.path.dirname(gsplat.__file__))"
+
+# Stage 2: Clean v9 Dual-Model Runtime (CUDA 12.8 + PyTorch 2.8 + DA3NESTED-GIANT-LARGE-1.1 + NVIDIA Difix3D+ fp16 + AOT gsplat)
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+LABEL org.opencontainers.image.source="https://github.com/CoskunerBerke/MobilyaAR"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/models/hf \
+    DIFIX_MODEL_DIR=/models/difix_ref_fp16 \
+    DA3_MODEL_ID=depth-anything/DA3NESTED-GIANT-LARGE-1.1 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+RUN apt-get update && apt-get install -y --no-install-recommends git curl libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-compiled AOT gsplat package into active site-packages
+COPY --from=gsplat-src /tmp/gsplat_pkg /tmp/gsplat_pkg
+RUN python -c "import os, shutil, site; dst = os.path.join(site.getsitepackages()[0], 'gsplat'); shutil.rmtree(dst, ignore_errors=True); shutil.move('/tmp/gsplat_pkg', dst); print('Installed gsplat ->', dst)"
+
+WORKDIR /opt
+
+# Pin existing PyTorch 2.8 + CUDA 12.8 packages so pip never downgrades/replaces them
+RUN python -c 'import importlib.metadata as m; pkgs=[d.metadata["Name"]+"=="+d.version for d in m.distributions() if d.metadata["Name"].lower() in ("torch","torchvision","torchaudio")]; open("/tmp/constraints.txt","w").write("\n".join(pkgs)+"\n"); print("Pinned:", pkgs)' \
+    && pip install --no-cache-dir -c /tmp/constraints.txt \
+        "numpy<2" \
+        runpod==1.7.9 \
+        jaxtyping rich typing_extensions \
+        einops omegaconf addict safetensors \
+        opencv-python-headless scipy pillow pillow-heif \
+        trimesh imageio plyfile pycolmap tqdm \
+        e3nn evo matplotlib moviepy==1.0.3 \
+        diffusers==0.25.1 transformers==4.38.0 peft==0.9.0 accelerate==0.27.2 huggingface-hub==0.25.1 \
+    && git clone --depth 1 https://github.com/ByteDance-Seed/Depth-Anything-3.git /opt/Depth-Anything-3 \
+    && pip install --no-cache-dir --no-deps -e /opt/Depth-Anything-3 \
+    && mkdir -p /opt/difix \
+    && curl -fsSL https://raw.githubusercontent.com/nv-tlabs/Difix3D/main/src/pipeline_difix.py -o /opt/difix/pipeline_difix.py \
+    && python -c "import glob, os, torch, gsplat; sos = glob.glob(os.path.join(os.path.dirname(gsplat.__file__), 'csrc*.so')); print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda, 'gsplat:', gsplat.__version__, 'AOT .so:', sos); assert str(torch.version.cuda).startswith('12.8'); assert len(sos) >= 1"
+
+# Bake Model #1: ByteDance Depth-Anything-3 Nested Metric Giant-Large 1.1 (6.76 GB)
+RUN python -c "from depth_anything_3.api import DepthAnything3; m = DepthAnything3.from_pretrained('depth-anything/DA3NESTED-GIANT-LARGE-1.1'); print('Baked DA3NESTED-GIANT-LARGE-1.1 OK:', type(m).__name__)"
+
+# Bake Model #2: NVIDIA Difix3D+ (nvidia/difix_ref) compressed to fp16 (~2.5 GB) + custom modules, then drop fp32 cache
+RUN python - <<'PY'
+import glob, os, shutil, sys, torch
+sys.path.insert(0, "/opt/difix")
+from huggingface_hub import snapshot_download
+from pipeline_difix import DifixPipeline
+
+snap = snapshot_download("nvidia/difix_ref")
+pipe = DifixPipeline.from_pretrained(snap, trust_remote_code=True, torch_dtype=torch.float16)
+out_dir = "/models/difix_ref_fp16"
+pipe.save_pretrained(out_dir, safe_serialization=True)
+
+# Preserve custom remote-code python modules inside saved directory
+for rel in ["unet/unet_2d_condition.py", "vae/autoencoder_kl.py"]:
+    src = os.path.join(snap, rel)
+    dst = os.path.join(out_dir, rel)
+    if os.path.exists(src):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+
+del pipe
+# Free ~5.2 GB fp32 HF cache for nvidia/difix_ref
+for p in glob.glob("/models/hf/hub/models--nvidia--difix_ref*"):
+    shutil.rmtree(p, ignore_errors=True)
+
+# Verify 100% offline fp16 reload
+pipe2 = DifixPipeline.from_pretrained(out_dir, trust_remote_code=True, torch_dtype=torch.float16, local_files_only=True)
+print("Baked & verified Difix3D+ fp16 OK:", type(pipe2).__name__)
+PY
+
+RUN du -sh /models /models/hf /models/difix_ref_fp16 && df -h /
+WORKDIR /app
