@@ -120,7 +120,7 @@ def handler(job):
                 }
             )
 
-        payload = build_room_payload(views_data, enable_gs=True)
+        payload = build_room_payload(views_data, enable_gs=False, clean_arch_only=True)
         if payload.get("ok"):
             payload["stats"].update(
                 {
@@ -132,8 +132,9 @@ def handler(job):
                 }
             )
             print(
-                f"[worker] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
-                f"gs={payload['stats'].get('gsSec', 0)}s splats={payload['stats'].get('splatCount', 0)} "
+                f"[worker-v8] Tamamlandı: views={len(images)} infer={infer_s:.1f}s "
+                f"blocks={payload['stats'].get('archBlockCount', 0)} "
+                f"kfs={payload['stats'].get('keyframeCount', 0)} "
                 f"total={payload['stats']['totalSec']}s",
                 flush=True,
             )

@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { SparkRenderer, SplatFileType, SplatMesh } from '@sparkjsdev/spark';
 import {
   getOBBAxes,
   hasAnyCollision,
@@ -9,6 +8,15 @@ import {
   type OBB2D,
 } from './collision2d';
 import { decodeBase64Bytes } from './roomRendering';
+
+export interface ArchBlock {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  rgb: [number, number, number];
+}
 
 export interface ScannedKeyframePayload {
   viewIdx: number;
@@ -40,17 +48,21 @@ export interface DecodedKeyframe {
   occH: number;
   occK: [number, number, number, number];
   occDepthMm: Uint16Array;
+  origOccDepthMm: Uint16Array;
 }
 
 export interface ScannedRoomPayload {
   ok: boolean;
+  mode?: string;
   error?: string;
   pointCount: number;
   points: string; // base64 int16 mm xyz
   colors: string; // base64 uint8 rgb
   wallRgb?: [number, number, number];
   floorRgb?: string; // base64 uint8 gd*gw*3
-  splatSpz?: string; // base64 Niantic SPZ v2 (gzip) 3D Gaussian Splatting
+  archBlocks?: ArchBlock[];
+  bestKeyframeIdx?: number;
+  splatSpz?: string;
   splatCount?: number;
   mesh?: {
     faceCount: number;
@@ -74,6 +86,8 @@ export interface ScannedRoomPayload {
     scaleFix?: number;
     cameraHeightM?: number;
     freeFloorM2?: number;
+    archBlockCount?: number;
+    keyframeCount?: number;
     meshFaces?: number;
     meshVerts?: number;
     voxelM?: number;
@@ -89,12 +103,15 @@ export interface ScannedRoomPayload {
 }
 
 export interface DecodedScannedRoom {
+  mode: string;
   pointCount: number;
   positions: Float32Array;
   colors: Float32Array; // linear vertex colors (THREE.SRGBColorSpace -> linear)
   srgbColors: Float32Array; // raw 0..1 sRGB vertex colors for projective shader
   wallRgb: [number, number, number];
   floorRgb?: Uint8Array;
+  archBlocks: ArchBlock[];
+  bestKeyframeIdx: number;
   splatSpzBytes?: Uint8Array;
   splatCount: number;
   mesh?: {
@@ -112,6 +129,7 @@ export interface DecodedScannedRoom {
     d: number;
     cell: number;
     cells: Uint8Array;
+    origCells: Uint8Array;
   };
   spawnXZ: [number, number];
   cameras: Array<[number, number, number]>;
@@ -181,7 +199,8 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
       occW: kf.occW,
       occH: kf.occH,
       occK: kf.occK,
-      occDepthMm: u16,
+      occDepthMm: new Uint16Array(u16),
+      origOccDepthMm: new Uint16Array(u16),
     });
   }
 
@@ -190,14 +209,23 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
   const floorRgb = raw.floorRgb ? decodeBase64Bytes(raw.floorRgb) : undefined;
   const splatSpzBytes = raw.splatSpz ? decodeBase64Bytes(raw.splatSpz) : undefined;
   const splatCount = Number(raw.splatCount || raw.stats?.splatCount || 0);
+  const archBlocks: ArchBlock[] = Array.isArray(raw.archBlocks) ? raw.archBlocks : [];
+  const rawBestKf = Number(raw.bestKeyframeIdx ?? 0);
+  const bestKeyframeIdx =
+    keyframes.length > 0 && Number.isFinite(rawBestKf)
+      ? Math.max(0, Math.min(keyframes.length - 1, Math.round(rawBestKf)))
+      : 0;
 
   return {
+    mode: raw.mode || (archBlocks.length > 0 ? 'hybrid-v8' : 'legacy'),
     pointCount: count,
     positions,
     colors,
     srgbColors,
     wallRgb,
     floorRgb,
+    archBlocks,
+    bestKeyframeIdx,
     splatSpzBytes: splatSpzBytes && splatSpzBytes.byteLength > 32 ? splatSpzBytes : undefined,
     splatCount,
     mesh,
@@ -207,7 +235,8 @@ export function decodeScannedRoom(raw: ScannedRoomPayload): DecodedScannedRoom {
       w: raw.grid.w,
       d: raw.grid.d,
       cell: raw.grid.cell,
-      cells: gridCells,
+      cells: new Uint8Array(gridCells),
+      origCells: new Uint8Array(gridCells),
     },
     spawnXZ: raw.spawnXZ && raw.spawnXZ.length >= 2 ? [raw.spawnXZ[0], raw.spawnXZ[1]] : [0, 0],
     cameras: raw.cameras || [],
@@ -269,420 +298,283 @@ export function createRoomPointCloudObject(
   };
 }
 
-function loadImageElement(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Image load failed'));
-    img.src = src;
-  });
-}
+function buildCleanArchFloorTexture(room: DecodedScannedRoom): THREE.CanvasTexture {
+  const size = 1024;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
 
-async function createProjectiveAtlasMaterial(
-  keyframes: DecodedKeyframe[],
-  hdFrames: string[],
-  clipPlane?: THREE.Plane
-): Promise<{ material: THREE.ShaderMaterial; dispose: () => void } | null> {
-  const candidates = keyframes.filter(
-    (kf) => kf.w2cR?.length === 9 && kf.w2cT?.length === 3 && kf.normK?.length === 4 && Boolean(hdFrames[kf.viewIdx])
-  );
-  if (candidates.length === 0) return null;
-
-  const loaded = await Promise.allSettled(candidates.slice(0, 8).map((kf) => loadImageElement(hdFrames[kf.viewIdx])));
-  const pairs: Array<{ kf: DecodedKeyframe; img: HTMLImageElement }> = [];
-  for (let i = 0; i < loaded.length; i++) {
-    const r = loaded[i];
-    if (r.status === 'fulfilled') {
-      pairs.push({ kf: candidates[i], img: r.value });
-    }
-  }
-  const count = pairs.length;
-  if (count === 0) return null;
-
-  const cols = 2;
-  const rows = 4;
-  const cellW = 768;
-  const cellH = 768;
-  const atlasCanvas = document.createElement('canvas');
-  atlasCanvas.width = cols * cellW;
-  atlasCanvas.height = rows * cellH;
-  const ctx = atlasCanvas.getContext('2d');
-  if (!ctx) return null;
-
-  const dW = 160;
-  const dH = 160;
-  const depthBytes = new Uint8Array(cols * dW * rows * dH * 4);
-
-  const mat3List: THREE.Matrix3[] = [];
-  const vec3List: THREE.Vector3[] = [];
-  const vec4List: THREE.Vector4[] = [];
-
-  for (let i = 0; i < 8; i++) {
-    if (i < count) {
-      const { kf, img } = pairs[i];
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      ctx.drawImage(img, col * cellW, row * cellH, cellW, cellH);
-
-      for (let ry = 0; ry < dH; ry++) {
-        const sy = Math.min(kf.occH - 1, Math.floor(((ry + 0.5) / dH) * kf.occH));
-        for (let rx = 0; rx < dW; rx++) {
-          const sx = Math.min(kf.occW - 1, Math.floor(((rx + 0.5) / dW) * kf.occW));
-          const mm = kf.occDepthMm[sy * kf.occW + sx] ?? 0;
-          const outIdx = ((row * dH + ry) * (cols * dW) + (col * dW + rx)) * 4;
-          depthBytes[outIdx] = (mm >> 8) & 255;
-          depthBytes[outIdx + 1] = mm & 255;
-          depthBytes[outIdx + 3] = 255;
-        }
-      }
-
-      const R = kf.w2cR!;
-      const T = kf.w2cT!;
-      const K = kf.normK!;
-      mat3List.push(new THREE.Matrix3().set(R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8]));
-      vec3List.push(new THREE.Vector3(T[0], T[1], T[2]));
-      vec4List.push(new THREE.Vector4(K[0], K[1], K[2], K[3]));
-    } else {
-      mat3List.push(new THREE.Matrix3());
-      vec3List.push(new THREE.Vector3());
-      vec4List.push(new THREE.Vector4(1, 1, 0.5, 0.5));
-    }
-  }
-
-  const colorTex = new THREE.CanvasTexture(atlasCanvas);
-  colorTex.flipY = false;
-  colorTex.colorSpace = THREE.NoColorSpace;
-  colorTex.minFilter = THREE.LinearFilter;
-  colorTex.magFilter = THREE.LinearFilter;
-  colorTex.generateMipmaps = false;
-  colorTex.needsUpdate = true;
-
-  const depthTex = new THREE.DataTexture(depthBytes, cols * dW, rows * dH, THREE.RGBAFormat, THREE.UnsignedByteType);
-  depthTex.flipY = false;
-  depthTex.minFilter = THREE.NearestFilter;
-  depthTex.magFilter = THREE.NearestFilter;
-  depthTex.generateMipmaps = false;
-  depthTex.needsUpdate = true;
-
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uColorAtlas: { value: colorTex },
-      uDepthAtlas: { value: depthTex },
-      uKfCount: { value: count },
-      uW2cR: { value: mat3List },
-      uW2cT: { value: vec3List },
-      uNormK: { value: vec4List },
-    },
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    clipping: true,
-    clippingPlanes: clipPlane ? [clipPlane] : [],
-    toneMapped: false,
-    vertexShader: /* glsl */ `
-      #include <clipping_planes_pars_vertex>
-      varying vec3 vWorldPos;
-      varying vec3 vSrgbColor;
-      void main() {
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vWorldPos = worldPosition.xyz;
-        vSrgbColor = color;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_Position = projectionMatrix * mvPosition;
-        #include <clipping_planes_vertex>
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      #include <clipping_planes_pars_fragment>
-      uniform sampler2D uColorAtlas;
-      uniform sampler2D uDepthAtlas;
-      uniform int uKfCount;
-      uniform mat3 uW2cR[8];
-      uniform vec3 uW2cT[8];
-      uniform vec4 uNormK[8];
-      varying vec3 vWorldPos;
-      varying vec3 vSrgbColor;
-
-      void main() {
-        #include <clipping_planes_fragment>
-        vec3 accCol = vec3(0.0);
-        float accW = 0.0;
-
-        for (int i = 0; i < 8; i++) {
-          if (i >= uKfCount) break;
-          vec3 pRdf = uW2cR[i] * vWorldPos + uW2cT[i];
-          if (pRdf.z <= 0.20) continue;
-
-          vec2 uv = vec2(
-            uNormK[i].x * (pRdf.x / pRdf.z) + uNormK[i].z,
-            uNormK[i].y * (pRdf.y / pRdf.z) + uNormK[i].w
-          );
-          if (uv.x <= 0.01 || uv.x >= 0.99 || uv.y <= 0.01 || uv.y >= 0.99) continue;
-
-          float col = mod(float(i), 2.0);
-          float row = floor(float(i) / 2.0);
-          vec2 atlasUv = vec2(
-            (col + clamp(uv.x, 0.003, 0.997)) * 0.5,
-            (row + clamp(uv.y, 0.003, 0.997)) * 0.25
-          );
-
-          vec4 dp = texture2D(uDepthAtlas, atlasUv);
-          float hiB = floor(dp.r * 255.0 + 0.5);
-          float loB = floor(dp.g * 255.0 + 0.5);
-          float dObs = (hiB * 256.0 + loB) * 0.001;
-          if (dObs > 0.15 && pRdf.z > dObs + 0.16) continue;
-
-          float feather =
-            smoothstep(0.01, 0.10, uv.x) *
-            smoothstep(0.99, 0.90, uv.x) *
-            smoothstep(0.01, 0.10, uv.y) *
-            smoothstep(0.99, 0.90, uv.y);
-          float w = feather / (0.35 + pRdf.z * pRdf.z);
-          accCol += w * texture2D(uColorAtlas, atlasUv).rgb;
-          accW += w;
-        }
-
-        vec3 outSrgb = accW > 0.001
-          ? mix(vSrgbColor, accCol / accW, clamp(accW * 6.0, 0.0, 1.0))
-          : vSrgbColor;
-        gl_FragColor = vec4(outSrgb, 1.0);
-      }
-    `,
-  });
-
-  return {
-    material,
-    dispose: () => {
-      colorTex.dispose();
-      depthTex.dispose();
-      material.dispose();
-    },
-  };
-}
-
-function buildWatertightFloorGeometry(room: DecodedScannedRoom, useSrgb: boolean): THREE.BufferGeometry {
-  const rw = room.bounds.halfW * 2;
-  const rd = room.bounds.halfD * 2;
+  // Gerçek odadan örneklenen zemin renk dağılımını yumuşakça tuvale yay
   const gw = Math.max(1, room.grid.w);
   const gd = Math.max(1, room.grid.d);
-  const geo = new THREE.PlaneGeometry(rw, rd, gw, gd).rotateX(-Math.PI / 2);
-  const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
-  const cols = new Float32Array(posAttr.count * 3);
-  const tmpColor = new THREE.Color();
-
-  for (let i = 0; i < posAttr.count; i++) {
-    const x = posAttr.getX(i);
-    const z = posAttr.getZ(i);
-    let r = 0.76;
-    let g = 0.73;
-    let b = 0.69;
-    if (room.floorRgb && room.floorRgb.length >= gw * gd * 3) {
-      const gx = Math.min(gw - 1, Math.max(0, Math.floor(((x + room.bounds.halfW) / rw) * gw)));
-      const gz = Math.min(gd - 1, Math.max(0, Math.floor(((z + room.bounds.halfD) / rd) * gd)));
-      const idx = (gz * gw + gx) * 3;
-      r = room.floorRgb[idx] / 255;
-      g = room.floorRgb[idx + 1] / 255;
-      b = room.floorRgb[idx + 2] / 255;
+  if (room.floorRgb && room.floorRgb.length >= gw * gd * 3) {
+    const tmp = document.createElement('canvas');
+    tmp.width = gw;
+    tmp.height = gd;
+    const tctx = tmp.getContext('2d')!;
+    const imgD = tctx.createImageData(gw, gd);
+    for (let i = 0; i < gw * gd; i++) {
+      // Gerçek zemin rengini temiz sıcak mimari tona hafifçe dengele (koyu/çamurlu gürültüyü yumuşat)
+      const r = Math.round(room.floorRgb[i * 3] * 0.72 + 216 * 0.28);
+      const g = Math.round(room.floorRgb[i * 3 + 1] * 0.72 + 208 * 0.28);
+      const b = Math.round(room.floorRgb[i * 3 + 2] * 0.72 + 198 * 0.28);
+      imgD.data[i * 4] = r;
+      imgD.data[i * 4 + 1] = g;
+      imgD.data[i * 4 + 2] = b;
+      imgD.data[i * 4 + 3] = 255;
     }
-    if (useSrgb) {
-      cols[i * 3] = r;
-      cols[i * 3 + 1] = g;
-      cols[i * 3 + 2] = b;
-    } else {
-      tmpColor.setRGB(r, g, b, THREE.SRGBColorSpace);
-      cols[i * 3] = tmpColor.r;
-      cols[i * 3 + 1] = tmpColor.g;
-      cols[i * 3 + 2] = tmpColor.b;
+    tctx.putImageData(imgD, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tmp, 0, 0, size, size);
+  } else {
+    ctx.fillStyle = '#ddd6ca';
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  // İnce mimari parke derz dokusu
+  ctx.strokeStyle = 'rgba(60, 52, 42, 0.075)';
+  ctx.lineWidth = 1.5;
+  const plankCount = 26;
+  for (let i = 0; i < plankCount; i++) {
+    const y = (i / plankCount) * size;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y);
+    ctx.stroke();
+    const off = (i % 3) * (size / 6);
+    for (let x = off; x < size; x += size / 3) {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x, y + size / plankCount);
+      ctx.stroke();
     }
   }
-  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  return geo;
+
+  // 0.5 m mimari ölçü çizgileri (çok zarif)
+  const rw = room.bounds.halfW * 2;
+  const rd = room.bounds.halfD * 2;
+  ctx.strokeStyle = 'rgba(24, 24, 27, 0.055)';
+  ctx.lineWidth = 1;
+  for (let m = 0.5; m < rw; m += 0.5) {
+    const px = (m / rw) * size;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, size);
+    ctx.stroke();
+  }
+  for (let m = 0.5; m < rd; m += 0.5) {
+    const py = (m / rd) * size;
+    ctx.beginPath();
+    ctx.moveTo(0, py);
+    ctx.lineTo(size, py);
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.needsUpdate = true;
+  return tex;
 }
 
-function addUniformVertexColors(geo: THREE.BufferGeometry, rgb: [number, number, number], useSrgb: boolean): void {
-  const count = geo.getAttribute('position').count;
-  const cols = new Float32Array(count * 3);
-  const tmp = new THREE.Color();
-  let r = (rgb[0] * 0.94) / 255;
-  let g = (rgb[1] * 0.94) / 255;
-  let b = (rgb[2] * 0.94) / 255;
-  if (!useSrgb) {
-    tmp.setRGB(r, g, b, THREE.SRGBColorSpace);
-    r = tmp.r;
-    g = tmp.g;
-    b = tmp.b;
-  }
-  for (let i = 0; i < count; i++) {
-    cols[i * 3] = r;
-    cols[i * 3 + 1] = g;
-    cols[i * 3 + 2] = b;
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+export interface ArchWallEntry {
+  side: 'north' | 'south' | 'west' | 'east';
+  mesh: THREE.Mesh;
+  inwardNormal: THREE.Vector3;
+  center: THREE.Vector3;
 }
 
 export async function createScannedRoomSurfaceObject(
   room: DecodedScannedRoom,
-  hdFrames: string[],
-  clipPlane?: THREE.Plane,
-  renderer?: THREE.WebGLRenderer,
-  scene?: THREE.Scene
+  _hdFrames: string[],
+  clipPlane?: THREE.Plane
 ): Promise<{
   object: THREE.Object3D;
+  existingGroup?: THREE.Group;
+  walls?: ArchWallEntry[];
   pointMat?: THREE.PointsMaterial;
-  sparkRenderer?: SparkRenderer;
-  isSplat?: boolean;
+  isCleanArch?: boolean;
   dispose: () => void;
 }> {
   const disposeFns: Array<() => void> = [];
   const root = new THREE.Group();
   root.userData.isHelper = true;
 
-  // 1. Öncelik: Fotogerçekçi 3D Gaussian Splatting (SPZ v2 + SparkRenderer WebGL2)
-  if (room.splatSpzBytes && room.splatSpzBytes.byteLength > 32 && renderer && scene) {
-    try {
-      const spark = new SparkRenderer({
-        renderer,
-        blurAmount: 0.08,
-        maxStdDev: Math.sqrt(6.5),
-      });
-      spark.userData.isHelper = true;
-      spark.renderOrder = 0;
-      scene.add(spark);
+  // v8 Sıfır-Bulanıklık Temiz Mimari 3B İkiz (Apple RoomPlan / Planner 5D standardı)
+  const rw = room.bounds.halfW * 2;
+  const rd = room.bounds.halfD * 2;
+  const wallH = Math.min(2.75, Math.max(2.1, room.bounds.ceilingM));
 
-      const bytesCopy = new Uint8Array(room.splatSpzBytes.byteLength);
-      bytesCopy.set(room.splatSpzBytes);
+  // 1. Temiz mimari zemin (gerçek oda tonunda + zarif parke ve 50 cm ölçü çizgisi)
+  const floorTex = buildCleanArchFloorTexture(room);
+  const floorGeo = new THREE.PlaneGeometry(rw, rd).rotateX(-Math.PI / 2);
+  const floorMat = new THREE.MeshStandardMaterial({
+    map: floorTex,
+    roughness: 0.88,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+  const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+  floorMesh.position.y = -0.002;
+  floorMesh.receiveShadow = true;
+  floorMesh.userData.isHelper = true;
+  root.add(floorMesh);
+  disposeFns.push(
+    () => floorTex.dispose(),
+    () => floorGeo.dispose(),
+    () => floorMat.dispose()
+  );
 
-      const splatMesh = new SplatMesh({
-        fileBytes: bytesCopy,
-        fileType: SplatFileType.SPZ,
-        raycastable: false,
-      });
-      splatMesh.userData.isHelper = true;
-      root.add(splatMesh);
+  // 2. Otomatik açılıp kapanan temiz mimari duvarlar + 8 cm süpürgelik
+  const wallCol = new THREE.Color(
+    room.wallRgb[0] / 255,
+    room.wallRgb[1] / 255,
+    room.wallRgb[2] / 255
+  ).lerp(new THREE.Color(0xf4f2ed), 0.28);
 
-      await splatMesh.initialized;
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: wallCol,
+    roughness: 0.94,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+    clippingPlanes: clipPlane ? [clipPlane] : [],
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0xf7f6f2,
+    roughness: 0.65,
+    metalness: 0.0,
+    clippingPlanes: clipPlane ? [clipPlane] : [],
+  });
+  disposeFns.push(
+    () => wallMat.dispose(),
+    () => trimMat.dispose()
+  );
 
-      // Çok dik açılarda zemin altında karanlık sızıntı kalmaması için derin zemin tabanı (y = -0.045)
-      const underlayGeo = buildWatertightFloorGeometry(room, false);
-      const underlayMat = new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        side: THREE.DoubleSide,
-        toneMapped: false,
-      });
-      const underlayMesh = new THREE.Mesh(underlayGeo, underlayMat);
-      underlayMesh.position.y = -0.045;
-      underlayMesh.userData.isHelper = true;
-      root.add(underlayMesh);
+  const hw = room.bounds.halfW;
+  const hd = room.bounds.halfD;
+  const wallSpecs = [
+    {
+      side: 'north' as const,
+      w: rw,
+      pos: new THREE.Vector3(0, wallH * 0.5, -hd),
+      rotY: 0,
+      normal: new THREE.Vector3(0, 0, 1),
+    },
+    {
+      side: 'south' as const,
+      w: rw,
+      pos: new THREE.Vector3(0, wallH * 0.5, hd),
+      rotY: Math.PI,
+      normal: new THREE.Vector3(0, 0, -1),
+    },
+    {
+      side: 'west' as const,
+      w: rd,
+      pos: new THREE.Vector3(-hw, wallH * 0.5, 0),
+      rotY: Math.PI / 2,
+      normal: new THREE.Vector3(1, 0, 0),
+    },
+    {
+      side: 'east' as const,
+      w: rd,
+      pos: new THREE.Vector3(hw, wallH * 0.5, 0),
+      rotY: -Math.PI / 2,
+      normal: new THREE.Vector3(-1, 0, 0),
+    },
+  ];
 
-      disposeFns.push(
-        () => underlayGeo.dispose(),
-        () => underlayMat.dispose(),
-        () => splatMesh.dispose(),
-        () => {
-          scene.remove(spark);
-          spark.dispose();
-        }
-      );
+  const walls: ArchWallEntry[] = [];
+  for (const ws of wallSpecs) {
+    const wGeo = new THREE.PlaneGeometry(ws.w, wallH);
+    const wMesh = new THREE.Mesh(wGeo, wallMat);
+    wMesh.position.copy(ws.pos);
+    wMesh.rotation.y = ws.rotY;
+    wMesh.receiveShadow = true;
+    wMesh.userData.isHelper = true;
 
-      return {
-        object: root,
-        sparkRenderer: spark,
-        isSplat: true,
-        dispose: () => {
-          disposeFns.forEach((fn) => fn());
-        },
-      };
-    } catch (err) {
-      console.warn('[Spark] 3D Gaussian Splat başlatılamadı, TSDF/nokta yedeğine dönülüyor:', err);
-    }
+    // 8 cm beyaz mimari süpürgelik
+    const baseGeo = new THREE.BoxGeometry(ws.w, 0.085, 0.018);
+    const baseMesh = new THREE.Mesh(baseGeo, trimMat);
+    baseMesh.position.set(0, -wallH * 0.5 + 0.0425, 0.01);
+    baseMesh.userData.isHelper = true;
+    wMesh.add(baseMesh);
+
+    // Üst duvar ince pervaz çizgisi
+    const topGeo = new THREE.BoxGeometry(ws.w, 0.024, 0.012);
+    const topMesh = new THREE.Mesh(topGeo, trimMat);
+    topMesh.position.set(0, wallH * 0.5 - 0.012, 0.006);
+    topMesh.userData.isHelper = true;
+    wMesh.add(topMesh);
+
+    root.add(wMesh);
+    walls.push({
+      side: ws.side,
+      mesh: wMesh,
+      inwardNormal: ws.normal,
+      center: ws.pos.clone(),
+    });
+    disposeFns.push(
+      () => wGeo.dispose(),
+      () => baseGeo.dispose(),
+      () => topGeo.dispose()
+    );
   }
 
-  if (room.mesh && room.mesh.faceCount > 0 && room.mesh.indices.length >= 3) {
-    const atlas = await createProjectiveAtlasMaterial(room.keyframes, hdFrames, clipPlane);
-    const useSrgb = Boolean(atlas);
+  // 3. Mevcut Eşyaların Temiz Mimari Kütleleri (RoomPlan tarzı, gerçek konum/yükseklik/renk tonu)
+  const existingGroup = new THREE.Group();
+  existingGroup.userData.isHelper = true;
+  const edgeMat = new THREE.LineBasicMaterial({
+    color: 0x3f3f46,
+    transparent: true,
+    opacity: 0.24,
+  });
+  disposeFns.push(() => edgeMat.dispose());
 
-    let meshMat: THREE.Material;
-    let wallMat: THREE.Material;
-    if (atlas) {
-      meshMat = atlas.material;
-      const wm = atlas.material.clone();
-      wm.side = THREE.FrontSide;
-      wallMat = wm;
-      disposeFns.push(atlas.dispose, () => wm.dispose());
-    } else {
-      const bm = new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        side: THREE.DoubleSide,
-        toneMapped: false,
-        clippingPlanes: clipPlane ? [clipPlane] : [],
-      });
-      const wm = new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        side: THREE.FrontSide,
-        toneMapped: false,
-        clippingPlanes: clipPlane ? [clipPlane] : [],
-      });
-      meshMat = bm;
-      wallMat = wm;
-      disposeFns.push(
-        () => bm.dispose(),
-        () => wm.dispose()
-      );
-    }
+  for (const blk of room.archBlocks) {
+    const bw = Math.max(0.14, blk.w);
+    const bh = Math.max(0.22, blk.h);
+    const bd = Math.max(0.14, blk.d);
+    const col = new THREE.Color(blk.rgb[0] / 255, blk.rgb[1] / 255, blk.rgb[2] / 255).lerp(
+      new THREE.Color(0xeae6de),
+      0.32
+    );
+    const mat = new THREE.MeshStandardMaterial({
+      color: col,
+      roughness: 0.86,
+      metalness: 0.0,
+      clippingPlanes: clipPlane ? [clipPlane] : [],
+    });
+    const geo = new THREE.BoxGeometry(bw, bh, bd);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(blk.x, bh * 0.5, blk.z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData.isHelper = true;
 
-    // 1. Sızdırmaz zemin tabanı (kamera yürüyüş boşlukları sıfır siyah delik)
-    const floorBaseGeo = buildWatertightFloorGeometry(room, useSrgb);
-    const floorBaseMesh = new THREE.Mesh(floorBaseGeo, meshMat);
-    floorBaseMesh.position.y = -0.008;
-    floorBaseMesh.userData.isHelper = true;
-    root.add(floorBaseMesh);
-    disposeFns.push(() => floorBaseGeo.dispose());
+    const eGeo = new THREE.EdgesGeometry(geo);
+    const lines = new THREE.LineSegments(eGeo, edgeMat);
+    lines.userData.isHelper = true;
+    mesh.add(lines);
 
-    // 2. İçeri bakan mimari çevre duvarları (FrontSide ile kameranın önündeki duvarlar otomatik gizlenir)
-    const rw = room.bounds.halfW * 2;
-    const rd = room.bounds.halfD * 2;
-    const wallH = Math.min(2.65, Math.max(1.85, room.bounds.ceilingM - 0.12));
-    const wallSpecs = [
-      { w: rw, x: 0, z: -room.bounds.halfD, rotY: 0 },
-      { w: rw, x: 0, z: room.bounds.halfD, rotY: Math.PI },
-      { w: rd, x: -room.bounds.halfW, z: 0, rotY: Math.PI / 2 },
-      { w: rd, x: room.bounds.halfW, z: 0, rotY: -Math.PI / 2 },
-    ];
-    for (const ws of wallSpecs) {
-      const wGeo = new THREE.PlaneGeometry(ws.w, wallH);
-      addUniformVertexColors(wGeo, room.wallRgb, useSrgb);
-      const wMesh = new THREE.Mesh(wGeo, wallMat);
-      wMesh.position.set(ws.x, wallH * 0.5 - 0.01, ws.z);
-      wMesh.rotation.y = ws.rotY;
-      wMesh.userData.isHelper = true;
-      root.add(wMesh);
-      disposeFns.push(() => wGeo.dispose());
-    }
-
-    // 3. Taranmış katı TSDF 3D oda yüzeyi
-    const scanGeo = new THREE.BufferGeometry();
-    scanGeo.setAttribute('position', new THREE.BufferAttribute(room.positions, 3));
-    scanGeo.setAttribute('color', new THREE.BufferAttribute(useSrgb ? room.srgbColors : room.colors, 3));
-    scanGeo.setIndex(new THREE.BufferAttribute(room.mesh.indices, 1));
-    scanGeo.computeBoundingSphere();
-
-    const scanMesh = new THREE.Mesh(scanGeo, meshMat);
-    scanMesh.userData.isHelper = true;
-    root.add(scanMesh);
-    disposeFns.push(() => scanGeo.dispose());
-
-    return {
-      object: root,
-      dispose: () => {
-        disposeFns.forEach((fn) => fn());
-      },
-    };
+    existingGroup.add(mesh);
+    disposeFns.push(
+      () => geo.dispose(),
+      () => eGeo.dispose(),
+      () => mat.dispose()
+    );
   }
+  root.add(existingGroup);
 
-  const fallback = createRoomPointCloudObject(room, 0.042, clipPlane);
   return {
-    object: fallback.points,
-    pointMat: fallback.material,
-    dispose: fallback.dispose,
+    object: root,
+    existingGroup,
+    walls,
+    isCleanArch: true,
+    dispose: () => {
+      disposeFns.forEach((fn) => fn());
+    },
   };
 }
 

@@ -690,17 +690,194 @@ def _extract_tsdf_surface(
     return verts, shaded_rgb, faces
 
 
-def _build_keyframes(views_cam: list[dict], max_kf: int = 8) -> list[dict]:
-    """En fazla 8 eşit aralıklı açı için kamera pozu, projeksiyon matrisi ve tam 160px metrik derinlik haritası çıkarır."""
+def _median_filter_depth_3x3(depth: np.ndarray) -> np.ndarray:
+    """Pure NumPy geçerli-piksel (d > 0.15) 3x3 medyan filtresi: derinlik kenarlarındaki tekil gürültüyü temizler."""
+    if depth.shape[0] < 3 or depth.shape[1] < 3:
+        return depth
+    pad = np.pad(depth, 1, mode="edge")
+    stack = np.stack(
+        [
+            pad[:-2, :-2], pad[:-2, 1:-1], pad[:-2, 2:],
+            pad[1:-1, :-2], pad[1:-1, 1:-1], pad[1:-1, 2:],
+            pad[2:, :-2], pad[2:, 1:-1], pad[2:, 2:],
+        ],
+        axis=0,
+    )
+    valid = stack > 0.15
+    cnt = valid.sum(axis=0)
+    # Geçersizleri +inf yaparak sırala ve geçerli ortancayı seç
+    filled = np.where(valid, stack, np.inf)
+    filled.sort(axis=0)
+    mid_idx = np.clip((cnt - 1) // 2, 0, 8)
+    med = np.take_along_axis(filled, mid_idx[None, :, :], axis=0)[0]
+    out = np.where((depth > 0.15) & (cnt >= 3), med, depth)
+    return np.where(np.isfinite(out), out, 0.0)
+
+
+def _extract_arch_blocks(
+    P: np.ndarray,
+    C: np.ndarray,
+    grid: np.ndarray,
+    half_w: float,
+    half_d: float,
+    ceil: float,
+) -> list[dict]:
+    """
+    Odanın içindeki mevcut mobilya/eşya kütlelerini 20 cm ızgarada temiz dikdörtgen
+    mimari prizmalara (Apple RoomPlan tarzı) dönüştürür. Bulanık üçgen/splat yok.
+    """
+    gd, gw = grid.shape
+    if gd < 4 or gw < 4:
+        return []
+
+    # 1. Her 10 cm engel hücresinin 90. yüzdelik yüksekliğini ve medyan rengini hesapla
+    obst_mask = (P[:, 1] > 0.14) & (P[:, 1] < max(1.85, ceil - 0.18))
+    P_o = P[obst_mask]
+    C_o = C[obst_mask]
+    if len(P_o) < 50:
+        return []
+
+    gx = np.clip(((P_o[:, 0] + half_w) / CELL_M).astype(np.int32), 0, gw - 1)
+    gz = np.clip(((P_o[:, 2] + half_d) / CELL_M).astype(np.int32), 0, gd - 1)
+
+    h_cell = np.zeros((gd, gw), dtype=np.float32)
+    c_cell = np.zeros((gd, gw, 3), dtype=np.float32)
+    n_cell = np.zeros((gd, gw), dtype=np.int32)
+
+    # Hücre bazlı yükseklik (max'a yakın 90. yüzdelik yaklaşımı: ortalama + 0.85*std) ve renk ortalaması
+    y_sum = np.zeros((gd, gw), dtype=np.float64)
+    y_max = np.zeros((gd, gw), dtype=np.float64)
+    np.add.at(n_cell, (gz, gx), 1)
+    np.add.at(y_sum, (gz, gx), P_o[:, 1])
+    np.maximum.at(y_max, (gz, gx), P_o[:, 1])
+    np.add.at(c_cell, (gz, gx), C_o.astype(np.float32))
+
+    has_o = (grid == 1) & (n_cell >= 3)
+    h_cell[has_o] = np.clip(
+        0.35 * (y_sum[has_o] / n_cell[has_o]) + 0.65 * y_max[has_o],
+        0.24,
+        min(2.15, ceil - 0.18),
+    ).astype(np.float32)
+    c_cell[has_o] /= n_cell[has_o, None]
+
+    # Dış duvar şeridini (10 cm kenar + tavana yakın yükseklik) ayıkla; duvarlar zaten mimari düzlemle çizilir
+    is_border = np.zeros((gd, gw), dtype=bool)
+    is_border[0, :] = True
+    is_border[-1, :] = True
+    is_border[:, 0] = True
+    is_border[:, -1] = True
+    furn_10 = has_o & ~(is_border & (h_cell >= min(1.85, ceil - 0.35)))
+
+    # 2. 20 cm mimari ızgaraya birleştir (basamak gürültüsünü siler, keskin mobilya kütlesi verir)
+    step = 2
+    gd2 = (gd + step - 1) // step
+    gw2 = (gw + step - 1) // step
+    occ2 = np.zeros((gd2, gw2), dtype=bool)
+    h2 = np.zeros((gd2, gw2), dtype=np.float32)
+    c2 = np.zeros((gd2, gw2, 3), dtype=np.float32)
+
+    for r2 in range(gd2):
+        r0, r1 = r2 * step, min(gd, (r2 + 1) * step)
+        for c2_i in range(gw2):
+            c0, c1 = c2_i * step, min(gw, (c2_i + 1) * step)
+            sub_m = furn_10[r0:r1, c0:c1]
+            if int(sub_m.sum()) >= 2:
+                occ2[r2, c2_i] = True
+                h2[r2, c2_i] = float(np.median(h_cell[r0:r1, c0:c1][sub_m]))
+                c2[r2, c2_i] = c_cell[r0:r1, c0:c1][sub_m].mean(axis=0)
+
+    # Tekil 20 cm gürültü hücrelerini temizle
+    pad_o = np.pad(occ2.astype(np.int32), 1, mode="constant", constant_values=0)
+    nbr4 = pad_o[:-2, 1:-1] + pad_o[2:, 1:-1] + pad_o[1:-1, :-2] + pad_o[1:-1, 2:]
+    occ2 = occ2 & (nbr4 >= 1)
+
+    # 3. Benzer yükseklikteki komşu hücreleri temiz dikdörtgen mimari prizmalarda birleştir
+    visited = np.zeros((gd2, gw2), dtype=bool)
+    cell2 = CELL_M * step
+    blocks: list[dict] = []
+
+    for r in range(gd2):
+        for c in range(gw2):
+            if not occ2[r, c] or visited[r, c]:
+                continue
+            h_seed = float(h2[r, c])
+            # Sağa doğru genişlet
+            c_end = c
+            while c_end + 1 < gw2 and occ2[r, c_end + 1] and not visited[r, c_end + 1]:
+                if abs(float(h2[r, c_end + 1]) - h_seed) > 0.28:
+                    break
+                c_end += 1
+            # Aşağı doğru tüm satır uygunsa genişlet
+            r_end = r
+            while r_end + 1 < gd2:
+                row_ok = True
+                for cc in range(c, c_end + 1):
+                    if not occ2[r_end + 1, cc] or visited[r_end + 1, cc] or abs(float(h2[r_end + 1, cc]) - h_seed) > 0.28:
+                        row_ok = False
+                        break
+                if not row_ok:
+                    break
+                r_end += 1
+
+            visited[r : r_end + 1, c : c_end + 1] = True
+            h_avg = float(h2[r : r_end + 1, c : c_end + 1].mean())
+            rgb_avg = c2[r : r_end + 1, c : c_end + 1].reshape(-1, 3).mean(axis=0)
+
+            bw = (c_end - c + 1) * cell2
+            bd = (r_end - r + 1) * cell2
+            bx = (c + (c_end - c + 1) * 0.5) * cell2 - half_w
+            bz = (r + (r_end - r + 1) * 0.5) * cell2 - half_d
+            # Oda sınırından taşmasın
+            bw = min(bw, max(0.18, half_w * 2.0 - 0.04))
+            bd = min(bd, max(0.18, half_d * 2.0 - 0.04))
+            bx = float(np.clip(bx, -half_w + bw * 0.5, half_w - bw * 0.5))
+            bz = float(np.clip(bz, -half_d + bd * 0.5, half_d - bd * 0.5))
+
+            # Oda dış duvarı boyunca uzanan ince duvar şeritlerini atla (duvarlar zaten mimari düzlemle çizilir)
+            touches_outer = (
+                abs(bx) + bw * 0.5 >= half_w - 0.08
+                or abs(bz) + bd * 0.5 >= half_d - 0.08
+            )
+            if touches_outer and min(bw, bd) <= 0.24 and h_avg >= 1.30:
+                continue
+
+            blocks.append(
+                {
+                    "x": round(bx, 3),
+                    "z": round(bz, 3),
+                    "w": round(float(bw), 3),
+                    "d": round(float(bd), 3),
+                    "h": round(float(np.clip(h_avg, 0.28, min(2.10, ceil - 0.18))), 3),
+                    "rgb": [int(np.clip(round(v), 24, 248)) for v in rgb_avg],
+                }
+            )
+
+    # Hacmine göre en anlamlı <= 75 mimari kütleyi tut
+    blocks.sort(key=lambda b: b["w"] * b["d"] * b["h"], reverse=True)
+    return blocks[:75]
+
+
+def _build_keyframes(
+    views_cam: list[dict],
+    grid: np.ndarray,
+    half_w: float,
+    half_d: float,
+    max_kf: int = 10,
+) -> tuple[list[dict], int]:
+    """En fazla 10 eşit aralıklı açı için 220px medyan-filtreli derinlik haritası çıkarır ve en ferah açıyı seçer."""
     n = len(views_cam)
     if n == 0:
-        return []
+        return [], 0
     count = min(max_kf, n)
     indices = np.unique(np.linspace(0, n - 1, count).round().astype(int))
     conv_flip = np.diag([1.0, -1.0, -1.0])
+    gd, gw = grid.shape
 
     keyframes = []
-    for idx in indices:
+    best_idx = 0
+    best_score = -1.0
+
+    for kf_pos, idx in enumerate(indices):
         vc = views_cam[int(idx)]
         R_rdf = vc["R_rdf2room"]
         R_three = R_rdf @ conv_flip
@@ -718,14 +895,36 @@ def _build_keyframes(views_cam: list[dict], max_kf: int = 8) -> list[dict]:
         fov_y = float(2.0 * np.degrees(np.arctan(H / max(1.0, 2.0 * fy))))
         aspect = round(float(W) / max(1.0, float(H)), 5)
 
-        # Hem 3D doku projeksiyon shader'ı hem de ön-plan derinlik maskesi için tüm geçerli metrik derinliği sakla
         occ_valid = mask & (depth_m > 0.20) & (depth_m < 14.0)
         d_occ = np.where(occ_valid, depth_m, 0.0)
 
-        stride = max(1, int(np.ceil(max(H, W) / 160.0)))
-        d_sub = d_occ[::stride, ::stride]
+        stride = max(1, int(np.ceil(max(H, W) / 220.0)))
+        d_sub = _median_filter_depth_3x3(d_occ[::stride, ::stride])
         oh, ow = d_sub.shape
         occ_mm = np.clip(np.round(d_sub * 1000.0), 0, 65535).astype(np.uint16)
+
+        # En geniş boş zemini gösteren açıyı otomatik seç (açılış karesi duvara değil ferah odaya baksın)
+        fx_s, fy_s, cx_s, cy_s = fx / stride, fy / stride, cx_p / stride, cy_p / stride
+        rs = np.linspace(int(oh * 0.42), max(1, oh - 2), 10).astype(int)
+        cs = np.linspace(int(ow * 0.12), max(1, int(ow * 0.88)), 12).astype(int)
+        rr, cc = np.meshgrid(rs, cs, indexing="ij")
+        ds = d_sub[rr, cc]
+        ok_s = (ds > 0.8) & (ds < 5.0)
+        score = 0.0
+        if np.any(ok_s):
+            ds_v = ds[ok_s]
+            xr = (cc[ok_s] - cx_s) * ds_v / max(1.0, fx_s)
+            yr = (rr[ok_s] - cy_s) * ds_v / max(1.0, fy_s)
+            p_room = np.column_stack([xr, yr, ds_v]) @ R_rdf.T + vc["cam_pos"]
+            gx_s = np.clip(((p_room[:, 0] + half_w) / CELL_M).astype(int), 0, gw - 1)
+            gz_s = np.clip(((p_room[:, 2] + half_d) / CELL_M).astype(int), 0, gd - 1)
+            is_free_fl = (np.abs(p_room[:, 1]) < 0.14) & (grid[gz_s, gx_s] == 0)
+            mid_depth = float(np.median(ds_v))
+            score = float(is_free_fl.sum()) * 2.5 + float(np.count_nonzero(ds_v > 1.6)) * 0.4 + min(mid_depth, 3.5)
+
+        if score > best_score:
+            best_score = score
+            best_idx = kf_pos
 
         keyframes.append(
             {
@@ -746,18 +945,22 @@ def _build_keyframes(views_cam: list[dict], max_kf: int = 8) -> list[dict]:
                 "occW": int(ow),
                 "occH": int(oh),
                 "occK": [
-                    round(fx / stride, 3),
-                    round(fy / stride, 3),
-                    round(cx_p / stride, 3),
-                    round(cy_p / stride, 3),
+                    round(fx_s, 3),
+                    round(fy_s, 3),
+                    round(cx_s, 3),
+                    round(cy_s, 3),
                 ],
                 "occDepthMm": _b64(occ_mm),
             }
         )
-    return keyframes
+    return keyframes, best_idx
 
 
-def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
+def build_room_payload(
+    views_data: list[dict],
+    enable_gs: bool = False,
+    clean_arch_only: bool = True,
+) -> dict:
     rng = np.random.default_rng(7)
     if not views_data:
         return {"ok": False, "error": "Görüntü verisi bulunamadı."}
@@ -942,12 +1145,13 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
 
     free_m2 = float(np.count_nonzero(grid == 0)) * CELL_M * CELL_M
     spawn_xz = _find_open_spawn_xz(grid, gw, gd, half_w, half_d)
-    keyframes = _build_keyframes(views_cam, max_kf=10)
+    keyframes, best_kf_idx = _build_keyframes(views_cam, grid, half_w, half_d, max_kf=10)
+    arch_blocks = _extract_arch_blocks(P, C, grid, half_w, half_d, ceil)
 
     mesh_payload = None
     vox = 0.0
-    if splat_spz_b64 is not None:
-        # 3DGS başarılı: ağır TSDF üçgenlerini göndermeye gerek yok, yanıt hızlı ve <3.5 MB kalır
+    if splat_spz_b64 is not None or clean_arch_only:
+        # v8 Sıfır-Bulanıklık Hibrit Mod: ağır/bulanık TSDF üçgenleri yerine temiz mimari bloklar + 220px HD derinlik maskeleri
         out_P = np.zeros((0, 3), dtype=np.float64)
         out_C = np.zeros((0, 3), dtype=np.uint8)
         faces_count = 0
@@ -986,11 +1190,14 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
 
     res = {
         "ok": True,
+        "mode": "hybrid-v8" if clean_arch_only else "legacy",
         "pointCount": int(len(out_P)),
         "points": _b64(q),
         "colors": _b64(out_C.astype(np.uint8)),
         "wallRgb": wall_rgb,
         "floorRgb": _b64(floor_rgb_grid.astype(np.uint8)),
+        "archBlocks": arch_blocks,
+        "bestKeyframeIdx": int(best_kf_idx),
         "bounds": {"halfW": float(half_w), "halfD": float(half_d), "ceilingM": float(ceil)},
         "grid": {"w": gw, "d": gd, "cell": CELL_M, "data": _b64(grid)},
         "spawnXZ": spawn_xz,
@@ -1000,6 +1207,8 @@ def build_room_payload(views_data: list[dict], enable_gs: bool = True) -> dict:
             "scaleFix": round(scale, 3),
             "cameraHeightM": round(float(np.median(cams[:, 1])), 2),
             "freeFloorM2": round(free_m2, 1),
+            "archBlockCount": int(len(arch_blocks)),
+            "keyframeCount": int(len(keyframes)),
             "meshFaces": faces_count,
             "meshVerts": int(len(out_P)),
             "voxelM": round(vox, 4),
