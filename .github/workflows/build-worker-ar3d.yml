@@ -1,0 +1,49 @@
+name: Build RunPod AR 3D Product Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "worker-ar3d/**"
+      - ".github/workflows/build-worker-ar3d.yml"
+
+concurrency:
+  group: build-worker-ar3d
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push AR 3D Product worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker-ar3d
+          file: ./worker-ar3d/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/coskunerberke/mobilya-ar-worker:ar3d
+            ghcr.io/coskunerberke/mobilya-ar-worker:latest
