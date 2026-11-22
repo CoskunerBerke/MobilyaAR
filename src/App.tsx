@@ -13,6 +13,7 @@ import {
   Plus,
   QrCode,
   Server,
+  Smartphone,
   Upload,
   X,
 } from 'lucide-react';
@@ -69,6 +70,12 @@ function preprocessPhotoFor3D(file: File): Promise<string> {
   });
 }
 
+function getOrientationGuide(dimensionsCm: string): 'landscape' | 'portrait' {
+  const m = dimensionsCm.match(/(\d+(?:[.,]\d+)?)/);
+  const w = m ? parseFloat(m[1].replace(',', '.')) : 120;
+  return Number.isFinite(w) && w >= 135 ? 'landscape' : 'portrait';
+}
+
 const PRESET_ROOM_IMAGES: Record<DemoStudioPresetId, string> = {
   living: '/rooms/room-oak.jpg',
   bedroom: '/rooms/room-rug.jpg',
@@ -123,7 +130,7 @@ type ActiveViewState = {
 
 export function App() {
   const [products, setProducts] = useState<Product[]>(PRODUCTS);
-  const [heroProductId, setHeroProductId] = useState<string>('ikea-landskrona-sofa');
+  const [stageProductId, setStageProductId] = useState<string>('ikea-landskrona-sofa');
 
   const [activeState, setActiveState] = useState<ActiveViewState | null>(() => {
     const q = new URLSearchParams(window.location.search);
@@ -189,7 +196,7 @@ export function App() {
   const [demoNote, setDemoNote] = useState('');
   const [demoSubmitted, setDemoSubmitted] = useState(false);
 
-  // Yönetici 3B Üretim Motoru Ayarları (Dahili)
+  // Dahili 3B Motor Ayarları
   const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
   const [server3dCfg, setServer3dCfg] = useState<Product3DServerConfig>({
     falConfigured: false,
@@ -398,14 +405,15 @@ export function App() {
 
   const featuredIds = [
     'ikea-landskrona-sofa',
-    'ikea-uppland-sofa',
     'ikea-strandmon-chair',
+    'ikea-uppland-sofa',
     'ikea-stockholm-coffee',
   ];
   const featuredProducts = featuredIds
     .map((id) => products.find((p) => p.id === id))
     .filter((p): p is Product => Boolean(p));
-  const heroProduct = products.find((p) => p.id === heroProductId) || products[0];
+  const stageProduct = products.find((p) => p.id === stageProductId) || products[0];
+  const stageOrient = getOrientationGuide(stageProduct.dimensionsCm);
   const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=ar`;
 
   if (activeState) {
@@ -433,47 +441,47 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#faf8f4] text-stone-950 overflow-x-hidden pb-16 md:pb-0">
-      {/* Üst Menü — Kusursuz Tek Satır & Mimari Kurumsal */}
-      <header className="h-16 border-b border-stone-200/80 px-4 lg:px-10 flex items-center justify-between gap-4 sticky top-0 bg-[#faf8f4]/95 backdrop-blur-md z-30">
+      {/* Üst Menü — Koyu Mimari Cam & Kusursuz Tek Satır */}
+      <header className="h-16 border-b border-white/10 px-4 lg:px-10 flex items-center justify-between gap-4 sticky top-0 bg-[#0d0d0c]/92 backdrop-blur-xl text-white z-30">
         <a href="#" className="flex items-center gap-2.5 whitespace-nowrap shrink-0">
           <svg
             width="24"
             height="24"
             viewBox="0 0 24 24"
             fill="none"
-            className="shrink-0 text-stone-950"
+            className="shrink-0 text-white"
             aria-hidden="true"
           >
-            <path d="M12 2L21 7V17L12 22L3 17V7L12 2Z" stroke="currentColor" strokeWidth="1.75" />
-            <path d="M12 22V12M12 12L21 7M12 12L3 7" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M12 7.5L16 9.8V14.2L12 16.5L8 14.2V9.8L12 7.5Z" fill="#a67c52" />
+            <path d="M12 2L21 7V17L12 22L3 17V7L12 2Z" stroke="currentColor" strokeWidth="1.65" />
+            <path d="M12 22V12M12 12L21 7M12 12L3 7" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M12 7.5L16 9.8V14.2L12 16.5L8 14.2V9.8L12 7.5Z" fill="#c9a277" />
           </svg>
-          <span className="font-display text-sm sm:text-[15px] font-extrabold tracking-tight text-stone-950">
+          <span className="font-display text-sm sm:text-[15px] font-extrabold tracking-tight text-white">
             MekanAR
           </span>
-          <span className="hidden sm:inline-block h-3.5 w-px bg-stone-300" />
-          <span className="hidden sm:inline text-[11px] font-medium text-stone-500 tracking-wide">
+          <span className="hidden sm:inline-block h-3.5 w-px bg-white/20" />
+          <span className="hidden sm:inline text-[11px] font-medium text-stone-400 tracking-wide">
             Canlı AR &amp; 3B Stüdyo
           </span>
         </a>
 
-        <nav className="hidden lg:flex items-center gap-8 text-xs font-medium text-stone-600">
-          <a href="#deneyim" className="hover:text-stone-950 transition whitespace-nowrap">
+        <nav className="hidden lg:flex items-center gap-8 text-xs font-medium text-stone-300">
+          <a href="#deneyim" className="hover:text-white transition whitespace-nowrap">
             Deneyim
           </a>
-          <a href="#planlayici" className="hover:text-stone-950 transition whitespace-nowrap">
+          <a href="#vitrin" className="hover:text-white transition whitespace-nowrap">
+            3B Vitrin
+          </a>
+          <a href="#planlayici" className="hover:text-white transition whitespace-nowrap">
             Planlayıcı
           </a>
-          <a href="#katalog" className="hover:text-stone-950 transition whitespace-nowrap">
+          <a href="#katalog" className="hover:text-white transition whitespace-nowrap">
             Katalog
           </a>
-          <a href="#uretim" className="hover:text-stone-950 transition whitespace-nowrap">
+          <a href="#uretim" className="hover:text-white transition whitespace-nowrap">
             3B Üretim
           </a>
-          <a href="#yorumlar" className="hover:text-stone-950 transition whitespace-nowrap">
-            Yorumlar
-          </a>
-          <a href="#iletisim" className="hover:text-stone-950 transition whitespace-nowrap">
+          <a href="#iletisim" className="hover:text-white transition whitespace-nowrap">
             İletişim
           </a>
         </nav>
@@ -486,7 +494,7 @@ export function App() {
               setBuilderTab('ai');
               setShowBuilder(true);
             }}
-            className="hidden md:flex items-center gap-1.5 px-3 py-2 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-xs font-semibold transition whitespace-nowrap shrink-0"
+            className="hidden md:flex items-center gap-1.5 px-3 py-2 border border-white/20 hover:border-[#c9a277] bg-white/5 text-white text-xs font-semibold transition whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Ürün Ekle</span>
@@ -496,78 +504,83 @@ export function App() {
             type="button"
             onClick={() =>
               setActiveState({
-                product: heroProduct,
+                product: stageProduct,
                 mode: 'planner',
                 studioPreset: 'living',
               })
             }
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-stone-950 hover:bg-stone-800 text-white text-xs font-semibold transition whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-[#efe9df] text-stone-950 text-xs font-bold transition whitespace-nowrap shrink-0"
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>3B Oda Planlayıcı</span>
+            <span>3B Planlayıcı</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowServer(true)}
-            className="relative p-2 border border-stone-200 hover:border-stone-400 bg-white text-stone-500 hover:text-stone-950 transition shrink-0"
+            className="relative p-2 border border-white/15 hover:border-white/40 bg-white/5 text-stone-300 hover:text-white transition shrink-0"
             aria-label="3B Motor Ayarları"
             title={falReady || runpod3dReady ? '3B GPU Motoru Aktif' : '3B GPU Motoru Ayarları'}
           >
             <Server className="w-3.5 h-3.5" />
             {(falReady || runpod3dReady) && (
-              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-600" />
+              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
             )}
           </button>
         </div>
       </header>
 
-      {/* Mimari Hero — Çarpıcı Koyu Galeri + Canlı İnteraktif 3B & AR Sahnesi */}
-      <section className="relative bg-[#0d0d0c] text-white border-b border-stone-800 overflow-hidden">
+      {/* TAM EKRAN MİMARİ SHOWROOM HERO — Sade Kutu Yok, Tam Atmosferik Lüks */}
+      <section className="relative bg-[#0b0b0a] text-white min-h-[86vh] flex flex-col justify-between overflow-hidden border-b border-stone-800">
         <img
-          src="/rooms/room-oak.jpg"
-          alt="Mimari galeri salonu"
-          className="absolute inset-0 w-full h-full object-cover opacity-25 scale-[1.02] pointer-events-none select-none"
+          src="/rooms/hero-luxury-showroom.jpg"
+          alt="Lüks mimari mobilya galerisi"
+          className="absolute inset-0 w-full h-full object-cover object-center opacity-70 scale-[1.01] pointer-events-none select-none"
         />
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
             background:
-              'linear-gradient(108deg, rgba(12,12,11,0.97) 0%, rgba(16,15,14,0.88) 52%, rgba(18,17,15,0.68) 100%)',
+              'linear-gradient(100deg, rgba(10,10,9,0.92) 0%, rgba(12,12,11,0.72) 44%, rgba(12,12,11,0.28) 78%, rgba(10,10,9,0.52) 100%)',
           }}
         />
-        {/* İnce bronz mimari tavan hattı */}
-        <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-[#b08960]/70 to-transparent pointer-events-none" />
+        <div
+          className="absolute inset-x-0 bottom-0 h-44 pointer-events-none"
+          style={{
+            background: 'linear-gradient(180deg, rgba(11,11,10,0) 0%, rgba(11,11,10,0.94) 100%)',
+          }}
+        />
 
-        <div className="relative max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-24 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-14 items-center">
-          <div className="lg:col-span-6 space-y-7">
+        {/* Ana Editorial Hero İçeriği */}
+        <div className="relative max-w-6xl w-full mx-auto px-4 lg:px-10 pt-20 lg:pt-28 pb-12 flex-1 flex flex-col justify-center">
+          <div className="max-w-2xl space-y-7">
             <div className="flex items-center gap-3">
-              <span className="w-8 h-px bg-[#b08960]" />
-              <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-[#d6b896]">
-                Mobilya Markaları İçin Yeni Nesil Canlı AR
+              <span className="w-10 h-px bg-[#c9a277]" />
+              <p className="text-[11px] font-mono uppercase tracking-[0.24em] text-[#e0c09a]">
+                Mobilya Markaları İçin Canlı AR &amp; 3B Mekân Platformu
               </p>
             </div>
 
-            <h1 className="font-display text-4xl sm:text-5xl lg:text-[54px] font-bold tracking-[-0.025em] text-white leading-[1.06]">
-              Mobilyayı satın almadan kendi odanızda 1:1 görün.
+            <h1 className="font-display text-4xl sm:text-5xl lg:text-[62px] font-bold tracking-[-0.03em] text-white leading-[1.03]">
+              Mobilyayı satın almadan kendi odanızda 1:1 yaşayın.
             </h1>
 
-            <p className="text-sm sm:text-base text-stone-300 leading-relaxed max-w-xl">
-              Uygulama indirmeden yalnızca telefon kamerasıyla mobilyayı gerçek santimetre ölçüsünde
-              zemine yerleştirin; dilerseniz IKEA tarzı 3B Oda Planlayıcıda kendi odanızın
-              ölçülerini girip tüm yerleşimi baştan kurgulayın.
+            <p className="text-sm sm:text-base lg:text-[17px] text-stone-200/90 leading-relaxed max-w-xl font-normal">
+              Uygulama indirmeden telefon kamerasıyla mobilyaları gerçek santimetre ölçüsünde
+              zemine yerleştirin; ayak yüksekliğini ve orantılı boyutu canlı ayarlayın ya da IKEA
+              tarzı 3B Oda Planlayıcıda tüm odayı baştan tasarlayın.
             </p>
 
-            <div className="flex flex-wrap items-center gap-3.5 pt-1">
+            <div className="flex flex-wrap items-center gap-3.5 pt-2">
               <button
                 type="button"
                 onClick={() =>
                   setActiveState({
-                    product: heroProduct,
+                    product: stageProduct,
                     mode: 'ar',
                   })
                 }
-                className="px-7 py-4 bg-white hover:bg-[#f2ede5] text-stone-950 text-xs sm:text-sm font-bold tracking-wide flex items-center gap-2.5 transition whitespace-nowrap shrink-0"
+                className="px-8 py-4 bg-white hover:bg-[#efe9df] text-stone-950 text-xs sm:text-sm font-bold tracking-wide flex items-center gap-2.5 transition whitespace-nowrap shrink-0"
               >
                 <Camera className="w-4 h-4" />
                 <span>Canlı AR ile Odanda Gör</span>
@@ -578,242 +591,169 @@ export function App() {
                 type="button"
                 onClick={() =>
                   setActiveState({
-                    product: heroProduct,
+                    product: stageProduct,
                     mode: 'planner',
                     studioPreset: 'living',
                   })
                 }
-                className="px-6 py-4 border border-stone-500 hover:border-[#d6b896] text-white hover:bg-white/5 text-xs sm:text-sm font-semibold tracking-wide flex items-center gap-2 transition whitespace-nowrap shrink-0"
+                className="px-7 py-4 border border-white/40 hover:border-white bg-black/25 backdrop-blur-md text-white hover:bg-white/10 text-xs sm:text-sm font-semibold tracking-wide flex items-center gap-2 transition whitespace-nowrap shrink-0"
               >
                 <Layers className="w-4 h-4" />
                 <span>3B Oda Planlayıcıyı Aç</span>
               </button>
             </div>
-
-            <div className="grid grid-cols-3 gap-6 pt-8 border-t border-stone-800/90">
-              <div>
-                <p className="text-[11px] font-mono text-[#b08960]">01</p>
-                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1.5">
-                  1:1 Sabit AR Ölçeği
-                </p>
-                <p className="text-[11px] text-stone-400 mt-1 leading-snug">
-                  Milimetrik CAD · Gerçek kamera
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] font-mono text-[#b08960]">02</p>
-                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1.5">
-                  iOS &amp; Android Tarayıcı
-                </p>
-                <p className="text-[11px] text-stone-400 mt-1 leading-snug">
-                  Quick Look &amp; WebXR · Sıfır kurulum
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] font-mono text-[#b08960]">03</p>
-                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1.5">
-                  3B Oda Planlayıcı
-                </p>
-                <p className="text-[11px] text-stone-400 mt-1 leading-snug">
-                  Özel ölçü, zemin &amp; duvar seçimi
-                </p>
-              </div>
-            </div>
           </div>
+        </div>
 
-          {/* Sağ: Galeri Çerçeveli Canlı İnteraktif 3B & AR Vitrini */}
-          <div className="lg:col-span-6 border border-stone-700/80 bg-[#faf8f4] text-stone-950 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
-            <div className="px-4 py-3 border-b border-stone-200 flex items-center justify-between gap-2 overflow-x-auto bg-white">
-              <div className="flex items-center gap-1.5">
-                {featuredProducts.map((fp) => {
-                  const active = fp.id === heroProduct.id;
-                  const shortTitle = fp.name.split(' ')[0];
-                  return (
-                    <button
-                      key={fp.id}
-                      type="button"
-                      onClick={() => setHeroProductId(fp.id)}
-                      className={`px-3 py-1.5 text-[11px] font-semibold border whitespace-nowrap transition ${
-                        active
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-200 bg-white text-stone-600 hover:border-stone-400 hover:text-stone-950'
-                      }`}
-                    >
-                      {shortTitle}
-                    </button>
-                  );
-                })}
-              </div>
-              <span className="text-[11px] font-mono text-stone-500 whitespace-nowrap shrink-0">
-                {heroProduct.dimensionsCm}
-              </span>
-            </div>
-
-            <div className="h-80 sm:h-96 lg:h-[380px] bg-gradient-to-b from-[#f4f1ea] via-[#eee9e0] to-[#e4ded2] relative">
-              <model-viewer
-                src={heroProduct.glbUrl}
-                alt={heroProduct.name}
-                ar
-                ar-modes="webxr scene-viewer quick-look"
-                ar-scale="fixed"
-                ar-placement="floor"
-                camera-controls
-                auto-rotate
-                interaction-prompt="none"
-                shadow-intensity="1.2"
-                shadow-softness="0.85"
-                environment-image="neutral"
-                camera-orbit="25deg 75deg auto"
-                style={{ width: '100%', height: '100%' }}
-              >
-                <button slot="ar-button" style={{ display: 'none' }} aria-hidden="true" />
-              </model-viewer>
-              <span className="absolute bottom-3.5 left-4 text-[10px] font-mono uppercase tracking-[0.14em] text-stone-500 pointer-events-none">
-                360° Sürükle ve İncele · 1:1 AR
-              </span>
-            </div>
-
-            <div className="p-4 sm:p-5 border-t border-stone-200 bg-white flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
-                  {heroProduct.category} · 1:1 Gerçek Ölçü
-                </p>
-                <p className="font-display text-sm sm:text-base font-bold text-stone-950 truncate mt-0.5">
-                  {heroProduct.name}
+        {/* Alt Mimari Bilgi & Hızlı Ürün AR Çubuğu */}
+        <div className="relative border-t border-white/15 bg-black/45 backdrop-blur-md">
+          <div className="max-w-6xl mx-auto px-4 lg:px-10 py-5 grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+            <div className="md:col-span-7 grid grid-cols-3 gap-4 sm:gap-6">
+              <div>
+                <p className="text-[10px] font-mono text-[#c9a277] uppercase tracking-wider">01 · CANLI AR</p>
+                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1">
+                  Ayak &amp; Zemin Kilidi
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQrMode('ar');
-                    setQrFor(heroProduct);
-                  }}
-                  className="p-2.5 border border-stone-300 hover:border-stone-950 text-stone-700 hover:text-stone-950 transition"
-                  title="Telefonda Canlı AR QR Kodu"
-                  aria-label="QR Kod"
-                >
-                  <QrCode className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setActiveState({
-                      product: heroProduct,
-                      mode: 'ar',
-                    })
-                  }
-                  className="px-4 py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold whitespace-nowrap transition"
-                >
-                  Canlı AR&apos;da Gör
-                </button>
+              <div>
+                <p className="text-[10px] font-mono text-[#c9a277] uppercase tracking-wider">02 · PLANLAYICI</p>
+                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1">
+                  Özel Ölçü 3B Oda
+                </p>
               </div>
+              <div>
+                <p className="text-[10px] font-mono text-[#c9a277] uppercase tracking-wider">03 · 3B ÜRETİM</p>
+                <p className="text-xs sm:text-[13px] font-semibold text-white mt-1">
+                  Fotoğraftan 1:1 Model
+                </p>
+              </div>
+            </div>
+
+            <div className="md:col-span-5 flex items-center md:justify-end gap-2 overflow-x-auto">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-stone-400 whitespace-nowrap shrink-0 mr-1">
+                Hızlı AR:
+              </span>
+              {featuredProducts.slice(0, 3).map((fp) => (
+                <button
+                  key={fp.id}
+                  type="button"
+                  onClick={() => setActiveState({ product: fp, mode: 'ar' })}
+                  className="px-3 py-1.5 border border-white/20 hover:border-[#c9a277] hover:bg-white/10 text-[11px] font-medium text-white whitespace-nowrap shrink-0 transition"
+                >
+                  {fp.name.split(' ')[0]} →
+                </button>
+              ))}
             </div>
           </div>
         </div>
       </section>
 
-      {/* Bölüm 01: İki Güçlü Deneyim — Tam Ekran Fotoğraflı Mimari Vitrin */}
-      <section id="deneyim" className="max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-20 border-b border-stone-200">
-        <div className="max-w-2xl mb-10 space-y-2">
-          <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#9c7349]">
-            01 / Çift Katmanlı Mekân Deneyimi
+      {/* Bölüm 01: Çift Katmanlı Deneyim — Tam Fotoğraflı Mimari Karşılaştırma */}
+      <section id="deneyim" className="max-w-6xl mx-auto px-4 lg:px-10 py-18 lg:py-24 border-b border-stone-200">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-12">
+          <div className="max-w-2xl space-y-2">
+            <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#9c7349]">
+              01 / İki Güçlü Deneyim, Tek Platform
+            </p>
+            <h2 className="font-display text-2xl sm:text-4xl font-bold tracking-tight text-stone-950 leading-tight">
+              İster gerçek odanızda canlı kamera AR, ister 3B odada sıfırdan yerleşim
+            </h2>
+          </div>
+          <p className="text-xs text-stone-500 max-w-xs leading-relaxed">
+            iPhone Safari (AR Quick Look) ve Android Chrome (WebXR) üzerinde uygulama yüklemeden anında çalışır.
           </p>
-          <h2 className="font-display text-2xl sm:text-4xl font-bold tracking-tight text-stone-950 leading-tight">
-            İster gerçek kameranızda canlı AR, ister 3B odada baştan yerleşim
-          </h2>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Sol: Canlı Kamera AR */}
-          <article className="group relative border border-stone-300/80 bg-[#111110] text-white overflow-hidden min-h-[380px] flex flex-col justify-end">
+          <article className="group relative border border-stone-300/80 bg-[#0f0f0e] text-white overflow-hidden min-h-[420px] flex flex-col justify-end">
             <img
-              src="/rooms/room-oak.jpg"
+              src="/rooms/ar-studio-editorial.jpg"
               alt="Gerçek odada canlı AR mobilya deneyimi"
               loading="lazy"
-              className="absolute inset-0 w-full h-full object-cover opacity-55 transition duration-700 group-hover:scale-[1.04]"
+              className="absolute inset-0 w-full h-full object-cover opacity-70 transition duration-700 group-hover:scale-[1.04]"
             />
             <div
               className="absolute inset-0 pointer-events-none"
               style={{
                 background:
-                  'linear-gradient(180deg, rgba(14,14,13,0.12) 0%, rgba(14,14,13,0.72) 56%, rgba(12,12,11,0.96) 100%)',
+                  'linear-gradient(180deg, rgba(12,12,11,0.08) 0%, rgba(12,12,11,0.68) 54%, rgba(10,10,9,0.96) 100%)',
               }}
             />
-            <div className="relative p-7 sm:p-9 space-y-4">
-              <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#d6b896]">
-                01 · CANLI KAMERA AR (1:1 ÖLÇEK)
+            <div className="relative p-7 sm:p-10 space-y-4">
+              <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#e0c09a]">
+                01 · CANLI KAMERA AR · DİKEY &amp; YATAY AKILLI REHBER
               </p>
-              <h3 className="font-display text-2xl sm:text-[26px] font-bold leading-snug">
-                Telefon kameranızı odanıza tutun, mobilya gerçek boyutuyla zemine otursun.
+              <h3 className="font-display text-2xl sm:text-[28px] font-bold leading-snug">
+                Ayakları yere oturan, gerçek ölçülü canlı AR yerleşimi.
               </h3>
-              <p className="text-xs sm:text-sm text-stone-300 leading-relaxed max-w-lg">
-                iPhone AR Quick Look ve Android WebXR teknolojisiyle sıfır bulanıklık, gerçek gün
-                ışığı gölgesi ve etrafında yürüyerek inceleme.
+              <p className="text-xs sm:text-sm text-stone-200/90 leading-relaxed max-w-lg">
+                Sistem ürün genişliğine göre kullanıcıya telefonu dikey mi yatay mı tutacağını
+                söyler; canlı AR içindeki yükseklik (cm) ve orantılı ölçek kontrolleriyle mobilya
+                ayakları zemine kusursuz oturur.
               </p>
               <div className="pt-2 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setActiveState({ product: heroProduct, mode: 'ar' })}
-                  className="px-5 py-3 bg-white hover:bg-[#f2ede5] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
+                  onClick={() => setActiveState({ product: stageProduct, mode: 'ar' })}
+                  className="px-6 py-3 bg-white hover:bg-[#efe9df] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
                 >
                   <Camera className="w-4 h-4" />
-                  <span>Canlı AR&apos;ı Başlat</span>
+                  <span>Canlı AR&apos;ı Dene</span>
                   <ArrowUpRight className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     setQrMode('ar');
-                    setQrFor(heroProduct);
+                    setQrFor(stageProduct);
                   }}
                   className="px-4 py-3 border border-white/40 hover:border-white text-white text-xs font-semibold inline-flex items-center gap-1.5 transition"
                 >
                   <QrCode className="w-3.5 h-3.5" />
-                  <span>QR ile Telefonda Aç</span>
+                  <span>Telefondan QR Aç</span>
                 </button>
               </div>
             </div>
           </article>
 
           {/* Sağ: IKEA Tarzı 3B Oda Planlayıcı */}
-          <article className="group relative border border-stone-300/80 bg-[#111110] text-white overflow-hidden min-h-[380px] flex flex-col justify-end">
+          <article className="group relative border border-stone-300/80 bg-[#0f0f0e] text-white overflow-hidden min-h-[420px] flex flex-col justify-end">
             <img
               src="/rooms/room-travertine.jpg"
               alt="3B oda planlayıcı stüdyosu"
               loading="lazy"
-              className="absolute inset-0 w-full h-full object-cover opacity-55 transition duration-700 group-hover:scale-[1.04]"
+              className="absolute inset-0 w-full h-full object-cover opacity-70 transition duration-700 group-hover:scale-[1.04]"
             />
             <div
               className="absolute inset-0 pointer-events-none"
               style={{
                 background:
-                  'linear-gradient(180deg, rgba(14,14,13,0.12) 0%, rgba(14,14,13,0.72) 56%, rgba(12,12,11,0.96) 100%)',
+                  'linear-gradient(180deg, rgba(12,12,11,0.08) 0%, rgba(12,12,11,0.68) 54%, rgba(10,10,9,0.96) 100%)',
               }}
             />
-            <div className="relative p-7 sm:p-9 space-y-4">
-              <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#d6b896]">
+            <div className="relative p-7 sm:p-10 space-y-4">
+              <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#e0c09a]">
                 02 · İNTERAKTİF 3B ODA PLANLAYICI
               </p>
-              <h3 className="font-display text-2xl sm:text-[26px] font-bold leading-snug">
-                Odanızın ölçülerini girin, kendi eşyalarınızı 3B mekânda özgürce dizin.
+              <h3 className="font-display text-2xl sm:text-[28px] font-bold leading-snug">
+                Odanızın ölçülerini girin, kendi eşyalarınızı 3B mekânda dizin.
               </h3>
-              <p className="text-xs sm:text-sm text-stone-300 leading-relaxed max-w-lg">
-                En, derinlik, tavan yüksekliği, parke veya traverten zemin ve duvar rengini anında
-                seçin; mobilyaları çarpışma korumalı yerleştirin ve beğendiğinizi tek tıkla AR&apos;a
-                aktarın.
+              <p className="text-xs sm:text-sm text-stone-200/90 leading-relaxed max-w-lg">
+                En, derinlik, tavan yüksekliği, meşe/ceviz parke ve duvar boyasını anında seçin;
+                mobilyaları çarpışma korumasıyla yerleştirip kuşbakışı veya göz hizasından inceleyin.
               </p>
               <div className="pt-2">
                 <button
                   type="button"
                   onClick={() =>
                     setActiveState({
-                      product: heroProduct,
+                      product: stageProduct,
                       mode: 'planner',
                       studioPreset: 'living',
                     })
                   }
-                  className="px-5 py-3 bg-white hover:bg-[#f2ede5] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
+                  className="px-6 py-3 bg-white hover:bg-[#efe9df] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
                 >
                   <Layers className="w-4 h-4" />
                   <span>3B Oda Planlayıcıyı Aç</span>
@@ -825,27 +765,163 @@ export function App() {
         </div>
       </section>
 
-      {/* Bölüm 02: Hazır Mimari 3B Oda Şablonları */}
-      <section id="planlayici" className="max-w-6xl mx-auto px-4 lg:px-10 py-16 border-b border-stone-200">
+      {/* Bölüm 02: Etkileşimli 360° Müze Vitrini (Özel Galeri Sahnesi) */}
+      <section id="vitrin" className="bg-[#121211] text-white border-b border-stone-800">
+        <div className="max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-20">
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#c9a277]">
+                02 / Etkileşimli 360° Galeri Vitrini
+              </p>
+              <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-white">
+                Her açıyı yakından inceleyin, tek dokunuşla odanıza alın
+              </h2>
+            </div>
+
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              {featuredProducts.map((fp) => {
+                const active = fp.id === stageProduct.id;
+                return (
+                  <button
+                    key={fp.id}
+                    type="button"
+                    onClick={() => setStageProductId(fp.id)}
+                    className={`px-3.5 py-2 text-xs font-semibold border whitespace-nowrap transition ${
+                      active
+                        ? 'border-white bg-white text-stone-950'
+                        : 'border-white/20 bg-white/5 text-stone-300 hover:border-white/50 hover:text-white'
+                    }`}
+                  >
+                    {fp.name.split(' ')[0]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 border border-white/15 bg-[#181715] overflow-hidden">
+            {/* Sol: Geniş 360° 3B Sahne */}
+            <div className="lg:col-span-8 h-80 sm:h-[420px] bg-gradient-to-b from-[#23211e] via-[#1c1b18] to-[#141311] relative">
+              <model-viewer
+                src={stageProduct.glbUrl}
+                alt={stageProduct.name}
+                ar
+                ar-modes="webxr scene-viewer quick-look"
+                ar-scale="auto"
+                ar-placement="floor"
+                xr-environment
+                camera-controls
+                auto-rotate
+                interaction-prompt="none"
+                shadow-intensity="1.4"
+                shadow-softness="0.7"
+                exposure="1.05"
+                environment-image="neutral"
+                camera-orbit="28deg 75deg auto"
+                style={{ width: '100%', height: '100%' }}
+              >
+                <button slot="ar-button" style={{ display: 'none' }} aria-hidden="true" />
+              </model-viewer>
+              <span className="absolute bottom-4 left-5 text-[10px] font-mono uppercase tracking-[0.16em] text-stone-400 pointer-events-none">
+                360° Sürükleyin · Yakınlaştırın
+              </span>
+            </div>
+
+            {/* Sağ: Mimari Ürün Künyesi + Canlı AR & QR */}
+            <div className="lg:col-span-4 p-6 sm:p-8 border-t lg:border-t-0 lg:border-l border-white/15 flex flex-col justify-between gap-6 bg-[#141312]">
+              <div className="space-y-4">
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-[#c9a277]">
+                    {stageProduct.category} · 1:1 CAD MODELİ
+                  </p>
+                  <h3 className="font-display text-xl font-bold text-white mt-1.5 leading-snug">
+                    {stageProduct.name}
+                  </h3>
+                </div>
+
+                <div className="divide-y divide-white/10 border-y border-white/10 text-xs">
+                  <div className="py-2.5 flex items-center justify-between">
+                    <span className="text-stone-400">Gerçek Ölçü</span>
+                    <span className="font-mono font-semibold text-white">{stageProduct.dimensionsCm}</span>
+                  </div>
+                  <div className="py-2.5 flex items-center justify-between">
+                    <span className="text-stone-400">Önerilen AR Tutuşu</span>
+                    <span className="font-semibold text-[#e0c09a] flex items-center gap-1.5">
+                      <Smartphone
+                        className={`w-3.5 h-3.5 ${stageOrient === 'landscape' ? 'rotate-90' : ''}`}
+                      />
+                      <span>{stageOrient === 'landscape' ? 'Yatay Çekim' : 'Dikey Çekim'}</span>
+                    </span>
+                  </div>
+                  <div className="py-2.5 flex items-center justify-between">
+                    <span className="text-stone-400">Zemin &amp; Ölçek</span>
+                    <span className="text-stone-200">Ayak Y-Ayarı · Orantılı %</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveState({ product: stageProduct, mode: 'ar' })}
+                  className="w-full py-3.5 bg-white hover:bg-[#efe9df] text-stone-950 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition"
+                >
+                  <Camera className="w-4 h-4" />
+                  <span>Odanda Canlı AR Gör</span>
+                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setActiveState({
+                        product: stageProduct,
+                        mode: 'planner',
+                        studioPreset: 'living',
+                      })
+                    }
+                    className="py-2.5 border border-white/25 hover:border-white text-white text-xs font-semibold transition"
+                  >
+                    3B Odada Dene
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQrMode('ar');
+                      setQrFor(stageProduct);
+                    }}
+                    className="py-2.5 border border-white/25 hover:border-[#c9a277] text-stone-200 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>QR Kod</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Bölüm 03: Hazır Mimari 3B Oda Şablonları */}
+      <section id="planlayici" className="max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-20 border-b border-stone-200">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-10">
           <div className="space-y-1.5">
             <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#9c7349]">
-              02 / Hazır 3B Oda Şablonları
+              03 / IKEA Tarzı 3B Oda Planlayıcı
             </p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-stone-950">
-              Bir salon seçin veya kendi oda ölçülerinizi girip hemen tasarlayın
+              Hazır salon şablonu seçin veya kendi oda ölçülerinizi girin
             </h2>
           </div>
           <button
             type="button"
             onClick={() =>
               setActiveState({
-                product: heroProduct,
+                product: stageProduct,
                 mode: 'planner',
                 studioPreset: 'living',
               })
             }
-            className="px-4 py-2.5 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 text-xs font-bold transition whitespace-nowrap shrink-0 self-start md:self-auto"
+            className="px-5 py-3 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 text-xs font-bold transition whitespace-nowrap shrink-0 self-start md:self-auto"
           >
             Özel Ölçüde Oda Kur →
           </button>
@@ -880,7 +956,7 @@ export function App() {
                   type="button"
                   onClick={() =>
                     setActiveState({
-                      product: heroProduct,
+                      product: stageProduct,
                       mode: 'planner',
                       studioPreset: preset.id,
                     })
@@ -895,20 +971,20 @@ export function App() {
         </div>
       </section>
 
-      {/* Bölüm 03: 1:1 Gerçek Ölçülü Canlı AR & 3B Mobilya Kataloğu */}
+      {/* Bölüm 04: 1:1 Gerçek Ölçülü Canlı AR & 3B Mobilya Kataloğu */}
       <main id="katalog" className="bg-white border-b border-stone-200">
         <div className="max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-20">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-6 mb-6 border-b border-stone-200">
             <div className="space-y-1.5">
               <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#9c7349]">
-                03 / 1:1 Canlı AR Ürün Kataloğu
+                04 / 1:1 Canlı AR Ürün Kataloğu
               </p>
               <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-stone-950">
                 Gerçek Santimetre Ölçülü Mobilya Koleksiyonu
               </h2>
               <p className="text-sm text-stone-600 max-w-2xl">
-                Her parça gerçek ölçüsünde ve zemin hizalıdır. İstediğiniz ürünü telefon kamerasıyla
-                doğrudan odanıza yerleştirin veya 3B Oda Planlayıcıda diğer eşyalarla eşleştirin.
+                Her parça gerçek ölçüsünde ve zemin hizalıdır. Ürün boyutuna göre yatay veya dikey
+                çekim yönlendirmesi otomatik çıkar.
               </p>
             </div>
             <button
@@ -951,93 +1027,99 @@ export function App() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredProducts.map((p, idx) => (
-              <article
-                key={p.id}
-                className="group border border-stone-200 hover:border-stone-500 flex flex-col bg-white transition"
-              >
-                <div className="h-64 bg-[#f3efe8] border-b border-stone-200/80 flex items-center justify-center overflow-hidden relative">
-                  {p.thumbUrl ? (
-                    <img
-                      src={p.thumbUrl}
-                      alt={p.name}
-                      loading="lazy"
-                      className="w-full h-full object-contain p-5 transition duration-500 group-hover:scale-[1.04]"
-                    />
-                  ) : (
-                    <model-viewer
-                      src={p.glbUrl}
-                      loading="lazy"
-                      camera-controls
-                      auto-rotate
-                      interaction-prompt="none"
-                      shadow-intensity="1"
-                      environment-image="neutral"
-                      style={{ width: '100%', height: '100%' }}
-                    />
-                  )}
-                  <span className="absolute top-3 left-3.5 text-[10px] font-mono text-stone-400">
-                    {String(idx + 1).padStart(2, '0')}
-                  </span>
-                </div>
-
-                <div className="p-5 flex items-start justify-between gap-3 flex-1">
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
-                      {p.category} ·{' '}
-                      {p.source === 'ikea-cad'
-                        ? 'Resmi CAD'
-                        : p.source === 'studyo-cad'
-                        ? 'Stüdyo PBR'
-                        : 'Özel 3B'}
-                    </p>
-                    <h3 className="font-display text-sm font-bold text-stone-950 mt-1">{p.name}</h3>
-                    <p className="text-xs font-mono text-stone-500 mt-1">{p.dimensionsCm}</p>
+            {filteredProducts.map((p, idx) => {
+              const orient = getOrientationGuide(p.dimensionsCm);
+              return (
+                <article
+                  key={p.id}
+                  className="group border border-stone-200 hover:border-stone-500 flex flex-col bg-white transition"
+                >
+                  <div className="h-64 bg-[#f3efe8] border-b border-stone-200/80 flex items-center justify-center overflow-hidden relative">
+                    {p.thumbUrl ? (
+                      <img
+                        src={p.thumbUrl}
+                        alt={p.name}
+                        loading="lazy"
+                        className="w-full h-full object-contain p-5 transition duration-500 group-hover:scale-[1.04]"
+                      />
+                    ) : (
+                      <model-viewer
+                        src={p.glbUrl}
+                        loading="lazy"
+                        camera-controls
+                        auto-rotate
+                        interaction-prompt="none"
+                        shadow-intensity="1"
+                        environment-image="neutral"
+                        style={{ width: '100%', height: '100%' }}
+                      />
+                    )}
+                    <span className="absolute top-3 left-3.5 text-[10px] font-mono text-stone-400">
+                      {String(idx + 1).padStart(2, '0')}
+                    </span>
+                    <span className="absolute bottom-2.5 right-3 text-[10px] font-mono text-stone-500 bg-white/85 px-2 py-0.5 border border-stone-200/80">
+                      {orient === 'landscape' ? 'AR: Yatay' : 'AR: Dikey'}
+                    </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQrMode('ar');
-                      setQrFor(p);
-                    }}
-                    className="p-1.5 border border-stone-200 hover:border-stone-950 bg-white shrink-0 transition"
-                    aria-label="Canlı AR QR Kodu"
-                    title="Telefonda Canlı AR açmak için QR kod"
-                  >
-                    <QRCodeSVG value={qrUrl(p, 'ar')} size={50} />
-                  </button>
-                </div>
 
-                <div className="px-5 pb-5 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setActiveState({ product: p, mode: 'ar' })}
-                    className="py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold tracking-wide transition whitespace-nowrap"
-                  >
-                    Canlı AR&apos;da Gör
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setActiveState({ product: p, mode: 'planner', studioPreset: 'living' })
-                    }
-                    className="py-2.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-xs font-semibold transition whitespace-nowrap"
-                  >
-                    3B Odada Dene
-                  </button>
-                </div>
-              </article>
-            ))}
+                  <div className="p-5 flex items-start justify-between gap-3 flex-1">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
+                        {p.category} ·{' '}
+                        {p.source === 'ikea-cad'
+                          ? 'Resmi CAD'
+                          : p.source === 'studyo-cad'
+                          ? 'Stüdyo PBR'
+                          : 'Özel 3B'}
+                      </p>
+                      <h3 className="font-display text-sm font-bold text-stone-950 mt-1">{p.name}</h3>
+                      <p className="text-xs font-mono text-stone-500 mt-1">{p.dimensionsCm}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQrMode('ar');
+                        setQrFor(p);
+                      }}
+                      className="p-1.5 border border-stone-200 hover:border-stone-950 bg-white shrink-0 transition"
+                      aria-label="Canlı AR QR Kodu"
+                      title="Telefonda Canlı AR açmak için QR kod"
+                    >
+                      <QRCodeSVG value={qrUrl(p, 'ar')} size={50} />
+                    </button>
+                  </div>
+
+                  <div className="px-5 pb-5 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveState({ product: p, mode: 'ar' })}
+                      className="py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold tracking-wide transition whitespace-nowrap"
+                    >
+                      Canlı AR&apos;da Gör
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setActiveState({ product: p, mode: 'planner', studioPreset: 'living' })
+                      }
+                      className="py-2.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-xs font-semibold transition whitespace-nowrap"
+                    >
+                      3B Odada Dene
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </div>
       </main>
 
-      {/* Bölüm 04: Tek Eşyadan 1:1 AR-Hazır 3B Üretim Stüdyosu */}
+      {/* Bölüm 05: Tek Eşyadan 1:1 AR-Hazır 3B Üretim Stüdyosu */}
       <section id="uretim" className="bg-[#0e0e0d] text-white border-b border-stone-800">
         <div className="max-w-6xl mx-auto px-4 lg:px-10 py-16 lg:py-20 grid grid-cols-1 lg:grid-cols-12 gap-10 items-center">
           <div className="lg:col-span-5 space-y-4">
-            <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#d6b896]">
-              04 / Fotoğraftan 1:1 3B Stüdyosu
+            <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#e0c09a]">
+              05 / Fotoğraftan 1:1 3B Stüdyosu
             </p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold leading-snug">
               Herhangi bir mobilyayı saniyeler içinde 1:1 AR-hazır 3B modele dönüştürün.
@@ -1056,7 +1138,7 @@ export function App() {
                   setBuilderTab('ai');
                   setShowBuilder(true);
                 }}
-                className="px-6 py-3.5 bg-white hover:bg-[#f2ede5] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
+                className="px-6 py-3.5 bg-white hover:bg-[#efe9df] text-stone-950 text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition"
               >
                 <Camera className="w-4 h-4" />
                 <span>Fotoğraftan 3B Üret</span>
@@ -1068,7 +1150,7 @@ export function App() {
                   setBuilderTab('cad');
                   setShowBuilder(true);
                 }}
-                className="px-5 py-3.5 border border-stone-600 hover:border-[#d6b896] text-white text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-2 transition"
+                className="px-5 py-3.5 border border-stone-600 hover:border-[#c9a277] text-white text-xs font-semibold uppercase tracking-wider inline-flex items-center gap-2 transition"
               >
                 <Upload className="w-4 h-4" />
                 <span>CAD Dosyası Yükle</span>
@@ -1078,7 +1160,7 @@ export function App() {
 
           <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 border-t sm:border-t-0 sm:border-l border-stone-800 pt-8 sm:pt-0 sm:pl-9 gap-7">
             <div className="space-y-2.5">
-              <p className="text-xs font-mono text-[#b08960]">ADIM 01</p>
+              <p className="text-xs font-mono text-[#c9a277]">ADIM 01</p>
               <h3 className="text-sm font-bold text-white">Fotoğraf veya CAD</h3>
               <p className="text-xs text-stone-400 leading-relaxed">
                 Mobilyanın önden ve yanlardan 1–4 fotoğrafı ile gerçek En × Derinlik × Yükseklik
@@ -1086,7 +1168,7 @@ export function App() {
               </p>
             </div>
             <div className="space-y-2.5">
-              <p className="text-xs font-mono text-[#b08960]">ADIM 02</p>
+              <p className="text-xs font-mono text-[#c9a277]">ADIM 02</p>
               <h3 className="text-sm font-bold text-white">1:1 PBR 3B Modelleme</h3>
               <p className="text-xs text-stone-400 leading-relaxed">
                 Bulut yapay zekâ hattı dokulu 3B modeli ve gerçek kumaş/ahşap PBR yüzey haritalarını
@@ -1094,7 +1176,7 @@ export function App() {
               </p>
             </div>
             <div className="space-y-2.5">
-              <p className="text-xs font-mono text-[#b08960]">ADIM 03</p>
+              <p className="text-xs font-mono text-[#c9a277]">ADIM 03</p>
               <h3 className="text-sm font-bold text-white">Canlı AR &amp; 3B Planlayıcı</h3>
               <p className="text-xs text-stone-400 leading-relaxed">
                 Ürün anında QR kodla iPhone AR Quick Look, Android WebXR ve 3B Oda Planlayıcıda
@@ -1105,15 +1187,15 @@ export function App() {
         </div>
       </section>
 
-      {/* Bölüm 05: Kurumsal Yetenekler (01–06 Mimari Izgara) */}
+      {/* Kurumsal Yetenekler (01–06 Mimari Izgara) */}
       <section className="bg-[#f3efe8] border-b border-stone-200">
         <div className="max-w-6xl mx-auto px-4 lg:px-10 py-16">
           <div className="max-w-2xl mb-10 space-y-1.5">
             <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#9c7349]">
-              05 / Kurumsal Altyapı
+              Kurumsal Mühendislik
             </p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-stone-950">
-              Showroom ve e-ticaret dönüşümünü artıran mühendislik
+              Showroom ve e-ticaret dönüşümünü artıran altyapı
             </h2>
           </div>
 
@@ -1121,23 +1203,23 @@ export function App() {
             {[
               {
                 no: '01',
-                title: 'iPhone Quick Look & Android WebXR',
-                desc: 'Uygulama indirmeden iPhone Safari ve Android Chrome kameralarında 1:1 sabit ölçekli canlı AR çalışır. LiDAR cihazlarda gerçek eşya arkası gizleme desteklenir.',
+                title: 'Akıllı Yatay / Dikey AR Rehberi',
+                desc: 'Geniş koltuk ve masalar için yatay, berjer ve kitaplıklar için dikey çekim yönlendirmesi vererek odanın her köşesinde hatasız yerleşim sağlar.',
               },
               {
                 no: '02',
+                title: 'Canlı Zemin Yüksekliği & Orantılı Ölçek',
+                desc: 'Kamera içindeki santimetrik aşağı/yukarı ayarıyla mobilya ayakları zemine tam basar; boyut yalnızca orantılı olarak değiştirilebilir.',
+              },
+              {
+                no: '03',
                 title: 'IKEA Tarzı 3B Oda Planlayıcı',
                 desc: 'Müşteri kendi odasının en, derinlik, tavan yüksekliği, zemin parkesi ve duvar rengini girip birden fazla mobilyayı çarpışma kontrollü dizebilir.',
               },
               {
-                no: '03',
-                title: 'Fotoğraftan Saniyeler İçinde 3B',
-                desc: 'CAD çizimi bulunmayan koleksiyonlar yalnızca birkaç net ürün fotoğrafından dokulu 3B modele çevrilir ve aynı gün AR kataloğuna eklenir.',
-              },
-              {
                 no: '04',
-                title: 'Otomatik 1:1 Metre & Taban Hizası',
-                desc: 'Tüm .GLB, .OBJ ve .STL dosyaları gerçek santimetre ölçüsüne ölçeklenip tabanı tam y=0 zeminine oturtulur; odada havada durma veya yanlış oran yaşanmaz.',
+                title: 'Fotoğraftan Saniyeler İçinde 3B',
+                desc: 'CAD çizimi bulunmayan koleksiyonlar yalnızca birkaç ürün fotoğrafından dokulu 3B modele çevrilir ve aynı gün AR kataloğuna eklenir.',
               },
               {
                 no: '05',
@@ -1147,7 +1229,7 @@ export function App() {
               {
                 no: '06',
                 title: 'Ölçü Kaynaklı İadeleri Azaltır',
-                desc: 'Müşteri koltuğun veya masanın kapı açıklığına, halı düzenine ve duvar uzunluğuna uyduğunu canlı gördüğü için ağır nakliye iadeleri belirgin şekilde düşer.',
+                desc: 'Müşteri koltuğun veya masanın kapı açıklığına, halı düzenine ve duvar uzunluğuna uyduğunu canlı gördüğü için ağır nakliye iadeleri düşer.',
               },
             ].map((feat) => (
               <div
@@ -1349,7 +1431,7 @@ export function App() {
       </section>
 
       {/* Kurumsal Footer */}
-      <footer className="bg-[#0d0d0c] text-stone-400">
+      <footer className="bg-[#0b0b0a] text-stone-400">
         <div className="max-w-6xl mx-auto px-4 lg:px-10 py-9 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
           <div className="flex items-center gap-2.5 text-white">
             <span className="font-display font-bold tracking-tight">MekanAR</span>
@@ -1359,6 +1441,9 @@ export function App() {
           <div className="flex items-center gap-6 text-[11px]">
             <a href="#deneyim" className="hover:text-white transition">
               Deneyim
+            </a>
+            <a href="#vitrin" className="hover:text-white transition">
+              3B Vitrin
             </a>
             <a href="#planlayici" className="hover:text-white transition">
               Planlayıcı
@@ -1379,7 +1464,7 @@ export function App() {
           type="button"
           onClick={() =>
             setActiveState({
-              product: heroProduct,
+              product: stageProduct,
               mode: 'planner',
               studioPreset: 'living',
             })
@@ -1392,7 +1477,7 @@ export function App() {
           type="button"
           onClick={() =>
             setActiveState({
-              product: heroProduct,
+              product: stageProduct,
               mode: 'ar',
             })
           }
@@ -1414,9 +1499,16 @@ export function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
-              <h3 className="font-display text-sm font-bold text-left truncate text-stone-950">
-                {qrFor.name}
-              </h3>
+              <div className="text-left min-w-0">
+                <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
+                  {getOrientationGuide(qrFor.dimensionsCm) === 'landscape'
+                    ? 'Önerilen AR Tutuşu: YATAY'
+                    : 'Önerilen AR Tutuşu: DİKEY'}
+                </p>
+                <h3 className="font-display text-sm font-bold truncate text-stone-950">
+                  {qrFor.name}
+                </h3>
+              </div>
               <button
                 type="button"
                 onClick={() => setQrFor(null)}
@@ -1453,7 +1545,9 @@ export function App() {
             </div>
             <p className="text-xs text-stone-600 leading-relaxed">
               {qrMode === 'ar'
-                ? 'Telefon kamerasıyla okutun; ürün iPhone AR Quick Look veya Android WebXR ile odanızın zemininde 1:1 canlı açılsın.'
+                ? getOrientationGuide(qrFor.dimensionsCm) === 'landscape'
+                  ? 'Telefon kamerasıyla okutun; aydınlık zeminde telefonu YATAY tutarak ürünü 1:1 yerleştirin.'
+                  : 'Telefon kamerasıyla okutun; aydınlık zeminde telefonu DİKEY tutarak ürünü 1:1 yerleştirin.'
                 : 'Telefon kamerasıyla okutun ve ürünü 3B Oda Planlayıcıda diğer eşyalarla düzenleyin.'}
             </p>
             <button
@@ -1502,7 +1596,7 @@ export function App() {
                 }}
                 className={`py-2.5 border-b-2 transition ${
                   builderTab === 'ai'
-                    ? 'border-[#d6b896] text-white'
+                    ? 'border-[#c9a277] text-white'
                     : 'border-transparent text-stone-400 hover:text-stone-200'
                 }`}
               >
@@ -1516,7 +1610,7 @@ export function App() {
                 }}
                 className={`py-2.5 border-b-2 transition ${
                   builderTab === 'cad'
-                    ? 'border-[#d6b896] text-white'
+                    ? 'border-[#c9a277] text-white'
                     : 'border-transparent text-stone-400 hover:text-stone-200'
                 }`}
               >
@@ -1721,7 +1815,7 @@ export function App() {
         </div>
       )}
 
-      {/* Yönetici 3B GPU Motoru Ayarları Modalı (Sadece Kurulum İçin) */}
+      {/* Yönetici 3B GPU Motoru Ayarları Modalı */}
       {showServer && (
         <div
           className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"

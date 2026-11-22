@@ -11,6 +11,8 @@ declare global {
           'ar-modes'?: string;
           'ar-scale'?: string;
           'ar-placement'?: string;
+          'xr-environment'?: boolean;
+          scale?: string;
           'camera-controls'?: boolean;
           'auto-rotate'?: boolean;
           'touch-action'?: string;
