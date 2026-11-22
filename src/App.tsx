@@ -23,6 +23,7 @@ import { DEMO_STUDIO_PRESETS, type DemoStudioPresetId } from './lib/demoRooms';
 import {
   DEALER_PLANS,
   PRODUCT_3D_ENGINES,
+  RUNPOD_GPU_TIERS,
   getActivePlan,
   getMembershipState,
   recordGeneratedProduct3D,
@@ -32,6 +33,7 @@ import {
   type ActiveAiEngine,
   type MembershipState,
   type Product3DEngineId,
+  type RunpodGpuTierId,
 } from './lib/membership';
 import {
   fetchProduct3DConfig,
@@ -194,22 +196,28 @@ export function App() {
   const [demoNote, setDemoNote] = useState('');
   const [demoSubmitted, setDemoSubmitted] = useState(false);
 
-  // B2B Paket, Serverless 3B Üretim Motoru & Maliyet Hesaplayıcı
+  // B2B Paket, RunPod Serverless 3B Üretim Motoru & Maliyet Hesaplayıcı
   const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
   const [server3dCfg, setServer3dCfg] = useState<Product3DServerConfig>({
     falConfigured: false,
     runpod3dConfigured: false,
+    defaultRunpodTier: 'RTX4090',
   });
   const [cfgFalKey, setCfgFalKey] = useState(() => getMembershipState().falApiKey);
   const [cfgRpEp, setCfgRpEp] = useState(() => getMembershipState().runpod3dEndpointId);
   const [cfgRpKey, setCfgRpKey] = useState(() => getMembershipState().runpodApiKey);
+  const [cfgRpTier, setCfgRpTier] = useState<RunpodGpuTierId>(
+    () => getMembershipState().runpodGpuTier
+  );
   const [cfgEngine, setCfgEngine] = useState<ActiveAiEngine>(
     () => getMembershipState().preferredAiEngine
   );
 
-  // Birim Ekonomisi Hesaplayıcı
-  const [calcEngine, setCalcEngine] = useState<Product3DEngineId>('fal_trellis');
-  const [calcNewSkus, setCalcNewSkus] = useState(60);
+  // Birim Ekonomisi Hesaplayıcı (RunPod Flex Saniye Bazlı + 5 sn Idle Timeout)
+  const [calcEngine, setCalcEngine] = useState<Product3DEngineId>('runpod_4090');
+  const [calcExecSec, setCalcExecSec] = useState(20);
+  const [calcIdleSec, setCalcIdleSec] = useState(5);
+  const [calcNewSkus, setCalcNewSkus] = useState(80);
   const [calcMonthlyArViews, setCalcMonthlyArViews] = useState(12000);
 
   // CAD & AI 3B Ürün Oluşturucu
@@ -240,6 +248,7 @@ export function App() {
     setCfgFalKey(st.falApiKey);
     setCfgRpEp(st.runpod3dEndpointId);
     setCfgRpKey(st.runpodApiKey);
+    setCfgRpTier(st.runpodGpuTier);
     setCfgEngine(st.preferredAiEngine);
     fetchProduct3DConfig().then(setServer3dCfg);
   }, [showServer, showBuilder]);
@@ -311,6 +320,7 @@ export function App() {
         falApiKey: memberState.falApiKey || undefined,
         runpodApiKey: memberState.runpodApiKey || undefined,
         runpod3dEndpointId: memberState.runpod3dEndpointId || undefined,
+        runpodGpuTier: memberState.runpodGpuTier,
         onProgress: (m) => setGenMsg(m),
       });
 
@@ -415,8 +425,13 @@ export function App() {
 
   const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=ar`;
   const activePlan = getActivePlan(memberState);
+  const activeRpSpec = RUNPOD_GPU_TIERS[memberState.runpodGpuTier];
   const engineSpec = PRODUCT_3D_ENGINES[calcEngine];
-  const monthly3dCostUsd = engineSpec.costPerProductUsd * calcNewSkus;
+  const perProductCostUsd =
+    engineSpec.isRunpod && engineSpec.ratePerSecUsd
+      ? (calcExecSec + calcIdleSec) * engineSpec.ratePerSecUsd
+      : engineSpec.costPerProductUsd;
+  const monthly3dCostUsd = perProductCostUsd * calcNewSkus;
   const approxUsdToTry = 38;
   const monthlyCostTry = monthly3dCostUsd * approxUsdToTry;
   const estMarginPct = Math.max(
@@ -612,8 +627,8 @@ export function App() {
               </div>
               <div>
                 <p className="text-[11px] font-mono text-stone-500">03</p>
-                <p className="text-xs font-semibold text-white mt-1">~$0.02 Fotoğraftan 3B</p>
-                <p className="text-[11px] text-stone-400 mt-0.5">Sunucusuz GPU · Boşta $0</p>
+                <p className="text-xs font-semibold text-white mt-1">~$0.008 Fotoğraftan 3B</p>
+                <p className="text-[11px] text-stone-400 mt-0.5">RunPod Flex · Boşta $0</p>
               </div>
             </div>
           </div>
@@ -794,9 +809,9 @@ export function App() {
               Bir mobilyayı ~20 saniyede 1:1 3B hale getirip odanın her yerinde AR ile gösterin.
             </h3>
             <p className="text-xs sm:text-sm text-stone-300 leading-relaxed">
-              Boşta bekleyen GPU sunucu kirası ödemeden yalnızca yeni ürün eklerken sunucusuz GPU
-              (TRELLIS ~$0.02 veya Hunyuan3D v2) çalışır; gerçek santimetre ölçüsü ve zemin hizası
-              otomatik uygulanır. Müşteri AR denemeleri ise tamamen ücretsizdir.
+              RunPod Serverless Flex (boşta $0, RTX 4090 $0.00031/sn ≈ ~$0.008/ürün) yalnızca yeni
+              ürün eklerken çalışır; gerçek santimetre ölçüsü ve zemin hizası otomatik uygulanır.
+              Müşteri AR denemeleri ise tamamen ücretsizdir.
             </p>
             <div className="flex flex-wrap gap-2.5 pt-2">
               <button
@@ -839,8 +854,8 @@ export function App() {
               <p className="text-xs font-mono text-stone-500">ADIM 02</p>
               <h4 className="text-sm font-bold text-white">1:1 Metrik .GLB Paketleme</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Sunucusuz GPU (TRELLIS $0.02 / RunPod L40S $0.012 / Hunyuan3D $0.48) dokulu 3B
-                modeli üretir; sistem tabanı tam y=0 ve gerçek santimetreye hizalar.
+                RunPod Flex GPU (RTX 4090 ~$0.008 · L40S ~$0.011 · veya harici TRELLIS $0.02)
+                dokulu 3B modeli üretir; sistem tabanı tam y=0 ve gerçek santimetreye hizalar.
               </p>
             </div>
             <div className="space-y-2">
@@ -1300,29 +1315,72 @@ export function App() {
                 <div className="lg:col-span-6 border border-stone-200 bg-white p-5 space-y-4">
                   <div className="border-b border-stone-200 pb-3">
                     <p className="text-[10px] font-mono text-stone-500 uppercase">
-                      Sunucusuz GPU &amp; WebAR Birim Ekonomisi
+                      RunPod Serverless Flex &amp; WebAR Birim Ekonomisi
                     </p>
                     <h3 className="text-sm font-bold text-stone-950">
-                      Ürün Başına Tek Seferlik 3B Maliyeti · Sınırsız $0 AR
+                      Gerçek Saniye Tarifesi · Active=0 / Boşta $0 · Sınırsız AR
                     </h3>
                   </div>
 
                   <div className="space-y-3 text-xs">
                     <div className="space-y-1">
-                      <label className="block font-semibold text-stone-700">3B Ürün Üretim Yöntemi</label>
+                      <label className="block font-semibold text-stone-700">
+                        3B Ürün Üretim Motoru &amp; RunPod GPU Sınıfı
+                      </label>
                       <select
                         value={calcEngine}
-                        onChange={(e) => setCalcEngine(e.target.value as Product3DEngineId)}
+                        onChange={(e) => {
+                          const nextId = e.target.value as Product3DEngineId;
+                          setCalcEngine(nextId);
+                          setCalcExecSec(PRODUCT_3D_ENGINES[nextId].avgSec);
+                        }}
                         className="w-full px-3 py-2 bg-[#faf9f6] border border-stone-300 text-xs font-medium text-stone-950"
                       >
                         {Object.values(PRODUCT_3D_ENGINES).map((eng) => (
                           <option key={eng.id} value={eng.id}>
-                            {eng.name} — ${eng.costPerProductUsd.toFixed(3)}/ürün
+                            {eng.name} —{' '}
+                            {eng.isRunpod && eng.ratePerSecUsd
+                              ? `$${eng.ratePerSecUsd.toFixed(5)}/sn (~$${eng.costPerProductUsd.toFixed(4)}/ürün)`
+                              : `$${eng.costPerProductUsd.toFixed(3)}/ürün`}
                           </option>
                         ))}
                       </select>
                       <p className="text-[11px] text-stone-500">{engineSpec.note}</p>
                     </div>
+
+                    {engineSpec.isRunpod && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-stone-700">GPU İşlem Süresi</span>
+                            <span className="font-mono font-bold text-stone-950">{calcExecSec} sn</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={10}
+                            max={60}
+                            value={calcExecSec}
+                            onChange={(e) => setCalcExecSec(Number(e.target.value))}
+                            className="w-full accent-stone-950"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-stone-700">RunPod Idle Timeout</span>
+                            <span className="font-mono font-bold text-stone-950">{calcIdleSec} sn</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={5}
+                            max={30}
+                            step={5}
+                            value={calcIdleSec}
+                            onChange={(e) => setCalcIdleSec(Number(e.target.value))}
+                            className="w-full accent-stone-950"
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     <div className="space-y-1">
                       <div className="flex items-center justify-between">
@@ -1362,20 +1420,29 @@ export function App() {
                   <div className="grid grid-cols-3 gap-2.5 pt-2 border-t border-stone-200">
                     <div className="bg-[#faf9f6] border border-stone-200 p-3">
                       <span className="text-[10px] text-stone-500 block">1 Ürün 3B Bedeli</span>
-                      <span className="text-sm font-mono font-bold text-stone-950">
-                        ${engineSpec.costPerProductUsd.toFixed(3)}
+                      <span className="text-sm font-mono font-bold text-stone-950 block">
+                        ${perProductCostUsd.toFixed(4)}
+                      </span>
+                      <span className="text-[10px] font-mono text-stone-500">
+                        ≈ {(perProductCostUsd * approxUsdToTry).toFixed(2)} ₺
                       </span>
                     </div>
                     <div className="bg-[#faf9f6] border border-stone-200 p-3">
                       <span className="text-[10px] text-stone-500 block">Aylık GPU Gideri</span>
-                      <span className="text-sm font-mono font-bold text-stone-950">
+                      <span className="text-sm font-mono font-bold text-stone-950 block">
                         ${monthly3dCostUsd.toFixed(2)}
+                      </span>
+                      <span className="text-[10px] font-mono text-stone-500">
+                        ≈ {Math.round(monthlyCostTry).toLocaleString('tr-TR')} ₺
                       </span>
                     </div>
                     <div className="bg-[#faf9f6] border border-stone-200 p-3">
                       <span className="text-[10px] text-stone-500 block">Tahmini Brüt Kâr</span>
-                      <span className="text-sm font-mono font-bold text-emerald-700">
+                      <span className="text-sm font-mono font-bold text-emerald-700 block">
                         %{estMarginPct.toFixed(1)}
+                      </span>
+                      <span className="text-[10px] font-mono text-stone-500">
+                        Boşta $0 kira
                       </span>
                     </div>
                   </div>
@@ -1778,9 +1845,12 @@ export function App() {
                       onChange={(e) => setAiEngineChoice(e.target.value as ActiveAiEngine)}
                       className="w-full px-3 py-2 text-xs bg-stone-900 border border-stone-800 text-white"
                     >
-                      <option value="trellis">fal.ai TRELLIS — $0.02 / ürün (Hızlı Çok-Açılı)</option>
-                      <option value="hunyuan">fal.ai Hunyuan3D v2 — $0.48 / ürün (Stüdyo PBR)</option>
-                      <option value="runpod">RunPod Serverless L40S — ~$0.012 / ürün (Kendi GPU)</option>
+                      <option value="runpod">
+                        RunPod Serverless ({activeRpSpec.cards}) — ${activeRpSpec.flexRatePerSecUsd.toFixed(5)}/sn (~$
+                        {((activeRpSpec.avgProductSec + 5) * activeRpSpec.flexRatePerSecUsd).toFixed(4)}/ürün)
+                      </option>
+                      <option value="trellis">fal.ai TRELLIS — $0.02 / ürün (Harici API)</option>
+                      <option value="hunyuan">fal.ai Hunyuan3D v2 — $0.48 / ürün (Harici PBR API)</option>
                     </select>
                   </div>
 
@@ -1921,44 +1991,10 @@ export function App() {
               </button>
             </div>
 
-            <div className="space-y-3 border border-stone-200 p-3.5 bg-[#faf9f6]">
+            <div className="space-y-3 border border-stone-950 p-3.5 bg-[#faf9f6]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-stone-950">
-                  1) fal.ai (TRELLIS $0.02 · Hunyuan3D v2 $0.48)
-                </span>
-                <span
-                  className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
-                    falReady
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 bg-white text-stone-600'
-                  }`}
-                >
-                  {server3dCfg.falConfigured ? 'Vercel Env Aktif' : memberState.falApiKey ? 'Bağlı' : 'Kapalı'}
-                </span>
-              </div>
-              <p className="text-[11px] text-stone-600 leading-relaxed">
-                Boşta sunucu kirası $0. Üretimde Vercel ortam değişkeni olarak{' '}
-                <code className="px-1 py-0.5 bg-stone-200/80 font-mono text-[10px]">FAL_KEY</code>{' '}
-                ekleyebilir veya hemen test için aşağıya girebilirsiniz.
-              </p>
-              <div>
-                <label className="block text-[11px] font-semibold text-stone-700 mb-1">
-                  fal.ai API Anahtarı
-                </label>
-                <input
-                  type="password"
-                  value={cfgFalKey}
-                  onChange={(e) => setCfgFalKey(e.target.value)}
-                  placeholder="fal_..."
-                  className="w-full px-3 py-2 bg-white border border-stone-300 text-xs font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2.5 border border-stone-200 p-3.5 bg-[#faf9f6]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-stone-950">
-                  2) RunPod Serverless L40S (~$0.012 / ürün)
+                  1) RunPod Serverless Flex (Önerilen · Boşta $0)
                 </span>
                 <span
                   className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
@@ -1971,14 +2007,43 @@ export function App() {
                     ? 'Vercel Env Aktif'
                     : memberState.runpod3dEndpointId
                     ? 'Bağlı'
-                    : 'Opsiyonel'}
+                    : 'Yapılandırılmadı'}
                 </span>
               </div>
+
+              <div className="p-2.5 bg-white border border-stone-200 text-[11px] text-stone-700 space-y-1 leading-relaxed">
+                <p className="font-bold text-stone-950">RunPod Panelinde Sıfır İsraf Ayarları:</p>
+                <p className="font-mono text-[10px] text-stone-600">
+                  Active Workers: 0 · Max Workers: 2 · Idle Timeout: 5 sn · FlashBoot: Açık
+                </p>
+                <p className="text-[10px] text-stone-500">
+                  Active Workers = 0 yapıldığında boşta $0.00/saat ödersiniz; yalnızca ürün üretilen
+                  ~20–25 saniye faturalanır.
+                </p>
+              </div>
+
               <div className="space-y-2">
+                <div>
+                  <label className="block text-[11px] font-semibold text-stone-700 mb-1">
+                    RunPod GPU Sınıfı (Flex Saniye Tarifesi)
+                  </label>
+                  <select
+                    value={cfgRpTier}
+                    onChange={(e) => setCfgRpTier(e.target.value as RunpodGpuTierId)}
+                    className="w-full px-3 py-2 bg-white border border-stone-300 text-xs"
+                  >
+                    {Object.values(RUNPOD_GPU_TIERS).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.consoleName} ({t.cards}) — ${t.flexRatePerSecUsd.toFixed(5)}/sn (~$
+                        {((t.avgProductSec + 5) * t.flexRatePerSecUsd).toFixed(4)}/ürün)
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <input
                   value={cfgRpEp}
                   onChange={(e) => setCfgRpEp(e.target.value)}
-                  placeholder="RUNPOD_3D_ENDPOINT_ID"
+                  placeholder="Endpoint ID (boşsa Vercel RUNPOD_ENDPOINT_ID kullanılır)"
                   className="w-full px-3 py-2 bg-white border border-stone-300 text-xs font-mono"
                 />
                 <input
@@ -1991,6 +2056,30 @@ export function App() {
               </div>
             </div>
 
+            <div className="space-y-2.5 border border-stone-200 p-3.5 bg-[#faf9f6]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-stone-950">
+                  2) Opsiyonel Harici API · fal.ai ($0.02 – $0.48)
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
+                    falReady
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-300 bg-white text-stone-600'
+                  }`}
+                >
+                  {server3dCfg.falConfigured ? 'Vercel Env Aktif' : memberState.falApiKey ? 'Bağlı' : 'Opsiyonel'}
+                </span>
+              </div>
+              <input
+                type="password"
+                value={cfgFalKey}
+                onChange={(e) => setCfgFalKey(e.target.value)}
+                placeholder="FAL_KEY (fal_...)"
+                className="w-full px-3 py-2 bg-white border border-stone-300 text-xs font-mono"
+              />
+            </div>
+
             <div>
               <label className="block text-[11px] font-semibold text-stone-700 mb-1">
                 Varsayılan Fotoğraftan 3B Motoru
@@ -2000,9 +2089,12 @@ export function App() {
                 onChange={(e) => setCfgEngine(e.target.value as ActiveAiEngine)}
                 className="w-full px-3 py-2 bg-white border border-stone-300 text-xs"
               >
-                <option value="trellis">fal.ai TRELLIS ($0.02 / ürün — Önerilen)</option>
-                <option value="hunyuan">fal.ai Hunyuan3D v2 ($0.48 / ürün — Stüdyo PBR)</option>
-                <option value="runpod">RunPod Serverless L40S (~$0.012 / ürün)</option>
+                <option value="runpod">
+                  RunPod Serverless Flex ({RUNPOD_GPU_TIERS[cfgRpTier].cards} — $
+                  {RUNPOD_GPU_TIERS[cfgRpTier].flexRatePerSecUsd.toFixed(5)}/sn)
+                </option>
+                <option value="trellis">fal.ai TRELLIS ($0.02 / ürün)</option>
+                <option value="hunyuan">fal.ai Hunyuan3D v2 ($0.48 / ürün)</option>
               </select>
             </div>
 
@@ -2013,6 +2105,7 @@ export function App() {
                   falApiKey: cfgFalKey,
                   runpod3dEndpointId: cfgRpEp,
                   runpodApiKey: cfgRpKey,
+                  runpodGpuTier: cfgRpTier,
                   preferredAiEngine: cfgEngine,
                 });
                 setMemberState(next);

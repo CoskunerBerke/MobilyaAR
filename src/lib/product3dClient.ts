@@ -1,22 +1,33 @@
 import { normalizeGlbArrayBufferToMetricCm } from './cadImport';
-import type { ActiveAiEngine } from './membership';
+import type { ActiveAiEngine, RunpodGpuTierId } from './membership';
 
 export interface Product3DServerConfig {
   falConfigured: boolean;
   runpod3dConfigured: boolean;
+  defaultRunpodTier: RunpodGpuTierId;
 }
 
 export async function fetchProduct3DConfig(): Promise<Product3DServerConfig> {
   try {
     const r = await fetch('/api/product3d?action=config');
-    if (!r.ok) return { falConfigured: false, runpod3dConfigured: false };
+    if (!r.ok) {
+      return { falConfigured: false, runpod3dConfigured: false, defaultRunpodTier: 'RTX4090' };
+    }
     const j = await r.json();
+    const tier: RunpodGpuTierId =
+      j.defaultRunpodTier === 'L4' ||
+      j.defaultRunpodTier === 'RTX4090' ||
+      j.defaultRunpodTier === 'L40S' ||
+      j.defaultRunpodTier === 'A100'
+        ? j.defaultRunpodTier
+        : 'RTX4090';
     return {
       falConfigured: Boolean(j.falConfigured),
       runpod3dConfigured: Boolean(j.runpod3dConfigured),
+      defaultRunpodTier: tier,
     };
   } catch {
-    return { falConfigured: false, runpod3dConfigured: false };
+    return { falConfigured: false, runpod3dConfigured: false, defaultRunpodTier: 'RTX4090' };
   }
 }
 
@@ -35,6 +46,7 @@ export interface Serverless3DRequest {
   falApiKey?: string;
   runpodApiKey?: string;
   runpod3dEndpointId?: string;
+  runpodGpuTier?: RunpodGpuTierId;
   onProgress?: (msg: string) => void;
 }
 
@@ -90,6 +102,7 @@ export async function generateFurniture3DServerless(
   if (req.falApiKey) headers['x-fal-key'] = req.falApiKey;
   if (req.runpodApiKey) headers['x-runpod-key'] = req.runpodApiKey;
   if (req.runpod3dEndpointId) headers['x-runpod-3d-endpoint'] = req.runpod3dEndpointId;
+  if (req.runpodGpuTier) headers['x-runpod-gpu-tier'] = req.runpodGpuTier;
 
   req.onProgress?.('Ürün fotoğrafları sunucusuz 3B GPU motoruna gönderiliyor...');
 
@@ -110,9 +123,9 @@ export async function generateFurniture3DServerless(
     throw new Error(startJson.error || `3B ürün üretimi başlatılamadı (${startRes.status})`);
   }
 
-  const provider = String(startJson.provider || 'fal');
-  const modelLabel = String(startJson.modelLabel || 'Serverless 3B GPU');
-  let costUsd = Number(startJson.estimatedCostUsd || 0.02);
+  const provider = String(startJson.provider || 'runpod');
+  const modelLabel = String(startJson.modelLabel || 'RunPod Serverless GPU');
+  let costUsd = Number(startJson.estimatedCostUsd || 0.008);
 
   let remoteGlbUrl: string | undefined;
   let rawBuf: ArrayBuffer | null = null;
@@ -125,6 +138,7 @@ export async function generateFurniture3DServerless(
     if (req.falApiKey) pollHeaders['x-fal-key'] = req.falApiKey;
     if (req.runpodApiKey) pollHeaders['x-runpod-key'] = req.runpodApiKey;
     if (req.runpod3dEndpointId) pollHeaders['x-runpod-3d-endpoint'] = req.runpod3dEndpointId;
+    if (req.runpodGpuTier) pollHeaders['x-runpod-gpu-tier'] = req.runpodGpuTier;
 
     let pollUrl = '';
     if (provider === 'fal') {
@@ -163,7 +177,9 @@ export async function generateFurniture3DServerless(
     throw new Error('3B ürün üretimi zaman aşımına uğradı. Lütfen tekrar deneyin.');
   }
 
-  req.onProgress?.(`1:1 gerçek ölçü (${req.widthCm}×${req.depthCm}×${req.heightCm} cm) ve zemin hizası uygulanıyor...`);
+  req.onProgress?.(
+    `1:1 gerçek ölçü (${req.widthCm}×${req.depthCm}×${req.heightCm} cm) ve zemin hizası uygulanıyor...`
+  );
 
   if (!rawBuf && remoteGlbUrl) {
     const proxyRes = await fetch(`/api/product3d?action=proxyGlb&url=${encodeURIComponent(remoteGlbUrl)}`);

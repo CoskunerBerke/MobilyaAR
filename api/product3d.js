@@ -1,13 +1,24 @@
 /**
  * MekanAR — Sunucusuz (Zero-Idle) Fotoğraftan 1:1 3B Mobilya Üretim API'si
  * Desteklenen sağlayıcılar:
- *   1) fal.ai TRELLIS       ($0.02 / ürün — tek veya çok açılı, hızlı PBR .GLB)
- *   2) fal.ai Hunyuan3D v2  ($0.48 / ürün — stüdyo PBR dokulu .GLB)
- *   3) RunPod Serverless    (~$0.012 / ürün L40S — kendi GPU endpoint'iniz)
+ *   1) RunPod Serverless Flex (Boşta $0 — gerçek saniye bazlı faturalama):
+ *        - L4 / 24 GB       : $0.00019 / sn (~$0.007 / ürün)
+ *        - RTX 4090 24GB PRO: $0.00031 / sn (~$0.008 / ürün — önerilen)
+ *        - L40S 48GB PRO    : $0.00053 / sn (~$0.011 / ürün)
+ *        - A100 80GB        : $0.00076 / sn (~$0.014 / ürün)
+ *   2) fal.ai TRELLIS       ($0.02 / ürün — tek veya çok açılı, sıfır kurulum)
+ *   3) fal.ai Hunyuan3D v2  ($0.48 / ürün — stüdyo PBR dokulu .GLB)
  *
  * Ek olarak güvenilir barındırıcılardan CORS-güvenli .GLB proxy (action=proxyGlb) sunar;
  * böylece tarayıcı üretilen .GLB'yi anında gerçek santimetre (1:1) ölçüsüne getirip Canlı AR'da açar.
  */
+
+const RUNPOD_GPU_RATES_USD_PER_SEC = {
+  L4: { rate: 0.00019, avgSec: 32, label: 'RunPod L4 / 24GB Flex' },
+  RTX4090: { rate: 0.00031, avgSec: 20, label: 'RunPod RTX 4090 (24GB PRO)' },
+  L40S: { rate: 0.00053, avgSec: 16, label: 'RunPod L40S (48GB PRO)' },
+  A100: { rate: 0.00076, avgSec: 14, label: 'RunPod A100 (80GB)' },
+};
 
 const FAL_MODELS = {
   'trellis-single': {
@@ -46,7 +57,7 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, x-fal-key, x-runpod-key, x-runpod-3d-endpoint'
+    'Content-Type, x-fal-key, x-runpod-key, x-runpod-3d-endpoint, x-runpod-gpu-tier'
   );
 }
 
@@ -57,6 +68,18 @@ function cleanEndpointId(raw) {
     .replace(/^v2\//i, '')
     .replace(/\/.*$/, '')
     .trim();
+}
+
+function resolveRunpodTier(raw) {
+  const key = String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s_-]+/g, '');
+  if (key === '4090' || key === 'RTX4090' || key === '24GBPRO') return 'RTX4090';
+  if (key === 'L4' || key === '24GB' || key === 'A5000') return 'L4';
+  if (key === 'L40S' || key === 'L40' || key === '48GB' || key === '48GBPRO') return 'L40S';
+  if (key === 'A100' || key === '80GB') return 'A100';
+  return 'RTX4090';
 }
 
 function isAllowedFalQueueUrl(raw) {
@@ -91,20 +114,36 @@ export default async function handler(req, res) {
     typeof req.headers['x-runpod-3d-endpoint'] === 'string'
       ? req.headers['x-runpod-3d-endpoint'].trim()
       : '';
+  const headerTier =
+    typeof req.headers['x-runpod-gpu-tier'] === 'string' ? req.headers['x-runpod-gpu-tier'].trim() : '';
 
   const falKey = headerFalKey || process.env.FAL_KEY || '';
   const rpKey = headerRpKey || process.env.RUNPOD_API_KEY || '';
-  const rp3dEndpoint = cleanEndpointId(headerRpEp || process.env.RUNPOD_3D_ENDPOINT_ID || '');
+  const rp3dEndpoint = cleanEndpointId(
+    headerRpEp || process.env.RUNPOD_3D_ENDPOINT_ID || process.env.RUNPOD_ENDPOINT_ID || ''
+  );
+  const rpTierKey = resolveRunpodTier(headerTier || process.env.RUNPOD_GPU_TIER || 'RTX4090');
+  const rpSpec = RUNPOD_GPU_RATES_USD_PER_SEC[rpTierKey] || RUNPOD_GPU_RATES_USD_PER_SEC.RTX4090;
 
   if (req.method === 'GET') {
     const action = typeof req.query?.action === 'string' ? req.query.action : '';
 
-    // 1) Sunucu yapılandırma durumu
+    // 1) Sunucu yapılandırma ve gerçek RunPod saniye tarifeleri
     if (action === 'config') {
       return res.status(200).json({
         ok: true,
         falConfigured: Boolean(process.env.FAL_KEY),
-        runpod3dConfigured: Boolean(process.env.RUNPOD_API_KEY && process.env.RUNPOD_3D_ENDPOINT_ID),
+        runpod3dConfigured: Boolean(
+          process.env.RUNPOD_API_KEY &&
+            (process.env.RUNPOD_3D_ENDPOINT_ID || process.env.RUNPOD_ENDPOINT_ID)
+        ),
+        defaultRunpodTier: resolveRunpodTier(process.env.RUNPOD_GPU_TIER || 'RTX4090'),
+        runpodRatesUsdPerSec: {
+          L4: RUNPOD_GPU_RATES_USD_PER_SEC.L4.rate,
+          RTX4090: RUNPOD_GPU_RATES_USD_PER_SEC.RTX4090.rate,
+          L40S: RUNPOD_GPU_RATES_USD_PER_SEC.L40S.rate,
+          A100: RUNPOD_GPU_RATES_USD_PER_SEC.A100.rate,
+        },
       });
     }
 
@@ -131,8 +170,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3) Asenkron iş durumu sorgulama (fal.ai veya RunPod Serverless)
-    const provider = typeof req.query?.provider === 'string' ? req.query.provider : 'fal';
+    // 3) Asenkron iş durumu sorgulama (RunPod Serverless veya fal.ai)
+    const provider = typeof req.query?.provider === 'string' ? req.query.provider : 'runpod';
 
     if (provider === 'fal') {
       if (!falKey) {
@@ -220,12 +259,17 @@ export default async function handler(req, res) {
             error: data.error || `RunPod durum sorgusu başarısız (${rpRes.status})`,
           });
         }
-        const execSec = Number(data.executionTime || 0) / 1000;
-        const estimatedCostUsd = Number((execSec * 0.00054).toFixed(4));
+        // RunPod Serverless Flex gerçek faturalama: executionTime (sn yukarı yuvarlanır) + 5 sn idle kuyruğu
+        const execSec = Math.ceil(Number(data.executionTime || 0) / 1000);
+        const billedSec = execSec > 0 ? execSec + 5 : 0;
+        const estimatedCostUsd = Number((billedSec * rpSpec.rate).toFixed(5));
         return res.status(200).json({
           ok: true,
           status: data.status,
-          executionSec: Number(execSec.toFixed(1)),
+          gpuTier: rpTierKey,
+          ratePerSecUsd: rpSpec.rate,
+          executionSec: Number((Number(data.executionTime || 0) / 1000).toFixed(1)),
+          billedSec,
           estimatedCostUsd,
           glbUrl: data.output?.glbUrl || data.output?.glb_url || null,
           glbBase64: data.output?.glbBase64 || data.output?.glb_base64 || null,
@@ -252,7 +296,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const engine = String(body?.engine || 'trellis').toLowerCase(); // 'trellis' | 'hunyuan' | 'runpod'
+    const engine = String(body?.engine || 'runpod').toLowerCase(); // 'runpod' | 'trellis' | 'hunyuan'
     const images = body?.images || {};
     const front = typeof images.front === 'string' ? images.front : '';
     const back = typeof images.back === 'string' ? images.back : '';
@@ -263,12 +307,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'En az 1 önden ürün fotoğrafı gereklidir.' });
     }
 
-    // RunPod Serverless 3D Object Endpoint
+    // RunPod Serverless Flex GPU Endpoint (Boşta $0)
     if (engine === 'runpod') {
       if (!rpKey || !rp3dEndpoint) {
         return res.status(400).json({
           ok: false,
-          error: 'RunPod 3B Ürün Endpoint ID ve API Key ayarlar panelinden veya Vercel ortam değişkenlerinden tanımlanmalıdır.',
+          error:
+            'RunPod Serverless Endpoint ID ve API Key ayarlar panelinden veya Vercel ortam değişkenlerinden (RUNPOD_ENDPOINT_ID / RUNPOD_API_KEY) tanımlanmalıdır.',
         });
       }
       try {
@@ -280,6 +325,7 @@ export default async function handler(req, res) {
           },
           body: JSON.stringify({
             input: {
+              task: 'product3d',
               images: { front, back: back || null, left: left || null, right: right || null },
               width_cm: Number(body?.width_cm || 0) || undefined,
               depth_cm: Number(body?.depth_cm || 0) || undefined,
@@ -298,8 +344,10 @@ export default async function handler(req, res) {
           ok: true,
           provider: 'runpod',
           jobId: data.id,
-          estimatedCostUsd: 0.012,
-          modelLabel: 'RunPod Serverless L40S',
+          gpuTier: rpTierKey,
+          ratePerSecUsd: rpSpec.rate,
+          estimatedCostUsd: Number(((rpSpec.avgSec + 5) * rpSpec.rate).toFixed(4)),
+          modelLabel: rpSpec.label,
         });
       } catch (err) {
         return res.status(502).json({
@@ -314,7 +362,7 @@ export default async function handler(req, res) {
       return res.status(400).json({
         ok: false,
         error:
-          'Fotoğraftan 3B üretim için fal.ai API Anahtarı (FAL_KEY) gerekir. Sağ üstteki Ayarlar menüsünden girin veya Vercel Ortam Değişkenlerine FAL_KEY ekleyin.',
+          'fal.ai API Anahtarı (FAL_KEY) eksik. Sağ üstteki Ayarlar menüsünden girin veya RunPod Serverless motorunu seçin.',
       });
     }
 
@@ -340,7 +388,6 @@ export default async function handler(req, res) {
         };
       }
     } else {
-      // Varsayılan: fal.ai TRELLIS ($0.02 / ürün — tek veya çok açılı!)
       if (extraImgs.length > 0) {
         modelSpec = FAL_MODELS['trellis-multi'];
         payload = {
