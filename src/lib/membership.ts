@@ -1,84 +1,114 @@
 export type PlanId = 'starter' | 'pro' | 'enterprise';
-export type GpuTierId = 'L4' | 'L40S' | 'A100' | 'H100';
+export type Product3DEngineId = 'cad' | 'runpod_l40s' | 'fal_trellis' | 'fal_hunyuan';
+export type ActiveAiEngine = 'trellis' | 'hunyuan' | 'runpod';
 
 export interface DealerPlan {
   id: PlanId;
   name: string;
   monthlyPriceTry: number;
-  monthlyQuota: number;
-  perCustomerLimit: number;
+  maxCatalogSkus: string;
+  monthlyAi3dQuota: number;
+  arViewsLabel: string;
   desc: string;
 }
 
 export const DEALER_PLANS: DealerPlan[] = [
   {
     id: 'starter',
-    name: 'Başlangıç',
-    monthlyPriceTry: 2490,
-    monthlyQuota: 150,
-    perCustomerLimit: 2,
-    desc: 'Tek şubeli butik mağazalar için aylık sabit kota ve QR erişimi.',
+    name: 'Butik Mağaza',
+    monthlyPriceTry: 2900,
+    maxCatalogSkus: '30 Ürün (SKU)',
+    monthlyAi3dQuota: 15,
+    arViewsLabel: 'Sınırsız ($0)',
+    desc: 'Tek şubeli mağazalar için 1:1 Canlı AR, 3B Oda Planlayıcı ve baskıya hazır showroom QR etiketleri.',
   },
   {
     id: 'pro',
     name: 'Showroom Pro',
     monthlyPriceTry: 6900,
-    monthlyQuota: 600,
-    perCustomerLimit: 3,
-    desc: 'Orta ve büyük showroom’lar için sınırsız ürün kataloğu ve çok açılı gerçek oda taraması.',
+    maxCatalogSkus: '150 Ürün (SKU)',
+    monthlyAi3dQuota: 60,
+    arViewsLabel: 'Sınırsız ($0)',
+    desc: 'Orta ve büyük showroom’lar için sınırsız müşteri AR denemesi, web sitesi embed ve marka özelleştirmesi.',
   },
   {
     id: 'enterprise',
     name: 'Kurumsal Zincir',
-    monthlyPriceTry: 19900,
-    monthlyQuota: 2500,
-    perCustomerLimit: 5,
-    desc: 'Çok şubeli mobilya markaları için öncelikli GPU havuzu ve API entegrasyonu.',
+    monthlyPriceTry: 16900,
+    maxCatalogSkus: '500+ Ürün (Sınırsız)',
+    monthlyAi3dQuota: 250,
+    arViewsLabel: 'Sınırsız ($0)',
+    desc: 'Çok şubeli mobilya markaları için öncelikli 3B katalog hattı, e-ticaret eklentisi ve şube bazlı QR takibi.',
   },
 ];
 
-export interface GpuTierSpec {
-  id: GpuTierId;
+export interface Product3DEngineSpec {
+  id: Product3DEngineId;
   name: string;
-  vram: string;
-  ratePerSecUsd: number;
-  avgScanSec: number;
+  costPerProductUsd: number;
+  avgSec: number;
+  note: string;
 }
 
-export const GPU_TIERS: Record<GpuTierId, GpuTierSpec> = {
-  L4: { id: 'L4', name: 'NVIDIA L4', vram: '24 GB', ratePerSecUsd: 0.00019, avgScanSec: 28 },
-  L40S: { id: 'L40S', name: 'NVIDIA L40S', vram: '48 GB', ratePerSecUsd: 0.00054, avgScanSec: 18 },
-  A100: { id: 'A100', name: 'NVIDIA A100', vram: '80 GB', ratePerSecUsd: 0.00078, avgScanSec: 14 },
-  H100: { id: 'H100', name: 'NVIDIA H100', vram: '80 GB', ratePerSecUsd: 0.00135, avgScanSec: 10 },
+export const PRODUCT_3D_ENGINES: Record<Product3DEngineId, Product3DEngineSpec> = {
+  cad: {
+    id: 'cad',
+    name: 'Mağaza CAD Yükleme (.GLB / .OBJ / .STL)',
+    costPerProductUsd: 0.0,
+    avgSec: 1,
+    note: 'Tarayıcıda anında 1:1 metre ve y=0 taban hizalaması — sıfır GPU bedeli.',
+  },
+  runpod_l40s: {
+    id: 'runpod_l40s',
+    name: 'RunPod Serverless L40S (Kendi GPU Hattı)',
+    costPerProductUsd: 0.012,
+    avgSec: 22,
+    note: '48 GB VRAM · $0.00054/sn · Boşta $0 kira — yüksek hacimde en düşük maliyet.',
+  },
+  fal_trellis: {
+    id: 'fal_trellis',
+    name: 'fal.ai TRELLIS (Tek / Çok Açılı Hızlı AI)',
+    costPerProductUsd: 0.02,
+    avgSec: 18,
+    note: 'Sıfır sunucu bakımı · 1–4 ürün fotoğrafından dokulu 1:1 .GLB (~0.80 ₺/ürün).',
+  },
+  fal_hunyuan: {
+    id: 'fal_hunyuan',
+    name: 'fal.ai Hunyuan3D v2 (Stüdyo PBR Dokulu)',
+    costPerProductUsd: 0.48,
+    avgSec: 35,
+    note: 'Amiral gemisi karmaşık döşeme/ahşap detayları için tam PBR dokulu 3B mesh.',
+  },
 };
 
-export interface ScanCostRecord {
+export interface ProductGenRecord {
   id: string;
   dateIso: string;
-  frameCount: number;
-  billedSec: number;
+  productName: string;
+  engineLabel: string;
+  elapsedSec: number;
   costUsd: number;
 }
 
 export interface MembershipState {
   activePlanId: PlanId;
-  dealerUsedScans: number;
-  customerUsedScans: number;
-  runpodEndpointId: string;
+  usedAi3dCount: number;
+  falApiKey: string;
+  runpod3dEndpointId: string;
   runpodApiKey: string;
-  gpuTier: GpuTierId;
-  history: ScanCostRecord[];
+  preferredAiEngine: ActiveAiEngine;
+  history: ProductGenRecord[];
 }
 
-const STORAGE_KEY = 'mekanar_membership_v1';
+const STORAGE_KEY = 'mekanar_ar_platform_v2';
 
 const DEFAULT_STATE: MembershipState = {
   activePlanId: 'pro',
-  dealerUsedScans: 0,
-  customerUsedScans: 0,
-  runpodEndpointId: '',
+  usedAi3dCount: 0,
+  falApiKey: '',
+  runpod3dEndpointId: '',
   runpodApiKey: '',
-  gpuTier: 'L40S',
+  preferredAiEngine: 'trellis',
   history: [],
 };
 
@@ -92,12 +122,16 @@ export function getMembershipState(): MembershipState {
         parsed.activePlanId && DEALER_PLANS.some((p) => p.id === parsed.activePlanId)
           ? parsed.activePlanId
           : DEFAULT_STATE.activePlanId,
-      dealerUsedScans: Number.isFinite(parsed.dealerUsedScans) ? Math.max(0, Number(parsed.dealerUsedScans)) : 0,
-      customerUsedScans: Number.isFinite(parsed.customerUsedScans) ? Math.max(0, Number(parsed.customerUsedScans)) : 0,
-      runpodEndpointId: typeof parsed.runpodEndpointId === 'string' ? parsed.runpodEndpointId : '',
+      usedAi3dCount: Number.isFinite(parsed.usedAi3dCount) ? Math.max(0, Number(parsed.usedAi3dCount)) : 0,
+      falApiKey: typeof parsed.falApiKey === 'string' ? parsed.falApiKey : '',
+      runpod3dEndpointId: typeof parsed.runpod3dEndpointId === 'string' ? parsed.runpod3dEndpointId : '',
       runpodApiKey: typeof parsed.runpodApiKey === 'string' ? parsed.runpodApiKey : '',
-      gpuTier:
-        parsed.gpuTier && parsed.gpuTier in GPU_TIERS ? (parsed.gpuTier as GpuTierId) : DEFAULT_STATE.gpuTier,
+      preferredAiEngine:
+        parsed.preferredAiEngine === 'trellis' ||
+        parsed.preferredAiEngine === 'hunyuan' ||
+        parsed.preferredAiEngine === 'runpod'
+          ? parsed.preferredAiEngine
+          : 'trellis',
       history: Array.isArray(parsed.history) ? parsed.history.slice(0, 20) : [],
     };
   } catch {
@@ -118,35 +152,44 @@ export function getActivePlan(state: MembershipState): DealerPlan {
   return DEALER_PLANS.find((p) => p.id === state.activePlanId) || DEALER_PLANS[1];
 }
 
-export function canRunScan(state: MembershipState): { ok: boolean; reason?: string } {
-  const plan = getActivePlan(state);
-  if (state.dealerUsedScans >= plan.monthlyQuota) {
-    return {
-      ok: false,
-      reason: `${plan.name} aylık mağaza tarama kotası (${plan.monthlyQuota}/${plan.monthlyQuota}) doldu.`,
-    };
-  }
-  if (state.customerUsedScans >= plan.perCustomerLimit) {
-    return {
-      ok: false,
-      reason: `Müşteri başına deneme hakkı (${plan.perCustomerLimit}/${plan.perCustomerLimit}) doldu. Demo için sayacı sıfırlayabilirsiniz.`,
-    };
-  }
-  return { ok: true };
+export function setDealerPlan(planId: PlanId): MembershipState {
+  const cur = getMembershipState();
+  return saveMembershipState({ ...cur, activePlanId: planId });
 }
 
-export function recordCompletedScan(frameCount: number, billedSec: number, costUsd: number): MembershipState {
+export function update3DEngineCredentials(opts: {
+  falApiKey: string;
+  runpod3dEndpointId: string;
+  runpodApiKey: string;
+  preferredAiEngine: ActiveAiEngine;
+}): MembershipState {
+  const cur = getMembershipState();
+  return saveMembershipState({
+    ...cur,
+    falApiKey: opts.falApiKey.trim(),
+    runpod3dEndpointId: opts.runpod3dEndpointId.trim(),
+    runpodApiKey: opts.runpodApiKey.trim(),
+    preferredAiEngine: opts.preferredAiEngine,
+  });
+}
+
+export function recordGeneratedProduct3D(
+  productName: string,
+  engineLabel: string,
+  elapsedSec: number,
+  costUsd: number
+): MembershipState {
   const cur = getMembershipState();
   const next: MembershipState = {
     ...cur,
-    dealerUsedScans: cur.dealerUsedScans + 1,
-    customerUsedScans: cur.customerUsedScans + 1,
+    usedAi3dCount: cur.usedAi3dCount + 1,
     history: [
       {
-        id: `scan-${Date.now()}`,
+        id: `p3d-${Date.now()}`,
         dateIso: new Date().toISOString(),
-        frameCount,
-        billedSec: Number(billedSec.toFixed(1)),
+        productName,
+        engineLabel,
+        elapsedSec: Number(elapsedSec.toFixed(1)),
         costUsd: Number(costUsd.toFixed(4)),
       },
       ...cur.history,
@@ -155,26 +198,7 @@ export function recordCompletedScan(frameCount: number, billedSec: number, costU
   return saveMembershipState(next);
 }
 
-export function resetCustomerTrials(): MembershipState {
+export function resetMonthlyAiQuota(): MembershipState {
   const cur = getMembershipState();
-  return saveMembershipState({ ...cur, customerUsedScans: 0 });
-}
-
-export function setDealerPlan(planId: PlanId): MembershipState {
-  const cur = getMembershipState();
-  return saveMembershipState({ ...cur, activePlanId: planId, customerUsedScans: 0 });
-}
-
-export function updateRunpodCredentials(
-  endpointId: string,
-  apiKey: string,
-  gpuTier: GpuTierId
-): MembershipState {
-  const cur = getMembershipState();
-  return saveMembershipState({
-    ...cur,
-    runpodEndpointId: endpointId.trim(),
-    runpodApiKey: apiKey.trim(),
-    gpuTier,
-  });
+  return saveMembershipState({ ...cur, usedAi3dCount: 0 });
 }

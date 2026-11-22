@@ -262,8 +262,29 @@ function renderDemoFloorTexture(opts: {
   return c.toDataURL('image/jpeg', 0.88);
 }
 
-export function buildCustomFloorTexture(floorKind: FloorSurfaceKind, rgb: [number, number, number]): string {
-  return renderDemoFloorTexture({ plankRgb: rgb, floorKind });
+export function buildCustomFloorTexture(
+  floorKind: FloorSurfaceKind,
+  rgb: [number, number, number],
+  opts?: { rugColor?: string; rugBorder?: string; herringbone?: boolean }
+): string {
+  return renderDemoFloorTexture({
+    plankRgb: rgb,
+    floorKind,
+    rugColor: opts?.rugColor,
+    rugBorder: opts?.rugBorder,
+    herringbone: opts?.herringbone,
+  });
+}
+
+export function buildCustomWallTexture(
+  paintRgb: [number, number, number],
+  opts?: { windowSpan?: [number, number]; hasBalcony?: boolean }
+): string {
+  return renderDemoWallTexture({
+    paintRgb,
+    windowSpan: opts?.windowSpan,
+    hasBalcony: opts?.hasBalcony,
+  });
 }
 
 function renderDemoWallTexture(opts: {

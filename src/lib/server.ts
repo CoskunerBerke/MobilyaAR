@@ -59,25 +59,41 @@ export function getPublicOrigin(): string {
 export function buildShareUrl(opts: {
   productId: string;
   glbUrl?: string;
+  remoteGlbUrl?: string;
   productName?: string;
   dimensionsCm?: string;
-  mode?: 'preview' | 'photo' | 'studio';
+  dimsTargetCm?: { w: number; d: number; h: number };
+  mode?: 'preview' | 'ar' | 'planner' | 'photo' | 'studio';
   oda?: string;
   colorHex?: string;
   serverOnline?: boolean;
   serverUrl?: string;
 }): string {
   const q = new URLSearchParams();
-  const hasRemoteGlb = Boolean(opts.glbUrl && opts.glbUrl.startsWith('http'));
-  const safeId = !hasRemoteGlb && opts.productId.startsWith('cad-local-') ? 'ikea-landskrona-sofa' : opts.productId;
+  const remoteGlb =
+    opts.remoteGlbUrl && opts.remoteGlbUrl.startsWith('http')
+      ? opts.remoteGlbUrl
+      : opts.glbUrl && opts.glbUrl.startsWith('http')
+      ? opts.glbUrl
+      : '';
+  const hasRemoteGlb = Boolean(remoteGlb);
+  const safeId =
+    !hasRemoteGlb && (opts.productId.startsWith('cad-local-') || opts.productId.startsWith('ai-'))
+      ? 'ikea-landskrona-sofa'
+      : opts.productId;
   q.set('urun', safeId);
   if (opts.mode && opts.mode !== 'preview') q.set('mod', opts.mode);
   if (opts.oda) q.set('oda', opts.oda);
   if (opts.colorHex) q.set('renk', opts.colorHex);
-  if (hasRemoteGlb && opts.glbUrl) {
-    q.set('glb', opts.glbUrl);
+  if (hasRemoteGlb) {
+    q.set('glb', remoteGlb);
     if (opts.productName) q.set('name', opts.productName);
     if (opts.dimensionsCm) q.set('dim', opts.dimensionsCm);
+    if (opts.dimsTargetCm) {
+      q.set('w', String(opts.dimsTargetCm.w));
+      q.set('d', String(opts.dimsTargetCm.d));
+      q.set('h', String(opts.dimsTargetCm.h));
+    }
   }
   if (opts.serverOnline && opts.serverUrl) {
     q.set('srv', getPodId(opts.serverUrl));

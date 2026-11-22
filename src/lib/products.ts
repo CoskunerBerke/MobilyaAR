@@ -12,6 +12,8 @@ export interface Product {
   category: string;
   dimensionsCm: string;
   glbUrl: string;
+  remoteGlbUrl?: string;
+  dimsTargetCm?: { w: number; d: number; h: number };
   thumbUrl?: string;
   source: ProductSource;
   swatches?: ProductSwatch[];
