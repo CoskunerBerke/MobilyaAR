@@ -1,6 +1,6 @@
 # Hızlı Delta Katmanı: Ön-derlenmiş Hunyuan3D-2.1 Full PBR taban imajı üzerine
-#   1) facebook/dinov2-giant fp16 ön-gömme (çalışma anında 4.5 GB indirme sıfırlanır -> 4x hız!)
-#   2) textureGenPipeline.py upstream image_prompt listesi yaması
+#   1) textureGenPipeline.py upstream image_prompt listesi yaması
+#   2) facebook/dinov2-giant fp16 (~2.1 GB) düşük RAM'li ön-gömme (çalışma anında 4.3 GB indirme sıfırlanır)
 #   3) Güncel handler.py (doğrudan R2 2K PBR)
 FROM ghcr.io/coskunerberke/mobilya-ar-worker@sha256:f1d78535bfd5d2a2ddd9f30e7033bcf39ea39cbe3679356bccab90c63873047b
 LABEL org.opencontainers.image.source="https://github.com/CoskunerBerke/MobilyaAR"
@@ -25,16 +25,23 @@ if "image_prompt = image_path" not in txt.split("if not isinstance(image_prompt"
 print("TEXTURE_PIPELINE_PATCH_OK", flush=True)
 PY
 
-# 2) facebook/dinov2-giant ağırlıklarını fp16 (~2.2 GB) olarak göm (sıfır çalışma anı indirmesi!)
+# 2) facebook/dinov2-giant ağırlıklarını doğrudan safetensors üzerinden fp16 (~2.1 GB) olarak göm
 RUN mkdir -p /models/dinov2-giant && python - <<'PY'
+import os
 import torch
-from transformers import AutoImageProcessor, AutoModel
+from huggingface_hub import snapshot_download
+from safetensors.torch import load_file, save_file
 
-proc = AutoImageProcessor.from_pretrained("facebook/dinov2-giant")
-model = AutoModel.from_pretrained("facebook/dinov2-giant", torch_dtype=torch.float16)
-proc.save_pretrained("/models/dinov2-giant")
-model.save_pretrained("/models/dinov2-giant")
-print("DINOV2_GIANT_FP16_READY", flush=True)
+snapshot_download(
+    repo_id="facebook/dinov2-giant",
+    local_dir="/models/dinov2-giant",
+    allow_patterns=["config.json", "preprocessor_config.json", "model.safetensors"],
+)
+st_path = "/models/dinov2-giant/model.safetensors"
+sd = load_file(st_path, device="cpu")
+sd16 = {k: (v.half() if v.is_floating_point() and v.dtype == torch.float32 else v) for k, v in sd.items()}
+save_file(sd16, st_path)
+print(f"DINOV2_GIANT_FP16_READY: {os.path.getsize(st_path)/1e6:.1f} MB", flush=True)
 PY
 
 WORKDIR /app
