@@ -48,6 +48,9 @@ const ALLOWED_GLB_HOST_SUFFIXES = [
   '.fal.run',
   '.runpod.net',
   '.r2.dev',
+  '.r2.cloudflarestorage.com',
+  '.public.blob.vercel-storage.com',
+  '.blob.vercel-storage.com',
   '.amazonaws.com',
   'storage.googleapis.com',
 ];

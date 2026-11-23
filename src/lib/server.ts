@@ -60,6 +60,7 @@ export function buildShareUrl(opts: {
   productId: string;
   glbUrl?: string;
   remoteGlbUrl?: string;
+  cloudStored?: boolean;
   productName?: string;
   dimensionsCm?: string;
   dimsTargetCm?: { w: number; d: number; h: number };
@@ -70,6 +71,15 @@ export function buildShareUrl(opts: {
   serverUrl?: string;
 }): string {
   const q = new URLSearchParams();
+  // Kalıcı bulut deposunda saklanan ürünler için kısa, tertemiz QR linki (?urun=<id>&mod=ar)!
+  if (opts.cloudStored) {
+    q.set('urun', opts.productId);
+    if (opts.mode && opts.mode !== 'preview') q.set('mod', opts.mode);
+    if (opts.oda) q.set('oda', opts.oda);
+    if (opts.colorHex) q.set('renk', opts.colorHex);
+    return `${getPublicOrigin()}/?${q.toString()}`;
+  }
+
   const remoteGlb =
     opts.remoteGlbUrl && opts.remoteGlbUrl.startsWith('http')
       ? opts.remoteGlbUrl

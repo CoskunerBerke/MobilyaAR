@@ -8,12 +8,14 @@ import {
   Check,
   Copy,
   Download,
+  HardDrive,
   Layers,
   Loader2,
   Plus,
   QrCode,
   Server,
   Smartphone,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -35,6 +37,16 @@ import {
   generateFurniture3DServerless,
   type Product3DServerConfig,
 } from './lib/product3dClient';
+import {
+  deleteCloudProduct,
+  fetchCloudCatalog,
+  fetchCloudProductById,
+  fetchStorageConfig,
+  getSavedStoragePin,
+  saveProductToCloudStorage,
+  saveStoragePin,
+  type CloudStorageConfig,
+} from './lib/storageClient';
 import { ProductPage } from './components/ProductPage';
 
 function preprocessPhotoFor3D(file: File): Promise<string> {
@@ -169,15 +181,30 @@ export function App() {
       };
     }
     const found = findProduct(urun);
-    if (found || mod === 'ar' || mod === 'planner' || mod === 'studio') {
+    if (found) {
       return {
-        product: found || PRODUCTS[0],
+        product: found,
+        mode: startMode,
+        studioPreset,
+        colorHex: renk,
+      };
+    }
+    // Eğer ?urun=<bulut-id> geldiyse yerleşik katalogda olmayabilir; alttaki bulut sorgusu onu açacak!
+    if (!urun && (mod === 'ar' || mod === 'planner' || mod === 'studio')) {
+      return {
+        product: PRODUCTS[0],
         mode: startMode,
         studioPreset,
         colorHex: renk,
       };
     }
     return null;
+  });
+  const [resolvingCloudLink, setResolvingCloudLink] = useState<boolean>(() => {
+    const q = new URLSearchParams(window.location.search);
+    const urun = q.get('urun');
+    const glb = q.get('glb');
+    return Boolean(urun && !glb && !findProduct(urun));
   });
 
   const [qrFor, setQrFor] = useState<Product | null>(null);
@@ -196,13 +223,22 @@ export function App() {
   const [demoNote, setDemoNote] = useState('');
   const [demoSubmitted, setDemoSubmitted] = useState(false);
 
-  // Dahili 3B Motor Ayarları
+  // Dahili 3B Motor & Kalıcı Dosya Deposu Ayarları
   const [memberState, setMemberState] = useState<MembershipState>(() => getMembershipState());
   const [server3dCfg, setServer3dCfg] = useState<Product3DServerConfig>({
     falConfigured: false,
     runpod3dConfigured: false,
     defaultRunpodTier: 'RTX4090',
   });
+  const [storageCfg, setStorageCfg] = useState<CloudStorageConfig>({
+    configured: false,
+    provider: 'none',
+    providerLabel: 'Bağlı Değil (Geçici Oturum)',
+    publicBaseUrl: '',
+    requiresPin: false,
+    maxDirectUploadMb: 3.5,
+  });
+  const [cfgAdminPin, setCfgAdminPin] = useState<string>(() => getSavedStoragePin());
   const [cfgFalKey, setCfgFalKey] = useState(() => getMembershipState().falApiKey);
   const [cfgRpEp, setCfgRpEp] = useState(() => getMembershipState().runpod3dEndpointId);
   const [cfgRpKey, setCfgRpKey] = useState(() => getMembershipState().runpodApiKey);
@@ -235,6 +271,68 @@ export function App() {
   const [genMsg, setGenMsg] = useState<string | null>(null);
   const [generatedGlb, setGeneratedGlb] = useState<{ url: string; filename: string } | null>(null);
 
+  // Açılışta kalıcı bulut ürünlerini (R2 / Blob) yükle ve varsa ?urun=<bulut-id> QR linkini aç
+  useEffect(() => {
+    let cancelled = false;
+    fetchStorageConfig().then((cfg) => {
+      if (!cancelled) setStorageCfg(cfg);
+    });
+    fetchCloudCatalog().then((cloudList) => {
+      if (cancelled || cloudList.length === 0) return;
+      setProducts((prev) => {
+        const seen = new Set(cloudList.map((p) => p.id));
+        return [...cloudList, ...prev.filter((p) => !seen.has(p.id))];
+      });
+    });
+
+    const q = new URLSearchParams(window.location.search);
+    const urun = q.get('urun');
+    const glb = q.get('glb');
+    if (urun && !glb && !findProduct(urun)) {
+      const mod = q.get('mod');
+      const oda = q.get('oda');
+      const renk = q.get('renk') || undefined;
+      const startMode: 'preview' | 'ar' | 'planner' =
+        mod === 'planner' || mod === 'studio'
+          ? 'planner'
+          : mod === 'ar'
+          ? 'ar'
+          : 'preview';
+      const studioPreset =
+        oda === 'living' || oda === 'bedroom' || oda === 'grand' ? oda : undefined;
+
+      fetchCloudProductById(urun)
+        .then((foundCloud) => {
+          if (cancelled) return;
+          if (foundCloud) {
+            setProducts((prev) => [
+              foundCloud,
+              ...prev.filter((p) => p.id !== foundCloud.id),
+            ]);
+            setActiveState({
+              product: foundCloud,
+              mode: startMode,
+              studioPreset,
+              colorHex: renk,
+            });
+          } else if (mod === 'ar' || mod === 'planner' || mod === 'studio') {
+            setActiveState({
+              product: PRODUCTS[0],
+              mode: startMode,
+              studioPreset,
+              colorHex: renk,
+            });
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setResolvingCloudLink(false);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const st = getMembershipState();
     setMemberState(st);
@@ -244,9 +342,11 @@ export function App() {
     setCfgRpTier(st.runpodGpuTier);
     setCfgEngine(st.preferredAiEngine);
     fetchProduct3DConfig().then(setServer3dCfg);
+    fetchStorageConfig().then(setStorageCfg);
   }, [showServer, showBuilder]);
 
   useEffect(() => {
+    if (resolvingCloudLink) return;
     if (!activeState) {
       if (window.location.search) {
         window.history.replaceState({}, '', window.location.pathname);
@@ -257,6 +357,7 @@ export function App() {
       productId: activeState.product.id,
       glbUrl: activeState.product.glbUrl,
       remoteGlbUrl: activeState.product.remoteGlbUrl,
+      cloudStored: activeState.product.cloudStored,
       productName: activeState.product.name,
       dimensionsCm: activeState.product.dimensionsCm,
       dimsTargetCm: activeState.product.dimsTargetCm,
@@ -268,13 +369,14 @@ export function App() {
     if (window.location.search !== nextSearch) {
       window.history.replaceState({}, '', `${window.location.pathname}${nextSearch}`);
     }
-  }, [activeState]);
+  }, [activeState, resolvingCloudLink]);
 
   const qrUrl = (p: Product, mode: 'ar' | 'planner' = 'ar') =>
     buildShareUrl({
       productId: p.id,
       glbUrl: p.glbUrl,
       remoteGlbUrl: p.remoteGlbUrl,
+      cloudStored: p.cloudStored,
       productName: p.name,
       dimensionsCm: p.dimensionsCm,
       dimsTargetCm: p.dimsTargetCm,
@@ -317,7 +419,7 @@ export function App() {
         onProgress: (m) => setGenMsg(m),
       });
 
-      const created: Product = {
+      let finalProduct: Product = {
         id: `ai-${Date.now()}`,
         name: cleanName,
         category: 'Özel 3B',
@@ -328,14 +430,44 @@ export function App() {
         source: 'ozel-cad',
       };
 
-      setProducts((prev) => [created, ...prev]);
+      // 2. Aşama: Kalıcı dosya deposu (Cloudflare R2 / Vercel Blob) aktifse 1 kere kaydet -> bundan sonra 0 TL GPU!
+      if (storageCfg.configured) {
+        try {
+          finalProduct = await saveProductToCloudStorage({
+            name: cleanName,
+            category: 'Özel 3B',
+            dimensionsCm: out.dimensionsCm,
+            dimsTargetCm: { w: out.widthCm, d: out.depthCm, h: out.heightCm },
+            glbBuffer: out.glbBuffer,
+            thumbnailDataUrl: slots.front,
+            storageConfig: storageCfg,
+            adminPin: cfgAdminPin,
+            onProgress: (m) => setGenMsg(m),
+          });
+        } catch (saveErr) {
+          setGenMsg(
+            `Model üretildi ancak bulut kaydı atlandı: ${
+              saveErr instanceof Error ? saveErr.message : 'Bilinmeyen hata'
+            }`
+          );
+        }
+      }
+
+      setProducts((prev) => [
+        finalProduct,
+        ...prev.filter((p) => p.id !== finalProduct.id),
+      ]);
       setMemberState(
         recordGeneratedProduct3D(cleanName, out.modelLabel, out.elapsedSec, out.costUsd)
       );
       setGeneratedGlb({ url: out.localBlobUrl, filename: out.filename });
-      setGenMsg(`1:1 AR-hazır model tamamlandı (${out.dimensionsCm} · ${out.elapsedSec} sn)`);
+      setGenMsg(
+        finalProduct.cloudStored
+          ? `Kalıcı buluta kaydedildi (${out.dimensionsCm}) · Artık QR ile her telefonda doğrudan AR'da açılır.`
+          : `1:1 AR-hazır model tamamlandı (${out.dimensionsCm} · ${out.elapsedSec} sn)`
+      );
       setShowBuilder(false);
-      setActiveState({ product: created, mode: 'ar' });
+      setActiveState({ product: finalProduct, mode: 'ar' });
     } catch (e) {
       setGenMsg(e instanceof Error ? e.message : '3B ürün üretimi başarısız oldu');
     } finally {
@@ -359,7 +491,8 @@ export function App() {
       const blobUrl = URL.createObjectURL(
         new Blob([converted.glbBuffer], { type: 'model/gltf-binary' })
       );
-      const created: Product = {
+
+      let finalProduct: Product = {
         id: `cad-local-${Date.now()}`,
         name: cleanName,
         category: 'Özel CAD',
@@ -368,14 +501,53 @@ export function App() {
         dimsTargetCm: { w: converted.widthCm, d: converted.depthCm, h: converted.heightCm },
         source: 'ozel-cad',
       };
-      setProducts((prev) => [created, ...prev]);
+
+      // Kalıcı dosya deposu aktifse CAD modelini de 1 kere kalıcı depoya kaydet -> kalıcı QR hazır!
+      if (storageCfg.configured) {
+        try {
+          finalProduct = await saveProductToCloudStorage({
+            name: cleanName,
+            category: 'Özel CAD',
+            dimensionsCm: converted.dimensionsCm,
+            dimsTargetCm: { w: converted.widthCm, d: converted.depthCm, h: converted.heightCm },
+            glbBuffer: converted.glbBuffer,
+            storageConfig: storageCfg,
+            adminPin: cfgAdminPin,
+            onProgress: (m) => setGenMsg(m),
+          });
+        } catch (saveErr) {
+          setGenMsg(
+            `CAD dönüştürüldü ancak bulut kaydı atlandı: ${
+              saveErr instanceof Error ? saveErr.message : 'Bilinmeyen hata'
+            }`
+          );
+        }
+      }
+
+      setProducts((prev) => [
+        finalProduct,
+        ...prev.filter((p) => p.id !== finalProduct.id),
+      ]);
       setGeneratedGlb({ url: blobUrl, filename: `${cleanName}-1to1.glb` });
       setShowBuilder(false);
-      setActiveState({ product: created, mode: 'ar' });
+      setActiveState({ product: finalProduct, mode: 'ar' });
     } catch (e) {
       setGenMsg(e instanceof Error ? e.message : 'CAD dönüştürme hatası');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleDeleteCloudItem = async (p: Product) => {
+    if (!p.cloudStored) return;
+    if (!window.confirm(`"${p.name}" ürününü kalıcı bulut deposundan silmek istiyor musunuz?`)) {
+      return;
+    }
+    try {
+      await deleteCloudProduct(p.id, cfgAdminPin);
+      setProducts((prev) => prev.filter((item) => item.id !== p.id));
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Silme işlemi başarısız oldu.');
     }
   };
 
@@ -415,6 +587,18 @@ export function App() {
   const stageProduct = products.find((p) => p.id === stageProductId) || products[0];
   const stageOrient = getOrientationGuide(stageProduct.dimensionsCm);
   const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=ar`;
+
+  if (resolvingCloudLink) {
+    return (
+      <div className="min-h-screen bg-[#0d0d0c] text-white flex flex-col items-center justify-center gap-3 p-6 text-center">
+        <Loader2 className="w-7 h-7 animate-spin text-[#c9a277]" />
+        <p className="text-sm font-semibold">3B ürün kalıcı dosya deposundan hazırlanıyor...</p>
+        <p className="text-xs text-stone-400">
+          Canlı AR modeli doğrudan telefonunuza indiriliyor (GPU kullanılmaz).
+        </p>
+      </div>
+    );
+  }
 
   if (activeState) {
     return (
@@ -1057,6 +1241,17 @@ export function App() {
                     <span className="absolute top-3 left-3.5 text-[10px] font-mono text-stone-400">
                       {String(idx + 1).padStart(2, '0')}
                     </span>
+                    {p.cloudStored && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCloudItem(p)}
+                        className="absolute top-2.5 right-2.5 p-1.5 bg-white/90 hover:bg-stone-950 text-stone-600 hover:text-white border border-stone-200 transition"
+                        title="Kalıcı buluttan sil"
+                        aria-label="Ürünü sil"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <span className="absolute bottom-2.5 right-3 text-[10px] font-mono text-stone-500 bg-white/85 px-2 py-0.5 border border-stone-200/80">
                       {orient === 'landscape' ? 'AR: Yatay' : 'AR: Dikey'}
                     </span>
@@ -1066,7 +1261,9 @@ export function App() {
                     <div className="min-w-0">
                       <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
                         {p.category} ·{' '}
-                        {p.source === 'ikea-cad'
+                        {p.cloudStored
+                          ? 'Kalıcı Bulut'
+                          : p.source === 'ikea-cad'
                           ? 'Resmi CAD'
                           : p.source === 'studyo-cad'
                           ? 'Stüdyo PBR'
@@ -1619,6 +1816,29 @@ export function App() {
             </div>
 
             <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2 px-3 py-2 bg-stone-900 border border-stone-800 text-[11px]">
+                <span className="flex items-center gap-1.5 text-stone-300">
+                  <HardDrive className="w-3.5 h-3.5 text-[#c9a277] shrink-0" />
+                  <span>
+                    {storageCfg.configured
+                      ? `Kalıcı Kayıt Aktif · ${storageCfg.providerLabel}`
+                      : 'Kalıcı Depo Bağlı Değil (Oturum İçi Önizleme)'}
+                  </span>
+                </span>
+                {!storageCfg.configured && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBuilder(false);
+                      setShowServer(true);
+                    }}
+                    className="underline text-[#e0c09a] font-semibold shrink-0"
+                  >
+                    Bağla
+                  </button>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-stone-300 mb-1">Ürün Adı</label>
                 <input
@@ -1827,11 +2047,64 @@ export function App() {
           >
             <div className="flex items-center justify-between border-b border-stone-200 pb-3">
               <h3 className="font-display text-sm font-bold flex items-center gap-2 text-stone-950">
-                <Server className="w-4 h-4" /> 3B Üretim Motoru Ayarları
+                <Server className="w-4 h-4" /> 3B Üretim &amp; Kalıcı Depo Ayarları
               </h3>
               <button type="button" onClick={() => setShowServer(false)} aria-label="Kapat">
                 <X className="w-4 h-4" />
               </button>
+            </div>
+
+            <div className="space-y-2.5 border border-stone-950 p-3.5 bg-[#faf8f4]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-stone-950 flex items-center gap-1.5">
+                  <HardDrive className="w-3.5 h-3.5" />
+                  <span>0) Kalıcı Dosya Deposu (GPU Kullanmaz)</span>
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
+                    storageCfg.configured
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-300 bg-white text-stone-600'
+                  }`}
+                >
+                  {storageCfg.configured
+                    ? storageCfg.provider === 'r2'
+                      ? 'R2 Aktif'
+                      : 'Blob Aktif'
+                    : 'Bağlı Değil'}
+                </span>
+              </div>
+              <p className="text-[11px] text-stone-600 leading-relaxed">
+                Üretilen 3B model buraya <strong>yalnızca 1 kez</strong> kaydedilir. Tüm müşteriler
+                QR kodla doğrudan buradan indirip telefonun kendi AR özelliğiyle görüntüler; RunPod
+                hiç çalışmaz.
+              </p>
+              <div className="p-2.5 bg-white border border-stone-200 text-[10.5px] text-stone-700 space-y-1 font-mono leading-relaxed">
+                <p className="font-sans font-bold text-stone-950 text-[11px]">
+                  Vercel Ortam Değişkenleri (İkisinden Biri Yeterli):
+                </p>
+                <p className="text-stone-800">
+                  Cloudflare R2 (Önerilen): R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+                  R2_BUCKET_NAME, R2_PUBLIC_URL
+                </p>
+                <p className="text-stone-500">
+                  veya Vercel Blob (2 Tık): BLOB_READ_WRITE_TOKEN
+                </p>
+              </div>
+              {storageCfg.requiresPin && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-stone-700 mb-1">
+                    Yönetici Depolama PIN Kodu (STORAGE_ADMIN_PIN)
+                  </label>
+                  <input
+                    type="password"
+                    value={cfgAdminPin}
+                    onChange={(e) => setCfgAdminPin(e.target.value)}
+                    placeholder="Yükleme ve silme için yönetici PIN"
+                    className="w-full px-3 py-2 bg-white border border-stone-300 text-xs font-mono"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="space-y-3 border border-stone-950 p-3.5 bg-[#faf8f4]">
@@ -1937,6 +2210,7 @@ export function App() {
             <button
               type="button"
               onClick={() => {
+                saveStoragePin(cfgAdminPin);
                 const next = update3DEngineCredentials({
                   falApiKey: cfgFalKey,
                   runpod3dEndpointId: cfgRpEp,

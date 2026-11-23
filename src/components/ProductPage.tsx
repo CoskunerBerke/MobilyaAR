@@ -157,13 +157,16 @@ export const ProductPage: React.FC<Props> = ({
     };
   }, []);
 
-  // Uzaktan QR ile açılan AI .GLB dosyası varsa tarayıcıda gerçek 1:1 cm ölçüsüne ölçekle
+  // Uzaktan ham (normalize edilmemiş) AI .GLB dosyası varsa 1:1 cm ölçüsüne ölçekle;
+  // Kalıcı bulutta (R2 / Blob) kayıtlı ürün zaten 1:1 üretildiği için doğrudan CDN'den 0 TL GPU ile açılır!
   useEffect(() => {
     let revokedUrl: string | null = null;
     let cancelled = false;
 
     const needsRemoteNormalize =
-      activeProduct.glbUrl.startsWith('http') && Boolean(activeProduct.dimsTargetCm);
+      !activeProduct.cloudStored &&
+      activeProduct.glbUrl.startsWith('http') &&
+      Boolean(activeProduct.dimsTargetCm);
 
     if (!needsRemoteNormalize) {
       setResolvedGlbUrl(activeProduct.glbUrl);
@@ -266,17 +269,32 @@ export const ProductPage: React.FC<Props> = ({
       }
     };
 
+    const onModelError = () => {
+      // Eğer R2 public URL'de CORS henüz açılmadıysa aynı dosyanın güvenli API yedeğinden yükle
+      if (
+        activeProduct.cloudStored &&
+        resolvedGlbUrl.startsWith('http') &&
+        !resolvedGlbUrl.includes('/api/storage?')
+      ) {
+        setResolvedGlbUrl(
+          `/api/storage?action=file&key=${encodeURIComponent(`models/${activeProduct.id}.glb`)}`
+        );
+      }
+    };
+
     mv.addEventListener('load', syncModel);
     mv.addEventListener('ar-status', onArStatus);
+    mv.addEventListener('error', onModelError);
     mv.addEventListener('touchend', syncPinchScale, { passive: true });
     if (mv.canActivateAR) setCanAr(true);
 
     return () => {
       mv.removeEventListener('load', syncModel);
       mv.removeEventListener('ar-status', onArStatus);
+      mv.removeEventListener('error', onModelError);
       mv.removeEventListener('touchend', syncPinchScale);
     };
-  }, [resolvedGlbUrl, colorHex]);
+  }, [resolvedGlbUrl, colorHex, activeProduct.cloudStored, activeProduct.id]);
 
   // Orantılı ölçek uygula (x = y = z her zaman eşit -> asla uzama/bozulma yok!)
   const applyProportionalScale = useCallback((nextPct: number) => {
@@ -329,6 +347,7 @@ export const ProductPage: React.FC<Props> = ({
     productId: activeProduct.id,
     glbUrl: activeProduct.glbUrl,
     remoteGlbUrl: activeProduct.remoteGlbUrl,
+    cloudStored: activeProduct.cloudStored,
     productName: activeProduct.name,
     dimensionsCm: resolvedDims,
     dimsTargetCm: activeProduct.dimsTargetCm,

@@ -17,6 +17,8 @@ export interface Product {
   thumbUrl?: string;
   source: ProductSource;
   swatches?: ProductSwatch[];
+  cloudStored?: boolean;
+  createdAt?: string;
 }
 
 export const PRODUCTS: Product[] = [

@@ -52,6 +52,7 @@ export interface Serverless3DRequest {
 
 export interface Serverless3DOutput {
   localBlobUrl: string;
+  glbBuffer: ArrayBuffer;
   remoteGlbUrl?: string;
   dimensionsCm: string;
   widthCm: number;
@@ -205,6 +206,7 @@ export async function generateFurniture3DServerless(
 
   return {
     localBlobUrl,
+    glbBuffer: normalized.glbBuffer,
     remoteGlbUrl,
     dimensionsCm: normalized.dimensionsCm,
     widthCm: normalized.widthCm,
