@@ -28,8 +28,44 @@ const MAX_SERVER_UPLOAD_BYTES = 3_600_000; // Vercel 4.5 MB gövde sınırı gü
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-pin');
+}
+
+function isR2DevUrl(urlStr) {
+  try {
+    return new URL(String(urlStr || '')).hostname.toLowerCase().endsWith('.r2.dev');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Türkiye'deki bazı ISS'ler Cloudflare'in geliştirme adresi (*.r2.dev) için TLS bağlantısını
+ * engelleyebiliyor. Özel alan adı (cdn.markaniz.com) bağlandığında doğrudan R2 URL kullanılır;
+ * geliştirme aşamasında (*.r2.dev) dosyalar aynı alan adından Edge CDN önbellekli sunulur.
+ */
+function buildPublicAssetUrl(env, key) {
+  if (env.provider === 'r2' && env.r2) {
+    if (!isR2DevUrl(env.r2.publicUrl)) {
+      return `${env.r2.publicUrl}/${key}`;
+    }
+    return `/api/storage?action=file&key=${encodeURIComponent(key)}`;
+  }
+  return '';
+}
+
+function normalizeServedProduct(env, p) {
+  if (!p || env.provider !== 'r2' || !env.r2) return p;
+  const out = { ...p };
+  if (isR2DevUrl(out.glbUrl) && out.id) {
+    out.glbUrl = buildPublicAssetUrl(env, `models/${out.id}.glb`);
+    out.remoteGlbUrl = out.glbUrl;
+  }
+  if (isR2DevUrl(out.thumbUrl) && out.id) {
+    out.thumbUrl = buildPublicAssetUrl(env, `thumbs/${out.id}.jpg`);
+  }
+  return out;
 }
 
 function getStorageEnv() {
@@ -349,7 +385,7 @@ export default async function handler(req, res) {
 
   const env = getStorageEnv();
 
-  if (req.method === 'GET') {
+  if (req.method === 'GET' || req.method === 'HEAD') {
     const action = typeof req.query?.action === 'string' ? req.query.action : 'config';
 
     // 1) Depolama durumu
@@ -360,6 +396,7 @@ export default async function handler(req, res) {
         provider: env.provider,
         providerLabel: env.providerLabel,
         publicBaseUrl: env.publicBaseUrl,
+        usingEdgeProxyForR2Dev: Boolean(env.provider === 'r2' && env.r2 && isR2DevUrl(env.r2.publicUrl)),
         requiresPin: env.requiresPin,
         maxDirectUploadMb: env.provider === 'r2' ? 25 : 3.5,
       });
@@ -377,7 +414,7 @@ export default async function handler(req, res) {
         });
       }
       try {
-        const products = await readCatalog(env);
+        const products = (await readCatalog(env)).map((p) => normalizeServedProduct(env, p));
         return res.status(200).json({
           ok: true,
           configured: true,
@@ -408,7 +445,7 @@ export default async function handler(req, res) {
         if (!found) {
           return res.status(404).json({ ok: false, error: 'Ürün kalıcı katalogda bulunamadı.' });
         }
-        return res.status(200).json({ ok: true, product: found });
+        return res.status(200).json({ ok: true, product: normalizeServedProduct(env, found) });
       } catch (err) {
         return res.status(502).json({
           ok: false,
@@ -417,7 +454,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4) R2 CORS güvenlik yedeği (r2.dev CORS açılmadıysa .GLB/.JPG'yi doğrudan sunar)
+    // 4) R2 Edge CDN Dosya Sunucu (Türkiye ISS'lerinin *.r2.dev engelini aşar, 1 yıl Edge önbellekli!)
     if (action === 'file') {
       const key = typeof req.query?.key === 'string' ? req.query.key.trim() : '';
       if (!isSafeStorageKey(key)) {
@@ -427,16 +464,21 @@ export default async function handler(req, res) {
         return res.status(404).json({ ok: false, error: 'R2 deposu aktif değil.' });
       }
       try {
-        const up = await r2SignedFetch(env.r2, 'GET', key);
+        const up = await r2SignedFetch(env.r2, req.method === 'HEAD' ? 'HEAD' : 'GET', key);
         if (!up.ok) {
           return res.status(up.status).json({ ok: false, error: `Dosya bulunamadı (${up.status})` });
         }
-        const ab = await up.arrayBuffer();
         res.setHeader(
           'Content-Type',
           key.endsWith('.glb') ? 'model/gltf-binary' : 'image/jpeg'
         );
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Cache-Control', 'public, s-maxage=31536000, max-age=31536000, immutable');
+        if (req.method === 'HEAD') {
+          const cl = up.headers.get('content-length');
+          if (cl) res.setHeader('Content-Length', cl);
+          return res.status(200).end();
+        }
+        const ab = await up.arrayBuffer();
         return res.status(200).send(Buffer.from(ab));
       } catch (err) {
         return res.status(502).json({
@@ -490,7 +532,7 @@ export default async function handler(req, res) {
       }
       const glbKey = `models/${id}.glb`;
       const glbPutUrl = presignR2PutUrl(env.r2, glbKey, 600);
-      const glbPublicUrl = `${env.r2.publicUrl}/${glbKey}`;
+      const glbPublicUrl = buildPublicAssetUrl(env, glbKey);
 
       let thumbKey = null;
       let thumbPutUrl = null;
@@ -498,7 +540,7 @@ export default async function handler(req, res) {
       if (body?.hasThumb) {
         thumbKey = `thumbs/${id}.jpg`;
         thumbPutUrl = presignR2PutUrl(env.r2, thumbKey, 600);
-        thumbPublicUrl = `${env.r2.publicUrl}/${thumbKey}`;
+        thumbPublicUrl = buildPublicAssetUrl(env, thumbKey);
       }
 
       return res.status(200).json({
@@ -571,7 +613,7 @@ export default async function handler(req, res) {
             const errTxt = await putGlb.text().catch(() => '');
             throw new Error(`R2 .GLB yükleme hatası (${putGlb.status}): ${errTxt.slice(0, 180)}`);
           }
-          glbPublicUrl = `${env.r2.publicUrl}/${glbKey}`;
+          glbPublicUrl = buildPublicAssetUrl(env, glbKey);
 
           if (thumbBuf && thumbBuf.length > 0 && thumbBuf.length < 600_000) {
             const putTh = await r2SignedFetch(env.r2, 'PUT', thumbKey, {
@@ -580,7 +622,7 @@ export default async function handler(req, res) {
               cacheControl: 'public, max-age=31536000, immutable',
             });
             if (putTh.ok) {
-              thumbPublicUrl = `${env.r2.publicUrl}/${thumbKey}`;
+              thumbPublicUrl = buildPublicAssetUrl(env, thumbKey);
             }
           }
         } else if (env.provider === 'vercel-blob') {
