@@ -120,6 +120,8 @@ def _get_paint_pipeline():
         conf.multiview_cfg_path = os.path.join(HY3D_ROOT, "hy3dpaint", "cfgs", "hunyuan-paint-pbr.yaml")
         conf.custom_pipeline = os.path.join(HY3D_ROOT, "hy3dpaint", "hunyuanpaintpbr")
         conf.realesrgan_ckpt_path = os.path.join(HY3D_ROOT, "hy3dpaint", "ckpt", "RealESRGAN_x4plus.pth")
+        if os.path.isdir("/models/dinov2-giant"):
+            conf.dino_ckpt_path = "/models/dinov2-giant"
         conf.render_size = 2048
         conf.texture_size = 2048
         pipe = Hunyuan3DPaintPipeline(conf)
@@ -439,7 +441,7 @@ def handler(job):
         with torch.no_grad():
             mesh = shape_pipe(
                 image=front_clean,
-                num_inference_steps=40,
+                num_inference_steps=35,
                 guidance_scale=7.5,
                 octree_resolution=384,
                 num_chunks=20000,
@@ -464,7 +466,7 @@ def handler(job):
             with torch.no_grad():
                 paint_pipe(
                     mesh_path=raw_mesh_path,
-                    image_path=cleaned_list,
+                    image_path=front_clean,
                     output_mesh_path=out_obj_path,
                     use_remesh=True,
                     save_glb=False,
