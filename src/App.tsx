@@ -43,6 +43,7 @@ import {
   fetchCloudProductById,
   fetchStorageConfig,
   getSavedStoragePin,
+  registerPreUploadedR2Product,
   saveProductToCloudStorage,
   saveStoragePin,
   type CloudStorageConfig,
@@ -416,11 +417,12 @@ export function App() {
         runpodApiKey: memberState.runpodApiKey || undefined,
         runpod3dEndpointId: memberState.runpod3dEndpointId || undefined,
         runpodGpuTier: memberState.runpodGpuTier,
+        adminPin: cfgAdminPin || undefined,
         onProgress: (m) => setGenMsg(m),
       });
 
       let finalProduct: Product = {
-        id: `ai-${Date.now()}`,
+        id: out.productId || `ai-${Date.now()}`,
         name: cleanName,
         category: 'Özel 3B',
         dimensionsCm: out.dimensionsCm,
@@ -430,8 +432,29 @@ export function App() {
         source: 'ozel-cad',
       };
 
-      // 2. Aşama: Kalıcı dosya deposu (Cloudflare R2 / Vercel Blob) aktifse 1 kere kaydet -> bundan sonra 0 TL GPU!
-      if (storageCfg.configured) {
+      // 2. Aşama: RunPod 2K PBR .GLB'yi doğrudan R2'ye yüklediyse sadece kataloğa kaydet; değilse tarayıcıdan yükle!
+      if (out.r2DirectSaved && out.productId && out.remoteGlbUrl) {
+        try {
+          finalProduct = await registerPreUploadedR2Product({
+            productId: out.productId,
+            name: cleanName,
+            category: 'Özel 3B',
+            dimensionsCm: out.dimensionsCm,
+            dimsTargetCm: { w: out.widthCm, d: out.depthCm, h: out.heightCm },
+            glbPublicUrl: out.remoteGlbUrl,
+            thumbnailDataUrl: slots.front,
+            adminPin: cfgAdminPin,
+            onProgress: (m) => setGenMsg(m),
+          });
+        } catch (regErr) {
+          finalProduct.cloudStored = true;
+          setGenMsg(
+            `2K PBR model R2'ye kaydedildi ancak katalog kaydı uyarısı: ${
+              regErr instanceof Error ? regErr.message : 'Bilinmeyen hata'
+            }`
+          );
+        }
+      } else if (storageCfg.configured && out.glbBuffer) {
         try {
           finalProduct = await saveProductToCloudStorage({
             name: cleanName,
@@ -1877,14 +1900,14 @@ export function App() {
                   <label className="h-28 border border-dashed border-stone-700 hover:border-stone-400 bg-stone-900 flex flex-col items-center justify-center cursor-pointer px-4 text-center transition">
                     <Upload className="w-5 h-5 text-stone-400 mb-1.5" />
                     <span className="text-xs font-semibold text-stone-200">
-                      {cadFile ? cadFile.name : 'CAD Dosyası Seç (.glb, .gltf, .obj, .stl)'}
+                      {cadFile ? cadFile.name : 'CAD Dosyası Seç (.glb, .gltf, .obj, .stl, .fbx)'}
                     </span>
                     <span className="text-[10px] text-stone-400 mt-0.5">
-                      Tarayıcıda anında 1:1 metre dönüşümü ve Canlı AR açılışı
+                      AutoCAD / 3ds Max (.fbx, .obj) ve .glb dosyaları anında 1:1 AR-hazır olur
                     </span>
                     <input
                       type="file"
-                      accept=".glb,.gltf,.obj,.stl"
+                      accept=".glb,.gltf,.obj,.stl,.fbx"
                       className="hidden"
                       onChange={(e) => setCadFile(e.target.files?.[0] || null)}
                     />
@@ -1911,7 +1934,7 @@ export function App() {
                       onChange={(e) => setAiEngineChoice(e.target.value as ActiveAiEngine)}
                       className="w-full px-3 py-2 text-xs bg-stone-900 border border-stone-800 text-white"
                     >
-                      <option value="runpod">RunPod Serverless · Hunyuan3D-2 Turbo (Önerilen)</option>
+                      <option value="runpod">RunPod Serverless · Hunyuan3D 2.1 Full PBR (2K · Önerilen)</option>
                       <option value="trellis">fal.ai · TRELLIS Çok-Açılı</option>
                       <option value="hunyuan">fal.ai · Hunyuan3D v2 PBR</option>
                     </select>
@@ -2110,7 +2133,7 @@ export function App() {
             <div className="space-y-3 border border-stone-950 p-3.5 bg-[#faf8f4]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-stone-950">
-                  1) RunPod Serverless Flex (Hunyuan3D-2 Turbo)
+                  1) RunPod Serverless Flex (Hunyuan3D 2.1 Full PBR · 2K)
                 </span>
                 <span
                   className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
@@ -2201,7 +2224,7 @@ export function App() {
                 onChange={(e) => setCfgEngine(e.target.value as ActiveAiEngine)}
                 className="w-full px-3 py-2 bg-white border border-stone-300 text-xs"
               >
-                <option value="runpod">RunPod Serverless · Hunyuan3D-2 Turbo</option>
+                <option value="runpod">RunPod Serverless · Hunyuan3D 2.1 Full PBR (2K)</option>
                 <option value="trellis">fal.ai · TRELLIS</option>
                 <option value="hunyuan">fal.ai · Hunyuan3D v2</option>
               </select>

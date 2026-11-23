@@ -13,11 +13,13 @@
  * böylece tarayıcı üretilen .GLB'yi anında gerçek santimetre (1:1) ölçüsüne getirip Canlı AR'da açar.
  */
 
+import { buildPublicAssetUrl, getStorageEnv, presignR2PutUrl } from './storage.js';
+
 const RUNPOD_GPU_RATES_USD_PER_SEC = {
-  L4: { rate: 0.00019, avgSec: 32, label: 'RunPod L4 / 24GB Flex' },
-  RTX4090: { rate: 0.00031, avgSec: 20, label: 'RunPod RTX 4090 (24GB PRO)' },
-  L40S: { rate: 0.00053, avgSec: 16, label: 'RunPod L40S (48GB PRO)' },
-  A100: { rate: 0.00076, avgSec: 14, label: 'RunPod A100 (80GB)' },
+  L4: { rate: 0.00019, avgSec: 85, label: 'RunPod L4 / 24GB Flex' },
+  RTX4090: { rate: 0.00031, avgSec: 65, label: 'RunPod RTX 4090 (24GB PRO)' },
+  L40S: { rate: 0.00053, avgSec: 55, label: 'RunPod L40S (48GB PRO · 2K PBR)' },
+  A100: { rate: 0.00076, avgSec: 45, label: 'RunPod A100 (80GB · 2K PBR)' },
 };
 
 const FAL_MODELS = {
@@ -60,8 +62,23 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, x-fal-key, x-runpod-key, x-runpod-3d-endpoint, x-runpod-gpu-tier'
+    'Content-Type, x-fal-key, x-runpod-key, x-runpod-3d-endpoint, x-runpod-gpu-tier, x-admin-pin'
   );
+}
+
+function makeSlugId(name) {
+  const trMap = {
+    ç: 'c', ğ: 'g', ı: 'i', İ: 'i', ö: 'o', ş: 's', ü: 'u',
+    Ç: 'c', Ğ: 'g', Ö: 'o', Ş: 's', Ü: 'u',
+  };
+  const base = String(name || 'mobilya')
+    .replace(/[çğıİöşüÇĞÖŞÜ]/g, (c) => trMap[c] || c)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  const suf = Math.random().toString(36).slice(2, 7);
+  return `${base || 'mobilya'}-${suf}`;
 }
 
 function cleanEndpointId(raw) {
@@ -276,6 +293,14 @@ export default async function handler(req, res) {
           estimatedCostUsd,
           glbUrl: data.output?.glbUrl || data.output?.glb_url || null,
           glbBase64: data.output?.glbBase64 || data.output?.glb_base64 || null,
+          r2DirectSaved: Boolean(data.output?.r2DirectSaved),
+          productId: data.output?.productId || null,
+          widthCm: data.output?.widthCm || null,
+          depthCm: data.output?.depthCm || null,
+          heightCm: data.output?.heightCm || null,
+          dimensionsCm: data.output?.dimensionsCm || null,
+          sizeKB: data.output?.sizeKB || null,
+          model: data.output?.model || null,
           error: data.error || data.output?.error || undefined,
         });
       } catch (err) {
@@ -290,6 +315,18 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
+    const storageEnv = getStorageEnv();
+    if (storageEnv.requiresPin) {
+      const sentPin =
+        typeof req.headers['x-admin-pin'] === 'string' ? req.headers['x-admin-pin'].trim() : '';
+      if (!sentPin || sentPin !== storageEnv.adminPin) {
+        return res.status(401).json({
+          ok: false,
+          error: '3B üretim için yönetici PIN kodu gerekli. Sağ üstteki Ayarlar panelinden girin.',
+        });
+      }
+    }
+
     let body = req.body;
     if (typeof body === 'string') {
       try {
@@ -319,6 +356,17 @@ export default async function handler(req, res) {
             'RunPod Serverless Endpoint ID ve API Key ayarlar panelinden veya Vercel ortam değişkenlerinden (RUNPOD_ENDPOINT_ID / RUNPOD_API_KEY) tanımlanmalıdır.',
         });
       }
+      // Cloudflare R2 bağlıysa RunPod'a doğrudan imzalı PUT linki ver (2.55 MB kısıtı kalkar -> tam 2K PBR .GLB!)
+      let productId = null;
+      let r2PutUrl = null;
+      let r2PublicUrl = null;
+      if (storageEnv.provider === 'r2' && storageEnv.r2) {
+        productId = makeSlugId(body?.name || 'mobilya');
+        const glbKey = `models/${productId}.glb`;
+        r2PutUrl = presignR2PutUrl(storageEnv.r2, glbKey, 1800);
+        r2PublicUrl = buildPublicAssetUrl(storageEnv, glbKey);
+      }
+
       try {
         const rpRes = await fetch(`https://api.runpod.ai/v2/${encodeURIComponent(rp3dEndpoint)}/run`, {
           method: 'POST',
@@ -329,6 +377,10 @@ export default async function handler(req, res) {
           body: JSON.stringify({
             input: {
               task: 'product3d',
+              quality: 'studio',
+              product_id: productId || undefined,
+              r2_put_url: r2PutUrl || undefined,
+              r2_public_url: r2PublicUrl || undefined,
               images: { front, back: back || null, left: left || null, right: right || null },
               width_cm: Number(body?.width_cm || 0) || undefined,
               depth_cm: Number(body?.depth_cm || 0) || undefined,

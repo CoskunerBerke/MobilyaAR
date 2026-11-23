@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 
 export interface ConvertedCadResult {
@@ -40,8 +41,11 @@ export async function convertCadFileToGlb(
     const geo = new STLLoader().parse(buf);
     geo.computeVertexNormals();
     loadedObj = new THREE.Mesh(geo, defaultMat);
+  } else if (ext === 'fbx') {
+    const buf = await file.arrayBuffer();
+    loadedObj = new FBXLoader().parse(buf, '');
   } else {
-    throw new Error('Desteklenen CAD formatları: .glb, .gltf, .obj, .stl');
+    throw new Error('Desteklenen CAD formatları: .glb, .gltf, .obj, .stl, .fbx');
   }
 
   const root = new THREE.Group();

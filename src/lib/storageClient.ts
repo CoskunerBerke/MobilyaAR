@@ -292,6 +292,78 @@ export async function saveProductToCloudStorage(
   return upJson.product as Product;
 }
 
+export async function registerPreUploadedR2Product(input: {
+  productId: string;
+  name: string;
+  category: string;
+  dimensionsCm: string;
+  dimsTargetCm?: { w: number; d: number; h: number };
+  glbPublicUrl: string;
+  thumbnailDataUrl?: string | null;
+  adminPin?: string;
+  onProgress?: (msg: string) => void;
+}): Promise<Product> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const pin = (input.adminPin ?? getSavedStoragePin()).trim();
+  if (pin) headers['x-admin-pin'] = pin;
+
+  let thumbUrl: string | undefined;
+  if (input.thumbnailDataUrl) {
+    input.onProgress?.('Ürün kapak görseli ve katalog kaydı tamamlanıyor...');
+    try {
+      const compactThumb = await compressThumbDataUrl(input.thumbnailDataUrl);
+      const preRes = await fetch('/api/storage', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          action: 'presign',
+          productId: input.productId,
+          hasThumb: true,
+        }),
+      });
+      const preJson = await preRes.json().catch(() => ({}));
+      if (preRes.ok && preJson.ok && preJson.thumbPutUrl) {
+        const tb = await dataUrlToBlob(compactThumb);
+        const thPut = await fetch(preJson.thumbPutUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'image/jpeg' },
+          body: tb,
+        });
+        if (thPut.ok && preJson.thumbPublicUrl) {
+          thumbUrl = String(preJson.thumbPublicUrl);
+        }
+      }
+    } catch {
+      /* Kapak görseli atlanırsa model-viewer 3B önizleme gösterir */
+    }
+  }
+
+  const regRes = await fetch('/api/storage', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      action: 'register',
+      product: {
+        id: input.productId,
+        name: input.name,
+        category: input.category,
+        dimensionsCm: input.dimensionsCm,
+        dimsTargetCm: input.dimsTargetCm,
+        glbUrl: input.glbPublicUrl,
+        remoteGlbUrl: input.glbPublicUrl,
+        thumbUrl,
+        source: 'ozel-cad',
+        cloudStored: true,
+      },
+    }),
+  });
+  const regJson = await regRes.json().catch(() => ({}));
+  if (!regRes.ok || !regJson.ok || !regJson.product) {
+    throw new Error(regJson.error || 'Katalog kaydı tamamlanamadı.');
+  }
+  return regJson.product as Product;
+}
+
 export async function deleteCloudProduct(id: string, adminPin?: string): Promise<void> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const pin = (adminPin ?? getSavedStoragePin()).trim();

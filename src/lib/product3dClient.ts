@@ -47,12 +47,15 @@ export interface Serverless3DRequest {
   runpodApiKey?: string;
   runpod3dEndpointId?: string;
   runpodGpuTier?: RunpodGpuTierId;
+  adminPin?: string;
   onProgress?: (msg: string) => void;
 }
 
 export interface Serverless3DOutput {
   localBlobUrl: string;
-  glbBuffer: ArrayBuffer;
+  glbBuffer?: ArrayBuffer;
+  r2DirectSaved?: boolean;
+  productId?: string;
   remoteGlbUrl?: string;
   dimensionsCm: string;
   widthCm: number;
@@ -104,8 +107,9 @@ export async function generateFurniture3DServerless(
   if (req.runpodApiKey) headers['x-runpod-key'] = req.runpodApiKey;
   if (req.runpod3dEndpointId) headers['x-runpod-3d-endpoint'] = req.runpod3dEndpointId;
   if (req.runpodGpuTier) headers['x-runpod-gpu-tier'] = req.runpodGpuTier;
+  if (req.adminPin) headers['x-admin-pin'] = req.adminPin;
 
-  req.onProgress?.('Ürün fotoğrafları sunucusuz 3B GPU motoruna gönderiliyor...');
+  req.onProgress?.('Ürün fotoğrafları 2K PBR 3B GPU motoruna gönderiliyor...');
 
   const startRes = await fetch('/api/product3d', {
     method: 'POST',
@@ -130,8 +134,11 @@ export async function generateFurniture3DServerless(
 
   let remoteGlbUrl: string | undefined;
   let rawBuf: ArrayBuffer | null = null;
+  let r2DirectSaved = false;
+  let directProductId: string | undefined;
+  let directDims: { w: number; d: number; h: number; label: string } | null = null;
 
-  for (let attempt = 0; attempt < 90; attempt++) {
+  for (let attempt = 0; attempt < 150; attempt++) {
     await new Promise((r) => setTimeout(r, 2200));
     const sec = Math.round((Date.now() - t0) / 1000);
 
@@ -161,7 +168,20 @@ export async function generateFurniture3DServerless(
       if (typeof stJson.estimatedCostUsd === 'number' && stJson.estimatedCostUsd > 0) {
         costUsd = stJson.estimatedCostUsd;
       }
-      if (stJson.glbBase64) {
+      if (stJson.r2DirectSaved && stJson.glbUrl && stJson.productId) {
+        r2DirectSaved = true;
+        remoteGlbUrl = String(stJson.glbUrl);
+        directProductId = String(stJson.productId);
+        const w = Number(stJson.widthCm) || req.widthCm;
+        const d = Number(stJson.depthCm) || req.depthCm;
+        const h = Number(stJson.heightCm) || req.heightCm;
+        directDims = {
+          w,
+          d,
+          h,
+          label: String(stJson.dimensionsCm || `${w} × ${d} × ${h} cm`),
+        };
+      } else if (stJson.glbBase64) {
         rawBuf = base64ToArrayBuffer(stJson.glbBase64);
       } else if (stJson.glbUrl) {
         remoteGlbUrl = stJson.glbUrl;
@@ -171,7 +191,30 @@ export async function generateFurniture3DServerless(
     if (st === 'FAILED' || st === 'CANCELLED' || st === 'TIMED_OUT') {
       throw new Error(stJson.error || `3B üretim başarısız oldu (${st})`);
     }
-    req.onProgress?.(`${modelLabel} dokulu 3B modeli üretiyor (${sec} sn)...`);
+    req.onProgress?.(`${modelLabel} 2K PBR 3B modeli üretiyor (${sec} sn)...`);
+  }
+
+  const safeSlug = req.name
+    .toLowerCase()
+    .replace(/[^a-z0-9ğüşıöç]+/gi, '-')
+    .replace(/^-+|-+$/g, '');
+
+  // RunPod 1:1 2K PBR .GLB'yi doğrudan Cloudflare R2'ye kaydettiyse yeniden indirmeden hemen dön!
+  if (r2DirectSaved && remoteGlbUrl && directProductId && directDims) {
+    return {
+      localBlobUrl: remoteGlbUrl,
+      r2DirectSaved: true,
+      productId: directProductId,
+      remoteGlbUrl,
+      dimensionsCm: directDims.label,
+      widthCm: directDims.w,
+      depthCm: directDims.d,
+      heightCm: directDims.h,
+      elapsedSec: Number(((Date.now() - t0) / 1000).toFixed(1)),
+      costUsd,
+      modelLabel,
+      filename: `${safeSlug || 'mobilya'}-2k-pbr.glb`,
+    };
   }
 
   if (!rawBuf && !remoteGlbUrl) {
@@ -199,10 +242,6 @@ export async function generateFurniture3DServerless(
   const localBlobUrl = URL.createObjectURL(
     new Blob([normalized.glbBuffer], { type: 'model/gltf-binary' })
   );
-  const safeSlug = req.name
-    .toLowerCase()
-    .replace(/[^a-z0-9ğüşıöç]+/gi, '-')
-    .replace(/^-+|-+$/g, '');
 
   return {
     localBlobUrl,

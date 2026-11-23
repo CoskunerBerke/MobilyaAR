@@ -45,7 +45,7 @@ function isR2DevUrl(urlStr) {
  * engelleyebiliyor. Özel alan adı (cdn.markaniz.com) bağlandığında doğrudan R2 URL kullanılır;
  * geliştirme aşamasında (*.r2.dev) dosyalar aynı alan adından Edge CDN önbellekli sunulur.
  */
-function buildPublicAssetUrl(env, key) {
+export function buildPublicAssetUrl(env, key) {
   if (env.provider === 'r2' && env.r2) {
     if (!isR2DevUrl(env.r2.publicUrl)) {
       return `${env.r2.publicUrl}/${key}`;
@@ -68,7 +68,7 @@ function normalizeServedProduct(env, p) {
   return out;
 }
 
-function getStorageEnv() {
+export function getStorageEnv() {
   const r2Account = String(process.env.R2_ACCOUNT_ID || '').trim();
   const r2Access = String(process.env.R2_ACCESS_KEY_ID || '').trim();
   const r2Secret = String(process.env.R2_SECRET_ACCESS_KEY || '').trim();
