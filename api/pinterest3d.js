@@ -180,7 +180,7 @@ export default async function handler(req, res) {
     const envGemini = Boolean(String(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '').trim());
     const envRunpod = Boolean(
       String(process.env.RUNPOD_API_KEY || '').trim() &&
-        String(process.env.RUNPOD_3D_ENDPOINT_ID || '').trim()
+        String(process.env.RUNPOD_3D_ENDPOINT_ID || process.env.RUNPOD_ENDPOINT_ID || '').trim()
     );
     return res.status(200).json({
       ok: true,
@@ -211,13 +211,13 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: 'Geçerli bir oda fotoğrafı gönderin.' });
       }
 
-      const prompt = `You are a senior interior architect and 3D spatial analyst.
-Analyze this interior inspiration photo (e.g. from Pinterest) to recreate its exact architectural palette and every key furniture/architectural object inside a ${roomWidthM}m × ${roomDepthM}m × ${roomCeilingM}m 3D room.
+      const prompt = `You are a senior interior architect and meticulous 3D spatial object detector.
+Perform an EXHAUSTIVE inventory of EVERY distinct visible furniture piece, lighting fixture, rug, plant, mirror, framed wall artwork, shelving unit, and interior architectural element in this inspiration photo to faithfully recreate the room inside a ${roomWidthM}m × ${roomDepthM}m × ${roomCeilingM}m 3D studio.
 
 Return ONLY valid JSON with this exact schema:
 {
   "roomStyle": {
-    "styleNameTr": "string (e.g. Modern Minimalist Salon)",
+    "styleNameTr": "string (e.g. Modern Minimalist Loft)",
     "summaryTr": "string (1 concise Turkish sentence describing the ambiance)",
     "wallColorHex": "#RRGGBB",
     "accentWallColorHex": "#RRGGBB",
@@ -230,8 +230,8 @@ Return ONLY valid JSON with this exact schema:
   "detectedObjects": [
     {
       "id": "unique-slug",
-      "nameTr": "short descriptive Turkish name (e.g. Mermer Şömine Ünitesi, Duvar OLED TV, 3'lü Keten Koltuk, Traverten Orta Sehpa)",
-      "category": "Şömine" | "TV & Ünite" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Depolama" | "Avize" | "Halı" | "Dekor",
+      "nameTr": "short descriptive Turkish name (e.g. Mermer Şömine Ünitesi, Metal Çerçeveli Kitaplık, Saksılı Zeytin Ağacı, Yuvarlak Duvar Aynası, Siyah Mantar Abajur)",
+      "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
       "box2d": [ymin, xmin, ymax, xmax],
       "widthCm": number,
       "depthCm": number,
@@ -242,17 +242,23 @@ Return ONLY valid JSON with this exact schema:
       "relativeX": number (-0.85 to 0.85, where -1 is west wall and +1 is east wall),
       "relativeZ": number (-0.85 to 0.85, where -1 is north wall and +1 is south wall),
       "facingDeg": number (0 faces +Z south, 180 faces -Z north, 90 faces +X east, -90 faces -X west),
-      "visualDescriptionEn": "extremely faithful visual specification of this EXACT item: silhouette, exact material, color, marble vein, wood tone, cushion count, metal legs, flame/screen details"
+      "visualDescriptionEn": "extremely faithful visual specification of this EXACT item: silhouette, exact material, color, wood tone, cushions, legs, lamp shade, plant foliage, frame details"
     }
   ]
 }
 
-Rules:
-- Detect up to 8 most important distinct items (ALWAYS prioritize fireplace, TV/media wall, main sofa, coffee table, armchair, dining table, bookshelf, chandelier).
-- box2d coordinates MUST be integers in 0..1000 scale [ymin, xmin, ymax, xmax] tightly enclosing the item in the image.
+CRITICAL COMPLETENESS & PRECISION RULES:
+- DO NOT stop at 8 items! Detect EVERY distinct visible item (aim for 10 to 20 items in detailed rooms). Scan all 4 quadrants AND upper/lower levels systematically:
+  1. Hero furniture: beds, sofas, fireplaces, TV/media walls, desks, dining tables, wardrobes, built-in cabinets, staircases.
+  2. Secondary seating & tables: armchairs, office chairs, poufs/ottomans, coffee tables, nightstands/bedside tables, vanity/dressing tables.
+  3. Storage & tech: open bookshelves, sideboards, monitors/TVs.
+  4. EVERY separate rug (list rectangular and round rugs separately!).
+  5. Lighting: chandeliers, floor lamps, globe/table lamps, bedside lamps.
+  6. Plants & wall decor: potted indoor trees/plants, wall mirrors, framed paintings/posters.
+- box2d MUST be integers in 0..1000 scale [ymin, xmin, ymax, xmax] TIGHTLY enclosing ONLY that single item without excessive background bleed.
 - Dimensions in cm MUST be realistic real-world furniture dimensions.
-- If a fireplace and a wall-mounted TV are visually separate, list them as separate items (fireplace elevationCm=0, wall TV elevationCm=115..140) OR if they are a single unified fireplace+TV marble wall unit, list it clearly with full width/height.
-- Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping room layout matching the photo.`;
+- If a fireplace and a wall-mounted TV are visually separate, list them as separate items (fireplace elevationCm=0, wall TV elevationCm=115..140).
+- Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping layout matching the photo.`;
 
       const { model, json } = await callGeminiWithFallback(
         apiKey,
@@ -266,6 +272,7 @@ Rules:
           ],
           generationConfig: {
             temperature: 0.2,
+            maxOutputTokens: 8192,
             responseMimeType: 'application/json',
           },
         },
@@ -281,6 +288,49 @@ Rules:
         roomStyle: parsed.roomStyle || null,
         detectedObjects: Array.isArray(parsed.detectedObjects) ? parsed.detectedObjects : [],
       });
+    }
+
+    if (action === 'identifyCrop') {
+      const { croppedImageDataUrl, fullRoomImageDataUrl } = req.body || {};
+      const cropImg = splitDataUrl(croppedImageDataUrl);
+      const fullImg = splitDataUrl(fullRoomImageDataUrl);
+      if (!cropImg) {
+        return res.status(400).json({ ok: false, error: 'Kırpılmış alan görseli eksik.' });
+      }
+      const parts = [
+        {
+          text: `You are an interior architect. Identify the SINGLE primary furniture or decor object shown in Image 1 (cropped from the room in Image 2).
+Return ONLY valid JSON:
+{
+  "nameTr": "short descriptive Turkish name (e.g. Saksılı Zeytin Ağacı, Metal Çerçeveli Kitaplık, Yuvarlak Duvar Aynası)",
+  "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+  "widthCm": number,
+  "depthCm": number,
+  "heightCm": number,
+  "mountMode": "floor" | "wall" | "ceiling" | "rug",
+  "elevationCm": number,
+  "visualDescriptionEn": "concise accurate English visual description of this exact object"
+}`,
+        },
+        { inlineData: { mimeType: cropImg.mimeType, data: cropImg.data } },
+      ];
+      if (fullImg) parts.push({ inlineData: { mimeType: fullImg.mimeType, data: fullImg.data } });
+
+      const { model, json } = await callGeminiWithFallback(
+        apiKey,
+        VISION_MODELS,
+        {
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            temperature: 0.15,
+            maxOutputTokens: 1024,
+            responseMimeType: 'application/json',
+          },
+        },
+        'vision'
+      );
+      const parsed = parseJsonResponse(extractText(json));
+      return res.status(200).json({ ok: true, model, item: parsed });
     }
 
     if (action === 'isolate') {

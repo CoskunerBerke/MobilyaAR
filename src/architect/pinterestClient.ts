@@ -102,12 +102,14 @@ function splitDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
 }
 
 /**
- * Crops a [ymin, xmin, ymax, xmax] (0..1000) region from a room image with slight padding.
+ * Crops a [ymin, xmin, ymax, xmax] (0..1000) region tightly from a room image
+ * onto a clean 1024×1024 pure white studio canvas with generous outer margin
+ * so RunPod Hunyuan3D's rembg cleanly isolates ONLY the target object.
  */
 export function cropBoxFromDataUrl(
   imageDataUrl: string,
   box2d: [number, number, number, number],
-  padRatio = 0.08
+  padRatio = 0.025
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -131,15 +133,66 @@ export function cropBoxFromDataUrl(
       }
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, outSize, outSize);
-      const sc = Math.min((outSize * 0.92) / Math.max(1, sw), (outSize * 0.92) / Math.max(1, sh));
+      // Generous 12% studio white margin around tightly cropped object improves rembg + 3D mesh silhouette
+      const sc = Math.min((outSize * 0.78) / Math.max(1, sw), (outSize * 0.78) / Math.max(1, sh));
       const dw = sw * sc;
       const dh = sh * sc;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, sx, sy, sw, sh, (outSize - dw) * 0.5, (outSize - dh) * 0.5, dw, dh);
-      resolve(canvas.toDataURL('image/jpeg', 0.92));
+      resolve(canvas.toDataURL('image/jpeg', 0.94));
     };
     img.onerror = reject;
     img.src = imageDataUrl;
   });
+}
+
+export function isGeminiQuotaZeroError(msg: string): boolean {
+  const s = String(msg || '').toLowerCase();
+  return (
+    s.includes('limit: 0') ||
+    s.includes('free_tier') ||
+    s.includes('quota exceeded') ||
+    s.includes('(429)') ||
+    s.includes('resource_exhausted')
+  );
+}
+
+export async function identifyCroppedPinterestObject(params: {
+  croppedImageDataUrl: string;
+  fullRoomImageDataUrl?: string;
+  geminiKey?: string;
+}): Promise<{
+  nameTr: string;
+  category: string;
+  widthCm: number;
+  depthCm: number;
+  heightCm: number;
+  mountMode: 'floor' | 'wall' | 'ceiling' | 'rug';
+  elevationCm: number;
+  visualDescriptionEn: string;
+} | null> {
+  const key = (params.geminiKey || getSavedGeminiKey()).trim();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (key) headers['x-gemini-key'] = key;
+
+  try {
+    const resp = await fetch('/api/pinterest3d?action=identifyCrop', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        croppedImageDataUrl: params.croppedImageDataUrl,
+        fullRoomImageDataUrl: params.fullRoomImageDataUrl,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data?.ok && data?.item) return data.item;
+    }
+  } catch {
+    /* ignore and let caller use default manual label */
+  }
+  return null;
 }
 
 async function callDirectGemini(
