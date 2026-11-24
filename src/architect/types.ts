@@ -276,7 +276,8 @@ export function getWallLengthM(wall: WallId, roomW: number, roomD: number): numb
 
 export function createDefaultArchitectProject(catalogProducts: Product[]): ArchRoomProject {
   const sofa = catalogProducts.find((p) => p.id === 'ikea-landskrona-sofa') || catalogProducts[0];
-  const coffee = catalogProducts.find((p) => p.id === 'ikea-stockholm-coffee');
+  // Use lightweight 442 KB Lisabo coffee table (10x lighter than 4.6 MB Stockholm) for instant loading & silky FPS!
+  const coffee = catalogProducts.find((p) => p.id === 'ikea-lisabo-table') || catalogProducts.find((p) => p.id === 'ikea-stockholm-coffee');
   const chair = catalogProducts.find((p) => p.id === 'ikea-strandmon-chair');
 
   const objects: ArchPlacedObject[] = [
@@ -388,9 +389,9 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
       y: 0,
       z: 0.15,
       rot: Math.PI / 2,
-      widthM: 1.8,
-      depthM: 0.59,
-      heightM: 0.4,
+      widthM: 1.18,
+      depthM: 0.5,
+      heightM: 0.45,
       mountMode: 'floor',
       thumbUrl: coffee.thumbUrl,
       source: 'catalog',

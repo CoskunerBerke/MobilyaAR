@@ -48,11 +48,12 @@ export function buildParametricObject3D(obj: ArchPlacedObject): { group: THREE.G
     });
     const fireGlowMat = new THREE.MeshBasicMaterial({ color: 0xff8c2b });
     const fireCoreMat = new THREE.MeshBasicMaterial({ color: 0xffd166 });
-    const glassMat = new THREE.MeshPhysicalMaterial({
+    const glassMat = new THREE.MeshStandardMaterial({
       color: 0xfff5e8,
       transparent: true,
       opacity: 0.16,
-      roughness: 0.06,
+      roughness: 0.1,
+      metalness: 0.2,
       depthWrite: false,
     });
     disposables.push(() => {

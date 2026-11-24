@@ -93,7 +93,7 @@ function createWindowAssembly(
   wallT: number,
   ceilingH: number,
   coveOnWall: ArchCurtainCove | undefined,
-  glassMat: THREE.MeshPhysicalMaterial,
+  glassMat: THREE.MeshStandardMaterial,
   disposables: Array<() => void>
 ): THREE.Group {
   const grp = new THREE.Group();
@@ -630,12 +630,12 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   slab.raycast = () => {};
   roomRoot.add(slab);
 
-  const glassMat = new THREE.MeshPhysicalMaterial({
+  const glassMat = new THREE.MeshStandardMaterial({
     color: 0xdcf0ff,
     transparent: true,
     opacity: 0.24,
-    roughness: 0.06,
-    metalness: 0.1,
+    roughness: 0.1,
+    metalness: 0.2,
     depthWrite: false,
     side: THREE.DoubleSide,
   });

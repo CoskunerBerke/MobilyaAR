@@ -26,6 +26,7 @@ import { fetchCloudCatalog } from '../lib/storageClient';
 import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
+import { NumericInput } from './NumericInput';
 import { PinterestAIPanel } from './PinterestAIPanel';
 import { SelectionInspector } from './SelectionInspector';
 import { QUICK_ADD_SUGGESTIONS, parseQuickAddQuery } from './quickAddParser';
@@ -662,41 +663,47 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 <div className="grid grid-cols-3 gap-2">
                   <label className="space-y-1">
                     <span className="text-[10px] text-stone-500 block">En (m)</span>
-                    <input
-                      type="number"
+                    <NumericInput
+                      ariaLabel="En (m)"
                       min={2.2}
-                      max={12}
+                      max={15}
                       step={0.1}
+                      decimals={2}
                       value={project.widthM}
-                      onChange={(e) => updateRoomDim({ widthM: Math.max(2.2, Math.min(12, Number(e.target.value) || 5.4)) })}
+                      onChange={(v) => updateRoomDim({ widthM: v })}
                       className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] font-mono text-xs"
                     />
                   </label>
                   <label className="space-y-1">
                     <span className="text-[10px] text-stone-500 block">Derinlik (m)</span>
-                    <input
-                      type="number"
+                    <NumericInput
+                      ariaLabel="Derinlik (m)"
                       min={2.2}
-                      max={12}
+                      max={15}
                       step={0.1}
+                      decimals={2}
                       value={project.depthM}
-                      onChange={(e) => updateRoomDim({ depthM: Math.max(2.2, Math.min(12, Number(e.target.value) || 4.8)) })}
+                      onChange={(v) => updateRoomDim({ depthM: v })}
                       className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] font-mono text-xs"
                     />
                   </label>
                   <label className="space-y-1">
                     <span className="text-[10px] text-stone-500 block">Tavan (m)</span>
-                    <input
-                      type="number"
-                      min={2.2}
-                      max={4.5}
+                    <NumericInput
+                      ariaLabel="Tavan (m)"
+                      min={2.1}
+                      max={5.0}
                       step={0.05}
+                      decimals={2}
                       value={project.ceilingM}
-                      onChange={(e) => updateRoomDim({ ceilingM: Math.max(2.2, Math.min(4.5, Number(e.target.value) || 2.85)) })}
+                      onChange={(v) => updateRoomDim({ ceilingM: v })}
                       className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] font-mono text-xs"
                     />
                   </label>
                 </div>
+                <p className="text-[10px] text-stone-400">
+                  İstediğin ölçüyü doğrudan yazıp <strong>Enter</strong>&apos;a bas (örn. <code className="font-mono">7,5</code> veya <code className="font-mono">10</code>).
+                </p>
                 <div className="flex flex-wrap gap-3 text-[11px]">
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input

@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { getWorldAABBSpan } from '../lib/collision2d';
+import { NumericInput } from './NumericInput';
 import {
   ARCHITECTURAL_PAINT_SWATCHES,
   DOOR_KIND_LABELS,
@@ -311,37 +312,34 @@ export const SelectionInspector: React.FC<Props> = ({
             <div className="grid grid-cols-3 gap-1.5">
               <label className="text-[10px] text-stone-600">
                 Genişlik
-                <input
-                  type="number"
+                <NumericInput
                   min={20}
                   max={wallLenCm}
                   step={5}
                   value={zone.widthCm}
-                  onChange={(e) => patchZone({ widthCm: Math.max(20, Math.min(wallLenCm, Number(e.target.value) || 120)) })}
+                  onChange={(v) => patchZone({ widthCm: v })}
                   className="w-full px-1.5 py-1 border border-stone-300 font-mono text-[11px]"
                 />
               </label>
               <label className="text-[10px] text-stone-600">
                 Yükseklik
-                <input
-                  type="number"
+                <NumericInput
                   min={20}
                   max={ceilCm}
                   step={5}
                   value={zone.heightCm}
-                  onChange={(e) => patchZone({ heightCm: Math.max(20, Math.min(ceilCm, Number(e.target.value) || ceilCm)) })}
+                  onChange={(v) => patchZone({ heightCm: v })}
                   className="w-full px-1.5 py-1 border border-stone-300 font-mono text-[11px]"
                 />
               </label>
               <label className="text-[10px] text-stone-600">
                 Yerden Y
-                <input
-                  type="number"
+                <NumericInput
                   min={0}
                   max={Math.max(0, ceilCm - 20)}
                   step={5}
                   value={zone.bottomCm}
-                  onChange={(e) => patchZone({ bottomCm: Math.max(0, Number(e.target.value) || 0) })}
+                  onChange={(v) => patchZone({ bottomCm: v })}
                   className="w-full px-1.5 py-1 border border-stone-300 font-mono text-[11px]"
                 />
               </label>
@@ -538,25 +536,23 @@ export const SelectionInspector: React.FC<Props> = ({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-[10px] text-stone-600">
               Genişlik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={40}
                 max={wallLenCm - 20}
                 step={5}
                 value={win.widthCm}
-                onChange={(e) => patchWin({ widthCm: Math.max(40, Number(e.target.value) || 120) })}
+                onChange={(v) => patchWin({ widthCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Yükseklik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={40}
                 max={Math.round(project.ceilingM * 100) - 12}
                 step={5}
                 value={win.heightCm}
-                onChange={(e) => patchWin({ heightCm: Math.max(40, Number(e.target.value) || 140) })}
+                onChange={(v) => patchWin({ heightCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
@@ -726,13 +722,12 @@ export const SelectionInspector: React.FC<Props> = ({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-[10px] text-stone-600">
               Genişlik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={70}
                 max={260}
                 step={5}
                 value={door.widthCm}
-                onChange={(e) => patchDoor({ widthCm: Math.max(70, Number(e.target.value) || 95) })}
+                onChange={(v) => patchDoor({ widthCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
@@ -793,25 +788,23 @@ export const SelectionInspector: React.FC<Props> = ({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-[10px] text-stone-600">
               En (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={15}
-                max={140}
+                max={160}
                 step={5}
                 value={col.widthCm}
-                onChange={(e) => patchCol({ widthCm: Number(e.target.value) || 40 })}
+                onChange={(v) => patchCol({ widthCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Derinlik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={15}
-                max={140}
+                max={160}
                 step={5}
                 value={col.depthCm}
-                onChange={(e) => patchCol({ depthCm: Number(e.target.value) || 40 })}
+                onChange={(v) => patchCol({ depthCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
@@ -885,25 +878,23 @@ export const SelectionInspector: React.FC<Props> = ({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-[10px] text-stone-600">
               Genişlik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={15}
                 max={80}
                 step={5}
                 value={beam.widthCm}
-                onChange={(e) => patchBeam({ widthCm: Number(e.target.value) || 30 })}
+                onChange={(v) => patchBeam({ widthCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Sarkma (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={10}
-                max={75}
+                max={80}
                 step={5}
                 value={beam.dropCm}
-                onChange={(e) => patchBeam({ dropCm: Number(e.target.value) || 32 })}
+                onChange={(v) => patchBeam({ dropCm: v })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
@@ -957,49 +948,45 @@ export const SelectionInspector: React.FC<Props> = ({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-[10px] text-stone-600">
               En (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={20}
                 max={600}
                 step={5}
                 value={Math.round(obj.widthM * 100)}
-                onChange={(e) => patchObj({ widthM: Math.max(0.2, (Number(e.target.value) || 100) / 100) })}
+                onChange={(v) => patchObj({ widthM: v / 100 })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Derinlik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={3}
                 max={500}
                 step={5}
                 value={Math.round(obj.depthM * 100)}
-                onChange={(e) => patchObj({ depthM: Math.max(0.03, (Number(e.target.value) || 60) / 100) })}
+                onChange={(v) => patchObj({ depthM: v / 100 })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Yükseklik (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={2}
                 max={450}
                 step={5}
                 value={Math.round(obj.heightM * 100)}
-                onChange={(e) => patchObj({ heightM: Math.max(0.02, (Number(e.target.value) || 80) / 100) })}
+                onChange={(v) => patchObj({ heightM: v / 100 })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
             <label className="text-[10px] text-stone-600">
               Yerden Y (cm)
-              <input
-                type="number"
+              <NumericInput
                 min={0}
                 max={Math.round(project.ceilingM * 100)}
                 step={5}
                 value={Math.round(obj.y * 100)}
-                onChange={(e) => patchObj({ y: Math.max(0, (Number(e.target.value) || 0) / 100) })}
+                onChange={(v) => patchObj({ y: v / 100 })}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
