@@ -89,11 +89,18 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       if (tried.has(model)) continue;
       tried.add(model);
       const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(22000),
+        });
+      } catch (netErr) {
+        errors.push(`${model} (timeout): ${netErr instanceof Error ? netErr.message : 'zaman aşımı'}`);
+        continue;
+      }
       const text = await resp.text();
       let json = null;
       try {
@@ -104,8 +111,8 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       if (resp.ok && json) {
         return { model, json };
       }
-      const errMsg = json?.error?.message || text.slice(0, 260);
-      errors.push(`${model} (${resp.status}): ${errMsg}`);
+      const errMsg = json?.error?.message || text.slice(0, 160);
+      errors.push(`${model} (${resp.status}): ${errMsg.slice(0, 140)}`);
       // Invalid API key / auth errors fail immediately
       if (resp.status === 401 || resp.status === 403) {
         throw new Error(errors[0]);
@@ -129,7 +136,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
     if (secondPass) return secondPass;
   }
 
-  throw new Error(errors[0] || 'Gemini API isteği başarısız oldu');
+  throw new Error(errors.slice(0, 4).join(' | ') || 'Gemini API isteği başarısız oldu');
 }
 
 function extractInlineImage(json) {
@@ -179,17 +186,31 @@ export default async function handler(req, res) {
   const action = String(req.query?.action || req.body?.action || 'config');
 
   if (action === 'config') {
+    const key = getGeminiKey(req);
     const envGemini = Boolean(String(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '').trim());
     const envRunpod = Boolean(
       String(process.env.RUNPOD_API_KEY || '').trim() &&
         String(process.env.RUNPOD_3D_ENDPOINT_ID || process.env.RUNPOD_ENDPOINT_ID || '').trim()
     );
+    let availableModels;
+    if (req.query?.models === '1' && key) {
+      try {
+        const mr = await fetch(`${GEMINI_BASE}?pageSize=100&key=${encodeURIComponent(key)}`);
+        const md = await mr.json().catch(() => null);
+        availableModels = (md?.models || [])
+          .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+          .map((m) => String(m.name || '').replace(/^models\//, ''));
+      } catch {
+        availableModels = [];
+      }
+    }
     return res.status(200).json({
       ok: true,
       geminiConfigured: envGemini,
       runpodConfigured: envRunpod,
       visionModel: VISION_MODELS[0],
       imageModel: IMAGE_MODELS[0],
+      ...(availableModels ? { availableModels } : {}),
     });
   }
 
