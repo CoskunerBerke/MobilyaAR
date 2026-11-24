@@ -39,6 +39,19 @@ export interface PinterestDetectedObject {
 
 const GEMINI_KEY_STORAGE = 'mekanar_arch_gemini_key_v1';
 const GEMINI_DIRECT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const DIRECT_VISION_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash',
+];
+const DIRECT_IMAGE_MODELS = [
+  'gemini-3.1-flash-image',
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-3-pro-image',
+  'gemini-2.5-flash-image',
+];
 
 export function getSavedGeminiKey(): string {
   try {
@@ -67,8 +80,8 @@ export async function fetchPinterestConfig(): Promise<PinterestServerConfig> {
         return {
           geminiConfigured: Boolean(d.geminiConfigured),
           runpodConfigured: Boolean(d.runpodConfigured),
-          visionModel: d.visionModel || 'gemini-2.5-flash',
-          imageModel: d.imageModel || 'gemini-2.5-flash-image',
+          visionModel: d.visionModel || DIRECT_VISION_MODELS[0],
+          imageModel: d.imageModel || DIRECT_IMAGE_MODELS[0],
         };
       }
     }
@@ -78,8 +91,8 @@ export async function fetchPinterestConfig(): Promise<PinterestServerConfig> {
   return {
     geminiConfigured: false,
     runpodConfigured: false,
-    visionModel: 'gemini-2.5-flash',
-    imageModel: 'gemini-2.5-flash-image',
+    visionModel: DIRECT_VISION_MODELS[0],
+    imageModel: DIRECT_IMAGE_MODELS[0],
   };
 }
 
@@ -188,14 +201,19 @@ export async function analyzePinterestRoom(params: {
     const img = splitDataUrl(params.imageDataUrl);
     if (!img) throw new Error('Fotoğraf okunamadı');
     const prompt = `You are a senior interior architect. Analyze this interior photo for a ${params.roomWidthM}x${params.roomDepthM}x${params.roomCeilingM}m 3D room. Return JSON { "roomStyle": { "styleNameTr", "summaryTr", "wallColorHex", "accentWallColorHex", "wallPattern": "smooth"|"boiserie"|"slats"|"concrete"|"stone"|"wallpaper", "floorMaterial": "herringbone_oak"|"plank_oak"|"plank_walnut"|"travertine"|"marble"|"microcement"|"terrazzo", "floorTintHex", "curtainColorHex", "suggestedSunHour" }, "detectedObjects": [{ "id", "nameTr", "category", "box2d": [ymin,xmin,ymax,xmax], "widthCm", "depthCm", "heightCm", "mountMode": "floor"|"wall"|"ceiling"|"rug", "suggestedWall": "north"|"south"|"west"|"east"|"center", "elevationCm", "relativeX", "relativeZ", "facingDeg", "visualDescriptionEn" }] }. Detect up to 8 key items (fireplace, TV, sofa, coffee table, chair, rug, chandelier).`;
-    const { model, json } = await callDirectGemini(key, ['gemini-2.5-flash', 'gemini-2.0-flash'], {
+    const { model, json } = await callDirectGemini(key, DIRECT_VISION_MODELS, {
       contents: [
         { role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }] },
       ],
       generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
     });
-    const txt = (json?.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('\n');
-    const parsed = JSON.parse(txt.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim());
+    const parts = json?.candidates?.[0]?.content?.parts || [];
+    const visible = parts.filter((p: any) => !p.thought && typeof p.text === 'string');
+    const txt = (visible.length > 0 ? visible : parts).map((p: any) => p.text || '').join('\n');
+    const cleaned = txt.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+    const s = cleaned.indexOf('{');
+    const e = cleaned.lastIndexOf('}');
+    const parsed = JSON.parse(s !== -1 && e > s ? cleaned.slice(s, e + 1) : cleaned);
     return {
       roomStyle: parsed.roomStyle || null,
       detectedObjects: parsed.detectedObjects || [],
@@ -251,8 +269,8 @@ export async function isolatePinterestObject(params: {
     if (full) parts.push({ inlineData: { mimeType: full.mimeType, data: full.data } });
     const { model, json } = await callDirectGemini(
       key,
-      ['gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation'],
-      { contents: [{ role: 'user', parts }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }
+      DIRECT_IMAGE_MODELS,
+      { contents: [{ role: 'user', parts }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }
     );
     const candParts = json?.candidates?.[0]?.content?.parts || [];
     for (const p of candParts) {
@@ -299,7 +317,7 @@ export async function generatePhotorealRender(params: {
     if (!snap) throw new Error('Sahne görüntüsü alınamadı');
     const { model, json } = await callDirectGemini(
       key,
-      ['gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation'],
+      DIRECT_IMAGE_MODELS,
       {
         contents: [
           {
@@ -312,7 +330,7 @@ export async function generatePhotorealRender(params: {
             ],
           },
         ],
-        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
       }
     );
     const candParts = json?.candidates?.[0]?.content?.parts || [];

@@ -15,8 +15,19 @@
  */
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const VISION_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-const IMAGE_MODELS = ['gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation'];
+const VISION_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash',
+];
+const IMAGE_MODELS = [
+  'gemini-3.1-flash-image',
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-3-pro-image',
+  'gemini-2.5-flash-image',
+];
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -36,34 +47,87 @@ function getGeminiKey(req) {
   return fromHeader || fromEnv;
 }
 
-async function callGeminiWithFallback(apiKey, models, body) {
-  let lastError = 'Gemini API isteği başarısız oldu';
-  for (const model of models) {
-    const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const text = await resp.text();
-    let json = null;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      /* raw error */
+async function discoverFallbackModels(apiKey, mode, alreadyTried) {
+  try {
+    const resp = await fetch(`${GEMINI_BASE}?pageSize=100&key=${encodeURIComponent(apiKey)}`);
+    if (!resp.ok) return [];
+    const data = await resp.json().catch(() => null);
+    const list = Array.isArray(data?.models) ? data.models : [];
+    const candidates = list
+      .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+      .map((m) => String(m.name || '').replace(/^models\//, ''))
+      .filter((name) => name && !alreadyTried.has(name));
+
+    if (mode === 'image') {
+      return candidates
+        .filter((n) => /image|banana/i.test(n) && !/imagen/i.test(n))
+        .reverse()
+        .slice(0, 3);
     }
-    if (resp.ok && json) {
-      return { model, json };
-    }
-    const errMsg = json?.error?.message || text.slice(0, 260);
-    lastError = `${model}: ${errMsg}`;
-    // Try next model on 404 / unsupported model / overload
-    if (resp.status === 404 || resp.status === 400 || resp.status === 429 || resp.status >= 500) {
-      continue;
-    }
-    throw new Error(lastError);
+    return candidates
+      .filter(
+        (n) =>
+          /^gemini-/i.test(n) &&
+          /flash/i.test(n) &&
+          !/image|tts|audio|live|embedding|robotics|computer-use|1\.5|2\.0/i.test(n)
+      )
+      .reverse()
+      .slice(0, 3);
+  } catch {
+    return [];
   }
-  throw new Error(lastError);
+}
+
+async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
+  const errors = [];
+  const tried = new Set();
+
+  const tryList = async (list) => {
+    for (const model of list) {
+      if (tried.has(model)) continue;
+      tried.add(model);
+      const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await resp.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        /* raw error */
+      }
+      if (resp.ok && json) {
+        return { model, json };
+      }
+      const errMsg = json?.error?.message || text.slice(0, 260);
+      errors.push(`${model} (${resp.status}): ${errMsg}`);
+      // Invalid API key / auth errors fail immediately
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error(errors[0]);
+      }
+      // Try next model on 404 / deprecated 400 / rate limit / transient 5xx
+      if (resp.status === 404 || resp.status === 400 || resp.status === 429 || resp.status >= 500) {
+        continue;
+      }
+      throw new Error(errors[0]);
+    }
+    return null;
+  };
+
+  const firstPass = await tryList(models);
+  if (firstPass) return firstPass;
+
+  // Auto-discover latest active Gemini models on this API key if hardcoded ones were rotated
+  const discovered = await discoverFallbackModels(apiKey, mode, tried);
+  if (discovered.length > 0) {
+    const secondPass = await tryList(discovered);
+    if (secondPass) return secondPass;
+  }
+
+  throw new Error(errors[0] || 'Gemini API isteği başarısız oldu');
 }
 
 function extractInlineImage(json) {
@@ -83,7 +147,27 @@ function extractInlineImage(json) {
 
 function extractText(json) {
   const parts = json?.candidates?.[0]?.content?.parts || [];
-  return parts.map((p) => p.text || '').join('\n').trim();
+  const visible = parts.filter((p) => !p.thought && typeof p.text === 'string');
+  const source = visible.length > 0 ? visible : parts;
+  return source.map((p) => p.text || '').join('\n').trim();
+}
+
+function parseJsonResponse(rawText) {
+  const cleaned = String(rawText || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw new Error('Gemini JSON yanıtı ayrıştırılamadı.');
+  }
 }
 
 export default async function handler(req, res) {
@@ -170,22 +254,26 @@ Rules:
 - If a fireplace and a wall-mounted TV are visually separate, list them as separate items (fireplace elevationCm=0, wall TV elevationCm=115..140) OR if they are a single unified fireplace+TV marble wall unit, list it clearly with full width/height.
 - Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping room layout matching the photo.`;
 
-      const { model, json } = await callGeminiWithFallback(apiKey, VISION_MODELS, {
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
+      const { model, json } = await callGeminiWithFallback(
+        apiKey,
+        VISION_MODELS,
+        {
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
           },
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: 'application/json',
         },
-      });
+        'vision'
+      );
 
       const rawText = extractText(json);
-      const cleaned = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-      const parsed = JSON.parse(cleaned);
+      const parsed = parseJsonResponse(rawText);
 
       return res.status(200).json({
         ok: true,
@@ -232,12 +320,17 @@ CRITICAL RULES:
       if (cropImg) parts.push({ inlineData: { mimeType: cropImg.mimeType, data: cropImg.data } });
       if (fullImg) parts.push({ inlineData: { mimeType: fullImg.mimeType, data: fullImg.data } });
 
-      const { model, json } = await callGeminiWithFallback(apiKey, IMAGE_MODELS, {
-        contents: [{ role: 'user', parts }],
-        generationConfig: {
-          responseModalities: ['IMAGE', 'TEXT'],
+      const { model, json } = await callGeminiWithFallback(
+        apiKey,
+        IMAGE_MODELS,
+        {
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+          },
         },
-      });
+        'image'
+      );
 
       const studioImageDataUrl = extractInlineImage(json);
       if (!studioImageDataUrl) {
@@ -261,27 +354,32 @@ CRITICAL RULES:
         return res.status(400).json({ ok: false, error: '3B sahne görüntüsü alınamadı.' });
       }
 
-      const { model, json } = await callGeminiWithFallback(apiKey, IMAGE_MODELS, {
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photography render (Architectural Digest quality).
+      const { model, json } = await callGeminiWithFallback(
+        apiKey,
+        IMAGE_MODELS,
+        {
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photography render (Architectural Digest quality).
 STRICT GEOMETRY PRESERVATION RULES:
 - Keep EVERY wall, window shape/count, door position/swing, column, ceiling beam, recessed curtain cove, hidden warm LED strip, sunlight beam direction, and furniture placement in the EXACT same position and proportions.
 - Upgrade ONLY realism: physically accurate global illumination, soft window daylight bounce, crisp wood parquet grain, realistic fabric weave, real marble reflections, natural curtain translucency, warm cove LED glow, realistic glass reflections, 24mm tilt-shift architectural lens.
 Room context: ${roomSummary}
 Additional architect styling note: ${styleNote || 'Doğal gün ışığı, sıcak mimari atmosfer, foto-gerçekçi malzeme kalitesi.'}`,
-              },
-              { inlineData: { mimeType: snap.mimeType, data: snap.data } },
-            ],
+                },
+                { inlineData: { mimeType: snap.mimeType, data: snap.data } },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
           },
-        ],
-        generationConfig: {
-          responseModalities: ['IMAGE', 'TEXT'],
         },
-      });
+        'image'
+      );
 
       const renderImageDataUrl = extractInlineImage(json);
       if (!renderImageDataUrl) {

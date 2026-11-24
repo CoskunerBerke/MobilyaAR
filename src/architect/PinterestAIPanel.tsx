@@ -56,8 +56,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [serverCfg, setServerCfg] = useState<PinterestServerConfig>({
     geminiConfigured: false,
     runpodConfigured: false,
-    visionModel: 'gemini-2.5-flash',
-    imageModel: 'gemini-2.5-flash-image',
+    visionModel: 'gemini-3.8-flash',
+    imageModel: 'gemini-3.1-flash-image',
   });
   const [runpodReady, setRunpodReady] = useState(false);
   const [geminiKey, setGeminiKey] = useState(() => getSavedGeminiKey());
@@ -365,7 +365,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
           <div>
             <p className="font-semibold text-stone-950">Pinterest → Birebir 3B Motoru</p>
             <p className="text-[11px] text-stone-500">
-              Gemini 2.5 Vision + Stüdyo İzolasyon + RunPod 2K PBR
+              Gemini 3.8 Vision + Stüdyo İzolasyon + RunPod 2K PBR
             </p>
           </div>
           <button
@@ -418,10 +418,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   setKeyTestResult('Test ediliyor...');
                   try {
                     const r = await fetch(
-                      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash?key=${encodeURIComponent(clean)}`
+                      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(clean)}`
                     );
                     if (r.ok) {
-                      setKeyTestResult('✓ Bağlantı doğrulandı (Gemini 2.5 Flash hazır)');
+                      setKeyTestResult('✓ Bağlantı doğrulandı (Gemini 3.8 Flash hazır)');
                       onToast('Gemini API anahtarı doğrulandı ve kaydedildi!');
                     } else {
                       const d = await r.json().catch(() => null);
