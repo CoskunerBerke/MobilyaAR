@@ -17,9 +17,10 @@
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const VISION_MODELS = [
   'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.5-flash-lite',
   'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-pro',
 ];
 const IMAGE_MODELS = [
   'gemini-3.1-flash-image',
@@ -62,17 +63,18 @@ async function discoverFallbackModels(apiKey, mode, alreadyTried) {
       return candidates
         .filter((n) => /image|banana/i.test(n) && !/imagen/i.test(n))
         .reverse()
-        .slice(0, 3);
+        .slice(0, 4);
     }
-    return candidates
-      .filter(
-        (n) =>
-          /^gemini-/i.test(n) &&
-          /flash/i.test(n) &&
-          !/image|tts|audio|live|embedding|robotics|computer-use|1\.5|2\.0/i.test(n)
-      )
-      .reverse()
-      .slice(0, 3);
+    const cleanVision = candidates.filter(
+      (n) =>
+        /^gemini-/i.test(n) &&
+        !/image|tts|audio|live|embedding|robotics|computer-use|1\.5|2\.0|deep-research/i.test(n)
+    );
+    // Prioritize diverse families (flash-lite, flash, pro) so a 503 spike on one tier falls back cleanly
+    const lites = cleanVision.filter((n) => /lite/i.test(n)).reverse();
+    const flashes = cleanVision.filter((n) => /flash/i.test(n) && !/lite/i.test(n)).reverse();
+    const pros = cleanVision.filter((n) => /pro/i.test(n)).reverse();
+    return Array.from(new Set([...flashes.slice(0, 2), ...lites.slice(0, 2), ...pros.slice(0, 2)])).slice(0, 5);
   } catch {
     return [];
   }
