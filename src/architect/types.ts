@@ -1,0 +1,514 @@
+import type { Product } from '../lib/products';
+
+export type WallId = 'north' | 'south' | 'west' | 'east';
+
+export type WallPattern =
+  | 'smooth'
+  | 'boiserie'
+  | 'slats'
+  | 'concrete'
+  | 'stone'
+  | 'wallpaper';
+
+export type FloorMaterialKind =
+  | 'herringbone_oak'
+  | 'plank_oak'
+  | 'plank_walnut'
+  | 'travertine'
+  | 'marble'
+  | 'microcement'
+  | 'terrazzo';
+
+export type WindowKind =
+  | 'single'
+  | 'double'
+  | 'triple'
+  | 'quad'
+  | 'french'
+  | 'sliding'
+  | 'round'
+  | 'oval'
+  | 'arched';
+
+export type CurtainStyle = 'none' | 'sheer_and_drape' | 'sheer_only' | 'roman_blind';
+
+export type DoorKind = 'single' | 'double' | 'sliding' | 'archway';
+
+export type ParametricFurnitureKind =
+  | 'fireplace_marble'
+  | 'tv_wall_unit'
+  | 'wall_tv'
+  | 'rug_custom'
+  | 'chandelier';
+
+export interface WallFinish {
+  colorHex: string;
+  pattern: WallPattern;
+}
+
+export interface ArchWindow {
+  id: string;
+  wall: WallId;
+  kind: WindowKind;
+  /** Center distance from the left interior corner of this wall (cm) */
+  offsetCm: number;
+  widthCm: number;
+  heightCm: number;
+  sillHeightCm: number;
+  frameColorHex: string;
+  hasSill: boolean;
+  curtainStyle: CurtainStyle;
+  curtainColorHex: string;
+  /** 0 = closed, 1 = open to sides */
+  curtainOpenRatio: number;
+}
+
+export interface ArchDoor {
+  id: string;
+  wall: WallId;
+  kind: DoorKind;
+  /** Center distance from the left interior corner of this wall (cm) */
+  offsetCm: number;
+  widthCm: number;
+  heightCm: number;
+  swing: 'inward' | 'outward';
+  hinge: 'left' | 'right';
+  openAngleDeg: number;
+  colorHex: string;
+  handleColorHex: string;
+}
+
+export interface ArchColumn {
+  id: string;
+  label: string;
+  shape: 'rect' | 'round';
+  /** Room-local X in cm (0 = room center) */
+  xCm: number;
+  /** Room-local Z in cm (0 = room center) */
+  zCm: number;
+  widthCm: number;
+  depthCm: number;
+  colorHex: string;
+}
+
+export interface ArchBeam {
+  id: string;
+  label: string;
+  /** 'x' runs West->East across roomW; 'z' runs North->South across roomD */
+  axis: 'x' | 'z';
+  /** Position along the perpendicular axis in cm (0 = center) */
+  positionCm: number;
+  widthCm: number;
+  dropCm: number;
+  colorHex: string;
+}
+
+export interface ArchCurtainCove {
+  id: string;
+  wall: WallId;
+  /** Distance from interior wall face into the room (cm), e.g. 20 cm */
+  depthCm: number;
+  /** Drop height from ceiling (cm), e.g. 18 cm */
+  dropCm: number;
+  ledEnabled: boolean;
+  ledColorHex: string;
+  ledIntensity: number;
+  colorHex: string;
+}
+
+export type SolarSeason = 'summer' | 'equinox' | 'winter';
+
+export interface SunConfig {
+  /** Compass bearing of the room's 'north' (-Z) wall in degrees (0=N, 90=E, 180=S, 270=W) */
+  northAngleDeg: number;
+  /** Local solar hour 6.0 .. 20.5 */
+  hour: number;
+  season: SolarSeason;
+  sunIntensity: number;
+}
+
+export interface ArchPlacedObject {
+  id: string;
+  name: string;
+  category: string;
+  dimensionsCm: string;
+  glbUrl?: string;
+  parametricKind?: ParametricFurnitureKind;
+  parametricColorHex?: string;
+  parametricAccentHex?: string;
+  /** Center X in meters */
+  x: number;
+  /** Bottom elevation from floor in meters (0 for floor items, >0 for wall-mounted TVs/art) */
+  y: number;
+  /** Center Z in meters */
+  z: number;
+  /** Rotation around Y axis in radians */
+  rot: number;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+  mountMode: 'floor' | 'wall' | 'ceiling' | 'rug';
+  attachedWall?: WallId;
+  thumbUrl?: string;
+  source: 'catalog' | 'cad' | 'parametric' | 'pinterest-ai';
+  productRef?: Product;
+}
+
+export interface ArchRoomProject {
+  version: 1;
+  projectName: string;
+  widthM: number;
+  depthM: number;
+  ceilingM: number;
+  wallThicknessM: number;
+  showCeiling: boolean;
+  showBaseboard: boolean;
+  baseboardColorHex: string;
+  ceilingColorHex: string;
+  recessedSpots: boolean;
+  spotWarmthHex: string;
+  floorMaterial: FloorMaterialKind;
+  floorTintHex: string;
+  walls: Record<WallId, WallFinish>;
+  windows: ArchWindow[];
+  doors: ArchDoor[];
+  columns: ArchColumn[];
+  beams: ArchBeam[];
+  curtainCoves: ArchCurtainCove[];
+  sun: SunConfig;
+  objects: ArchPlacedObject[];
+}
+
+export const WALL_LABELS: Record<WallId, string> = {
+  north: 'Üst Duvar (A)',
+  south: 'Alt Duvar (C)',
+  west: 'Sol Duvar (D)',
+  east: 'Sağ Duvar (B)',
+};
+
+export const WINDOW_KIND_LABELS: Record<WindowKind, string> = {
+  single: 'Tekli (1 Kanat)',
+  double: 'Çiftli (2 Kanat)',
+  triple: 'Üçlü (3 Kanat)',
+  quad: 'Dörtlü (4 Kanat)',
+  french: 'Fransız (Boydan Boya)',
+  sliding: 'Sürgülü Balkon Camı',
+  round: 'Yuvarlak Pencere',
+  oval: 'Oval Pencere',
+  arched: 'Kemerli Pencere',
+};
+
+export const DOOR_KIND_LABELS: Record<DoorKind, string> = {
+  single: 'Tek Kanat Kapı',
+  double: 'Çift Kanat Salon Kapısı',
+  sliding: 'Sürgülü Kapı',
+  archway: 'Kemerli Geçiş Boşluğu',
+};
+
+export const WALL_PATTERN_LABELS: Record<WallPattern, string> = {
+  smooth: 'Mat Mimari Boya',
+  boiserie: 'Klasik Duvar Çıtası',
+  slats: 'Ahşap Akustik Çıta',
+  concrete: 'Brüt Beton',
+  stone: 'Doğal Traverten Taş',
+  wallpaper: 'Keten Duvar Kağıdı',
+};
+
+export const FLOOR_MATERIAL_LABELS: Record<FloorMaterialKind, { label: string; defaultTint: string }> = {
+  herringbone_oak: { label: 'Balıksırtı Meşe', defaultTint: '#c8ab86' },
+  plank_oak: { label: 'Geniş Meşe Parke', defaultTint: '#cbb18f' },
+  plank_walnut: { label: 'Amerikan Ceviz', defaultTint: '#876246' },
+  travertine: { label: 'Mat Traverten', defaultTint: '#ded6c7' },
+  marble: { label: 'Calacatta Mermer', defaultTint: '#eceae4' },
+  microcement: { label: 'Mikrosement Beton', defaultTint: '#c8c4bc' },
+  terrazzo: { label: 'Mimari Terrazzo', defaultTint: '#dcd8cf' },
+};
+
+export const ARCHITECTURAL_PAINT_SWATCHES = [
+  { name: 'Kireç Beyazı', hex: '#f4f1ea' },
+  { name: 'Kum Beji', hex: '#e6dfd3' },
+  { name: 'Sıcak Grej', hex: '#d4ccc0' },
+  { name: 'Badem Taşı', hex: '#c5b8a5' },
+  { name: 'Adaçayı Yeşili', hex: '#c6cfc1' },
+  { name: 'Zeytin Gri', hex: '#7f8779' },
+  { name: 'Toprak Terracotta', hex: '#b67d65' },
+  { name: 'Füme Antrasit', hex: '#434548' },
+  { name: 'Gece Laciverti', hex: '#2b3847' },
+  { name: 'Koyu Ceviz', hex: '#634937' },
+];
+
+export const FRAME_COLOR_SWATCHES = [
+  { name: 'Antrasit RAL 7016', hex: '#2b2e33' },
+  { name: 'Siyah Mat', hex: '#18181a' },
+  { name: 'Beyaz PVC', hex: '#f2f1ed' },
+  { name: 'Doğal Meşe', hex: '#8b6848' },
+  { name: 'Bronz Alüminyum', hex: '#5f5143' },
+];
+
+export function getWallLengthM(wall: WallId, roomW: number, roomD: number): number {
+  return wall === 'north' || wall === 'south' ? roomW : roomD;
+}
+
+/**
+ * Converts wall-local (offsetCm from left interior edge, yM from floor, inwardDistM from interior wall face)
+ * into world (x, y, z) coordinates and the inward-facing Y rotation.
+ */
+export function wallLocalToWorld(
+  wall: WallId,
+  offsetCm: number,
+  yM: number,
+  inwardDistM: number,
+  roomW: number,
+  roomD: number
+): { x: number; y: number; z: number; rotY: number } {
+  const lenM = getWallLengthM(wall, roomW, roomD);
+  const localU = offsetCm / 100 - lenM / 2;
+  switch (wall) {
+    case 'north':
+      return { x: localU, y: yM, z: -roomD / 2 + inwardDistM, rotY: 0 };
+    case 'south':
+      return { x: -localU, y: yM, z: roomD / 2 - inwardDistM, rotY: Math.PI };
+    case 'west':
+      return { x: -roomW / 2 + inwardDistM, y: yM, z: -localU, rotY: Math.PI / 2 };
+    case 'east':
+      return { x: roomW / 2 - inwardDistM, y: yM, z: localU, rotY: -Math.PI / 2 };
+  }
+}
+
+export function createDefaultArchitectProject(catalogProducts: Product[]): ArchRoomProject {
+  const sofa = catalogProducts.find((p) => p.id === 'ikea-landskrona-sofa') || catalogProducts[0];
+  const coffee = catalogProducts.find((p) => p.id === 'ikea-stockholm-coffee');
+  const chair = catalogProducts.find((p) => p.id === 'ikea-strandmon-chair');
+
+  const objects: ArchPlacedObject[] = [
+    {
+      id: 'obj-rug-main',
+      name: 'Dokuma Salon Halısı',
+      category: 'Mimari Modül',
+      dimensionsCm: '240 × 320 × 2 cm',
+      parametricKind: 'rug_custom',
+      parametricColorHex: '#e7e0d4',
+      parametricAccentHex: '#bfb4a2',
+      x: 0.1,
+      y: 0,
+      z: 0.2,
+      rot: 0,
+      widthM: 3.0,
+      depthM: 2.2,
+      heightM: 0.015,
+      mountMode: 'rug',
+      source: 'parametric',
+    },
+    {
+      id: 'obj-fireplace-west',
+      name: 'Calacatta Mermer Şömine & TV Duvarı',
+      category: 'Mimari Modül',
+      dimensionsCm: '240 × 44 × 280 cm',
+      parametricKind: 'fireplace_marble',
+      parametricColorHex: '#ece9e2',
+      parametricAccentHex: '#252423',
+      x: -2.48,
+      y: 0,
+      z: 0.05,
+      rot: Math.PI / 2,
+      widthM: 2.4,
+      depthM: 0.44,
+      heightM: 2.8,
+      mountMode: 'wall',
+      attachedWall: 'west',
+      source: 'parametric',
+    },
+    {
+      id: 'obj-chandelier-center',
+      name: 'Pirinç Halka Mimari Avize',
+      category: 'Mimari Modül',
+      dimensionsCm: '90 × 90 × 55 cm',
+      parametricKind: 'chandelier',
+      parametricColorHex: '#c8a86b',
+      parametricAccentHex: '#fff4dc',
+      x: 0.1,
+      y: 2.25,
+      z: 0.2,
+      rot: 0,
+      widthM: 0.9,
+      depthM: 0.9,
+      heightM: 0.55,
+      mountMode: 'ceiling',
+      source: 'parametric',
+    },
+  ];
+
+  if (sofa) {
+    objects.push({
+      id: 'obj-sofa-main',
+      name: sofa.name,
+      category: sofa.category,
+      dimensionsCm: sofa.dimensionsCm,
+      glbUrl: sofa.glbUrl,
+      x: 1.35,
+      y: 0,
+      z: 0.15,
+      rot: -Math.PI / 2,
+      widthM: 2.04,
+      depthM: 0.89,
+      heightM: 0.78,
+      mountMode: 'floor',
+      thumbUrl: sofa.thumbUrl,
+      source: 'catalog',
+      productRef: sofa,
+    });
+  }
+
+  if (coffee) {
+    objects.push({
+      id: 'obj-coffee-main',
+      name: coffee.name,
+      category: coffee.category,
+      dimensionsCm: coffee.dimensionsCm,
+      glbUrl: coffee.glbUrl,
+      x: 0.05,
+      y: 0,
+      z: 0.15,
+      rot: Math.PI / 2,
+      widthM: 1.8,
+      depthM: 0.59,
+      heightM: 0.4,
+      mountMode: 'floor',
+      thumbUrl: coffee.thumbUrl,
+      source: 'catalog',
+      productRef: coffee,
+    });
+  }
+
+  if (chair) {
+    objects.push({
+      id: 'obj-chair-accent',
+      name: chair.name,
+      category: chair.category,
+      dimensionsCm: chair.dimensionsCm,
+      glbUrl: chair.glbUrl,
+      x: 0.2,
+      y: 0,
+      z: -1.55,
+      rot: 0.25,
+      widthM: 0.82,
+      depthM: 0.96,
+      heightM: 1.01,
+      mountMode: 'floor',
+      thumbUrl: chair.thumbUrl,
+      source: 'catalog',
+      productRef: chair,
+    });
+  }
+
+  return {
+    version: 1,
+    projectName: 'Modern Salon Mimari Projesi',
+    widthM: 5.4,
+    depthM: 4.8,
+    ceilingM: 2.85,
+    wallThicknessM: 0.18,
+    showCeiling: false,
+    showBaseboard: true,
+    baseboardColorHex: '#f2efe8',
+    ceilingColorHex: '#f8f7f3',
+    recessedSpots: true,
+    spotWarmthHex: '#ffe7c2',
+    floorMaterial: 'herringbone_oak',
+    floorTintHex: '#c8ab86',
+    walls: {
+      north: { colorHex: '#f2efe8', pattern: 'smooth' },
+      south: { colorHex: '#f2efe8', pattern: 'boiserie' },
+      west: { colorHex: '#e9e4db', pattern: 'smooth' },
+      east: { colorHex: '#d7cfc2', pattern: 'slats' },
+    },
+    windows: [
+      {
+        id: 'win-north-triple',
+        wall: 'north',
+        kind: 'triple',
+        offsetCm: 270,
+        widthCm: 270,
+        heightCm: 225,
+        sillHeightCm: 25,
+        frameColorHex: '#26282c',
+        hasSill: true,
+        curtainStyle: 'sheer_and_drape',
+        curtainColorHex: '#d9d1c3',
+        curtainOpenRatio: 0.72,
+      },
+      {
+        id: 'win-east-arched',
+        wall: 'east',
+        kind: 'arched',
+        offsetCm: 130,
+        widthCm: 105,
+        heightCm: 175,
+        sillHeightCm: 65,
+        frameColorHex: '#26282c',
+        hasSill: true,
+        curtainStyle: 'none',
+        curtainColorHex: '#d9d1c3',
+        curtainOpenRatio: 0.7,
+      },
+    ],
+    doors: [
+      {
+        id: 'door-south-entry',
+        wall: 'south',
+        kind: 'single',
+        offsetCm: 120,
+        widthCm: 95,
+        heightCm: 215,
+        swing: 'inward',
+        hinge: 'left',
+        openAngleDeg: 38,
+        colorHex: '#f3f1eb',
+        handleColorHex: '#262626',
+      },
+    ],
+    columns: [
+      {
+        id: 'col-nw',
+        label: 'Köşe Kolonu',
+        shape: 'rect',
+        xCm: -250,
+        zCm: -220,
+        widthCm: 40,
+        depthCm: 40,
+        colorHex: '#f2efe8',
+      },
+    ],
+    beams: [
+      {
+        id: 'beam-north',
+        label: 'Üst Taşıyıcı Kiriş',
+        axis: 'x',
+        positionCm: -225,
+        widthCm: 30,
+        dropCm: 30,
+        colorHex: '#f5f3ee',
+      },
+    ],
+    curtainCoves: [
+      {
+        id: 'cove-north',
+        wall: 'north',
+        depthCm: 22,
+        dropCm: 18,
+        ledEnabled: true,
+        ledColorHex: '#ffddb0',
+        ledIntensity: 1.2,
+        colorHex: '#f8f7f3',
+      },
+    ],
+    sun: {
+      // North wall faces Güney-Güneydoğu (155°) so dramatic daylight streams in through the main triple window
+      northAngleDeg: 155,
+      hour: 14.5,
+      season: 'equinox',
+      sunIntensity: 1.75,
+    },
+    objects,
+  };
+}
