@@ -8,7 +8,7 @@ import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
 import { computeSolarLighting } from './solarMath';
-import type { ArchPlacedObject, ArchRoomProject, ArchSelection, WallId } from './types';
+import { getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
 
 export type ArchCameraMode = 'free' | 'plan' | 'inside';
 
@@ -16,6 +16,9 @@ export interface ArchViewportHandle {
   captureSnapshot: (hideSelection?: boolean) => string | null;
   resetCamera: (mode?: ArchCameraMode) => void;
   focusWall: (wall: WallId) => void;
+  enterFromDoor: () => void;
+  walkStep: (forwardM: number, rightM: number) => void;
+  turnLook: (deltaYawDeg: number) => void;
 }
 
 interface Props {
@@ -27,6 +30,7 @@ interface Props {
   selection: ArchSelection;
   onSelect: (sel: ArchSelection) => void;
   onMoveObject: (id: string, x: number, z: number) => void;
+  onExitWalkthrough?: () => void;
   onWarningsChange?: (warnings: string[]) => void;
   onLoadingChange?: (loadingCount: number) => void;
   onToast?: (msg: string) => void;
@@ -43,6 +47,66 @@ function objectToOBB(o: ArchPlacedObject): OBB2D {
   };
 }
 
+/** Computes realistic doorway spawn position (just at entrance door threshold stepping in) and look angles */
+function computeDoorwaySpawn(p: ArchRoomProject): {
+  startPos: THREE.Vector3;
+  endPos: THREE.Vector3;
+  yaw: number;
+  pitch: number;
+} {
+  const eyeY = Math.min(1.65, Math.max(1.2, p.ceilingM - 0.38));
+  const door = p.doors[0];
+  let startX = 0;
+  let startZ = p.depthM * 0.5 - 0.25;
+  let inX = 0;
+  let inZ = -1;
+
+  if (door) {
+    const lenM = getWallLengthM(door.wall, p.widthM, p.depthM);
+    const u = door.offsetCm / 100 - lenM * 0.5;
+    if (door.wall === 'north') {
+      startX = u;
+      startZ = -p.depthM * 0.5 + 0.08;
+      inX = 0;
+      inZ = 1;
+    } else if (door.wall === 'south') {
+      startX = -u;
+      startZ = p.depthM * 0.5 - 0.08;
+      inX = 0;
+      inZ = -1;
+    } else if (door.wall === 'west') {
+      startX = -p.widthM * 0.5 + 0.08;
+      startZ = -u;
+      inX = 1;
+      inZ = 0;
+    } else {
+      startX = p.widthM * 0.5 - 0.08;
+      startZ = u;
+      inX = -1;
+      inZ = 0;
+    }
+  }
+
+  const endX = Math.max(-p.widthM * 0.5 + 0.35, Math.min(p.widthM * 0.5 - 0.35, startX + inX * 0.85));
+  const endZ = Math.max(-p.depthM * 0.5 + 0.35, Math.min(p.depthM * 0.5 - 0.35, startZ + inZ * 0.85));
+
+  const lookTargetX = 0;
+  const lookTargetY = Math.min(1.38, eyeY - 0.14);
+  const lookTargetZ = 0;
+  const dx = lookTargetX - endX;
+  const dy = lookTargetY - eyeY;
+  const dz = lookTargetZ - endZ;
+  const yaw = Math.atan2(-dx, -dz);
+  const pitch = Math.max(-0.4, Math.min(0.4, Math.atan2(dy, Math.max(0.2, Math.hypot(dx, dz)))));
+
+  return {
+    startPos: new THREE.Vector3(startX, eyeY, startZ),
+    endPos: new THREE.Vector3(endX, eyeY, endZ),
+    yaw,
+    pitch,
+  };
+}
+
 export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
   (
     {
@@ -54,6 +118,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       selection,
       onSelect,
       onMoveObject,
+      onExitWalkthrough,
       onWarningsChange,
       onLoadingChange,
       onToast,
@@ -71,6 +136,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     showGridRef.current = showGrid;
     const showDoorArcsRef = useRef(showDoorArcs);
     showDoorArcsRef.current = showDoorArcs;
+
+    // First-person walkthrough state
+    const fpsRef = useRef({
+      yaw: 0,
+      pitch: -0.06,
+      looking: false,
+      lastX: 0,
+      lastY: 0,
+      keys: new Set<string>(),
+      walkRaf: 0,
+      lastTs: 0,
+      entryAnimRaf: 0,
+    });
 
     const dragRef = useRef<{
       id: string;
@@ -111,11 +189,100 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       scheduleRender: (dirtyShadows?: boolean) => void;
     } | null>(null);
 
+    const applyFpsCameraRotation = () => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      eng.camera.rotation.order = 'YXZ';
+      eng.camera.rotation.y = fpsRef.current.yaw;
+      eng.camera.rotation.x = fpsRef.current.pitch;
+      eng.camera.rotation.z = 0;
+    };
+
+    const moveFpsBy = (forwardM: number, rightM: number) => {
+      const eng = engineRef.current;
+      if (!eng || camModeRef.current !== 'inside') return;
+      const p = projectRef.current;
+      const yaw = fpsRef.current.yaw;
+      const fx = -Math.sin(yaw);
+      const fz = -Math.cos(yaw);
+      const rx = Math.cos(yaw);
+      const rz = -Math.sin(yaw);
+
+      const margin = 0.32;
+      const nx = Math.max(-p.widthM * 0.5 + margin, Math.min(p.widthM * 0.5 - margin, eng.camera.position.x + fx * forwardM + rx * rightM));
+      const nz = Math.max(-p.depthM * 0.5 + margin, Math.min(p.depthM * 0.5 - margin, eng.camera.position.z + fz * forwardM + rz * rightM));
+      eng.camera.position.x = nx;
+      eng.camera.position.z = nz;
+      eng.camera.position.y = Math.min(1.65, Math.max(1.2, p.ceilingM - 0.38));
+      applyFpsCameraRotation();
+      eng.scheduleRender(false);
+    };
+
+    const enterFromDoorway = (animateStepIn = true) => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      if (fpsRef.current.entryAnimRaf) {
+        cancelAnimationFrame(fpsRef.current.entryAnimRaf);
+        fpsRef.current.entryAnimRaf = 0;
+      }
+
+      const spawn = computeDoorwaySpawn(projectRef.current);
+      eng.controls.enabled = false;
+      eng.camera.fov = 62;
+      eng.camera.far = 90;
+      eng.camera.updateProjectionMatrix();
+      fpsRef.current.yaw = spawn.yaw;
+      fpsRef.current.pitch = spawn.pitch;
+
+      if (!animateStepIn) {
+        eng.camera.position.copy(spawn.endPos);
+        applyFpsCameraRotation();
+        eng.scheduleRender(true);
+        return;
+      }
+
+      // Smooth cinematic doorway walk-in (stepping through entrance door into room over 650 ms!)
+      eng.camera.position.copy(spawn.startPos);
+      applyFpsCameraRotation();
+      eng.scheduleRender(true);
+      const t0 = performance.now();
+      const duration = 650;
+      const step = (now: number) => {
+        if (camModeRef.current !== 'inside' || !engineRef.current) {
+          fpsRef.current.entryAnimRaf = 0;
+          return;
+        }
+        const t = Math.min(1, (now - t0) / duration);
+        const ease = 1 - Math.pow(1 - t, 3);
+        engineRef.current.camera.position.lerpVectors(spawn.startPos, spawn.endPos, ease);
+        applyFpsCameraRotation();
+        engineRef.current.scheduleRender(false);
+        if (t < 1) {
+          fpsRef.current.entryAnimRaf = requestAnimationFrame(step);
+        } else {
+          fpsRef.current.entryAnimRaf = 0;
+        }
+      };
+      fpsRef.current.entryAnimRaf = requestAnimationFrame(step);
+    };
+
     const applyCameraPreset = (mode: ArchCameraMode) => {
       const eng = engineRef.current;
       if (!eng) return;
+      if (fpsRef.current.entryAnimRaf) {
+        cancelAnimationFrame(fpsRef.current.entryAnimRaf);
+        fpsRef.current.entryAnimRaf = 0;
+      }
       const p = projectRef.current;
       const maxSpan = Math.max(p.widthM, p.depthM);
+      if (mode === 'inside') {
+        enterFromDoorway(true);
+        return;
+      }
+
+      eng.camera.rotation.order = 'XYZ';
+      eng.controls.enabled = true;
+
       if (mode === 'plan') {
         eng.camera.fov = 16;
         eng.camera.far = 220;
@@ -127,15 +294,6 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         eng.controls.maxPolarAngle = Math.PI * 0.49;
         eng.controls.minDistance = 4.0;
         eng.controls.maxDistance = 80;
-      } else if (mode === 'inside') {
-        eng.camera.fov = 56;
-        eng.camera.far = 90;
-        eng.camera.updateProjectionMatrix();
-        eng.camera.position.set(p.widthM * 0.3, Math.min(1.58, p.ceilingM * 0.56), p.depthM * 0.38);
-        eng.controls.target.set(-p.widthM * 0.12, Math.min(1.15, p.ceilingM * 0.44), -p.depthM * 0.28);
-        eng.controls.maxPolarAngle = Math.PI * 0.85;
-        eng.controls.minDistance = 0.25;
-        eng.controls.maxDistance = Math.max(p.widthM, p.depthM) * 1.1;
       } else {
         eng.camera.fov = 42;
         eng.camera.far = 90;
@@ -152,11 +310,13 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
     const focusOnWall = (wall: WallId) => {
       const eng = engineRef.current;
-      if (!eng) return;
+      if (!eng || camModeRef.current === 'inside') return;
       const p = projectRef.current;
       const maxSpan = Math.max(p.widthM, p.depthM);
       const camH = p.ceilingM + Math.max(1.85, maxSpan * 0.42);
       const targetY = p.ceilingM * 0.44;
+      eng.camera.rotation.order = 'XYZ';
+      eng.controls.enabled = true;
       eng.camera.fov = 42;
       eng.camera.far = 90;
       eng.camera.updateProjectionMatrix();
@@ -208,20 +368,24 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       },
       resetCamera: (mode) => applyCameraPreset(mode || camModeRef.current),
       focusWall: (wall) => focusOnWall(wall),
+      enterFromDoor: () => enterFromDoorway(true),
+      walkStep: (f, r) => moveFpsBy(f, r),
+      turnLook: (deltaYawDeg) => {
+        if (camModeRef.current !== 'inside') return;
+        fpsRef.current.yaw += (deltaYawDeg * Math.PI) / 180;
+        applyFpsCameraRotation();
+        engineRef.current?.scheduleRender(false);
+      },
     }));
 
-    // 1) Mount TRUE ON-DEMAND WebGL Engine (0% GPU usage when idle / typing / clicking UI!)
+    // 1) Mount TRUE ON-DEMAND WebGL Engine
     useEffect(() => {
       const host = hostRef.current;
       if (!host) return;
       const w = host.clientWidth || window.innerWidth;
       const h = host.clientHeight || window.innerHeight - 100;
 
-      // NO preserveDrawingBuffer: true -> eliminates costly Windows D3D11 per-frame backbuffer copy!
-      const renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        powerPreference: 'high-performance',
-      });
+      const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -236,7 +400,6 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const camera = new THREE.PerspectiveCamera(42, w / Math.max(1, h), 0.08, 90);
       const controls = new OrbitControls(camera, renderer.domElement);
-      // Clean direct orbit without infinite idle damping spin
       controls.enableDamping = false;
       controls.rotateSpeed = 0.78;
       controls.zoomSpeed = 0.95;
@@ -344,8 +507,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const br = eng.builtRoom;
 
         if (br) {
-          br.gridHelper.visible = showGridRef.current;
-          br.planOverlayGroup.visible = mode === 'plan' || showDoorArcsRef.current;
+          br.gridHelper.visible = showGridRef.current && mode !== 'inside';
+          br.planOverlayGroup.visible = mode === 'plan' || (showDoorArcsRef.current && mode !== 'inside');
           br.planLabelsGroup.visible = mode === 'plan';
           br.compassRingGroup.visible = mode !== 'inside';
           br.compassRingGroup.rotation.y = (p.sun.northAngleDeg * Math.PI) / 180;
@@ -385,7 +548,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         if (eng.sunOrbGroup.visible) eng.haloMesh.lookAt(camera.position);
 
         const sel = selectionRef.current;
-        if (sel?.type === 'object') {
+        if (sel?.type === 'object' && mode !== 'inside') {
           const obj = p.objects.find((o) => o.id === sel.id);
           if (obj) {
             const d = dragRef.current;
@@ -441,6 +604,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         ro.disconnect();
         controls.removeEventListener('change', onControlChange);
         if (eng.rafScheduled) cancelAnimationFrame(eng.rafScheduled);
+        if (fpsRef.current.walkRaf) cancelAnimationFrame(fpsRef.current.walkRaf);
+        if (fpsRef.current.entryAnimRaf) cancelAnimationFrame(fpsRef.current.entryAnimRaf);
         if (eng.builtRoom) eng.builtRoom.dispose();
         eng.mountedObjects.forEach((m) => m.dispose?.());
         orbGeo.dispose();
@@ -457,6 +622,78 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Keyboard WASD / Arrow Keys walking when in 'inside' Walkthrough mode (0% CPU when no key is held!)
+    useEffect(() => {
+      if (cameraMode !== 'inside') {
+        fpsRef.current.keys.clear();
+        if (fpsRef.current.walkRaf) {
+          cancelAnimationFrame(fpsRef.current.walkRaf);
+          fpsRef.current.walkRaf = 0;
+        }
+        return;
+      }
+
+      const tickWalk = (ts: number) => {
+        if (camModeRef.current !== 'inside' || fpsRef.current.keys.size === 0) {
+          fpsRef.current.walkRaf = 0;
+          return;
+        }
+        const dt = Math.min(0.05, Math.max(0.008, (ts - (fpsRef.current.lastTs || ts)) / 1000));
+        fpsRef.current.lastTs = ts;
+        const speed = 1.9 * dt;
+        const keys = fpsRef.current.keys;
+        let fwd = 0;
+        let right = 0;
+        if (keys.has('w') || keys.has('arrowup')) fwd += speed;
+        if (keys.has('s') || keys.has('arrowdown')) fwd -= speed;
+        if (keys.has('d') || keys.has('arrowright')) right += speed;
+        if (keys.has('a') || keys.has('arrowleft')) right -= speed;
+        if (fwd !== 0 || right !== 0) {
+          moveFpsBy(fwd, right);
+        }
+        fpsRef.current.walkRaf = requestAnimationFrame(tickWalk);
+      };
+
+      const isTypingTarget = (el: EventTarget | null) => {
+        const tag = (el as HTMLElement | null)?.tagName?.toLowerCase();
+        return tag === 'input' || tag === 'textarea' || tag === 'select';
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (isTypingTarget(e.target)) return;
+        const k = e.key.toLowerCase();
+        if (k === 'escape') {
+          onExitWalkthrough?.();
+          return;
+        }
+        if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
+          e.preventDefault();
+          fpsRef.current.keys.add(k);
+          if (!fpsRef.current.walkRaf) {
+            fpsRef.current.lastTs = performance.now();
+            fpsRef.current.walkRaf = requestAnimationFrame(tickWalk);
+          }
+        }
+      };
+
+      const onKeyUp = (e: KeyboardEvent) => {
+        fpsRef.current.keys.delete(e.key.toLowerCase());
+      };
+
+      window.addEventListener('keydown', onKeyDown);
+      window.addEventListener('keyup', onKeyUp);
+      return () => {
+        window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('keyup', onKeyUp);
+        fpsRef.current.keys.clear();
+        if (fpsRef.current.walkRaf) {
+          cancelAnimationFrame(fpsRef.current.walkRaf);
+          fpsRef.current.walkRaf = 0;
+        }
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cameraMode, onExitWalkthrough]);
 
     // 2) Rebuild architectural room geometry when structural props change
     const archKey = JSON.stringify({
@@ -545,12 +782,10 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       eng.scheduleRender(true);
     }, [project.sun, project.widthM, project.depthM, project.ceilingM, showSunOrb, cameraMode, archKey]);
 
-    // 4) Re-render on view toggles / selection / ceiling toggle
     useEffect(() => {
       engineRef.current?.scheduleRender(false);
     }, [selection, showGrid, showDoorArcs, project.showCeiling]);
 
-    // 5) Camera mode changes
     useEffect(() => {
       applyCameraPreset(cameraMode);
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -794,6 +1029,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       if (!eng) return;
       pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
 
+      // In First-Person Walkthrough mode: drag smoothly rotates head (360° look around!)
+      if (camModeRef.current === 'inside') {
+        if (fpsRef.current.entryAnimRaf) {
+          cancelAnimationFrame(fpsRef.current.entryAnimRaf);
+          fpsRef.current.entryAnimRaf = 0;
+        }
+        fpsRef.current.looking = true;
+        fpsRef.current.lastX = e.clientX;
+        fpsRef.current.lastY = e.clientY;
+        (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+        return;
+      }
+
       const hitObjId = pickDraggableObjectId(e.clientX, e.clientY);
       if (!hitObjId) return;
 
@@ -819,6 +1067,18 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     };
 
     const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (camModeRef.current === 'inside' && fpsRef.current.looking) {
+        const dx = e.clientX - fpsRef.current.lastX;
+        const dy = e.clientY - fpsRef.current.lastY;
+        fpsRef.current.lastX = e.clientX;
+        fpsRef.current.lastY = e.clientY;
+        fpsRef.current.yaw += dx * 0.0042;
+        fpsRef.current.pitch = Math.max(-1.12, Math.min(1.12, fpsRef.current.pitch + dy * 0.0036));
+        applyFpsCameraRotation();
+        engineRef.current?.scheduleRender(false);
+        return;
+      }
+
       const d = dragRef.current;
       const eng = engineRef.current;
       if (!d || !eng) return;
@@ -868,6 +1128,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     };
 
     const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (camModeRef.current === 'inside' && fpsRef.current.looking) {
+        fpsRef.current.looking = false;
+        try {
+          (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        pointerDownPosRef.current = null;
+        return;
+      }
+
       const d = dragRef.current;
       if (d) {
         dragRef.current = null;
@@ -891,6 +1162,14 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       }
     };
 
+    const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+      if (camModeRef.current === 'inside') {
+        // Scroll mouse wheel forward/back to walk smoothly through the room!
+        const step = e.deltaY < 0 ? 0.35 : -0.35;
+        moveFpsBy(step, 0);
+      }
+    };
+
     return (
       <div
         ref={hostRef}
@@ -899,6 +1178,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onWheel={onWheel}
       />
     );
   }

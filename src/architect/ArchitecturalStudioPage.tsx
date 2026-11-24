@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Building2,
   ChevronDown,
   ChevronRight,
+  DoorOpen,
   Download,
-  Eye,
+  Footprints,
   FolderOpen,
   Grid3X3,
   Layers,
@@ -91,7 +96,13 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [catalog, setCatalog] = useState<Product[]>(PRODUCTS);
   const [project, setProject] = useState<ArchRoomProject>(() => createDefaultArchitectProject(PRODUCTS));
   const [activeTab, setActiveTab] = useState<StudioTab>('room');
-  const [openAccordion, setOpenAccordion] = useState<RoomAccordion>('openings');
+  const [openSections, setOpenSections] = useState<Record<RoomAccordion, boolean>>({
+    dims: false,
+    openings: true,
+    structure: false,
+  });
+  const toggleSection = (key: RoomAccordion) =>
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   const [cameraMode, setCameraMode] = useState<ArchCameraMode>('free');
   const [showGrid, setShowGrid] = useState(true);
   const [showSunOrb, setShowSunOrb] = useState(true);
@@ -573,6 +584,90 @@ export const ArchitecturalStudioPage: React.FC = () => {
     }
   };
 
+  const moveOpeningToWall = useCallback(
+    (kind: 'window' | 'door' | 'wallZone', id: string, targetWall: WallId) => {
+      const targetLenCm = Math.round(getWallLengthM(targetWall, project.widthM, project.depthM) * 100);
+      const findFreeOffset = (prev: ArchRoomProject, spanW: number, preferredRatio: number): number => {
+        const occupied = [
+          ...prev.windows.filter((w) => w.wall === targetWall && w.id !== id).map((w) => [w.offsetCm - w.widthCm * 0.5, w.offsetCm + w.widthCm * 0.5]),
+          ...prev.doors.filter((d) => d.wall === targetWall && d.id !== id).map((d) => [d.offsetCm - d.widthCm * 0.5, d.offsetCm + d.widthCm * 0.5]),
+        ];
+        const minC = Math.round(spanW * 0.5) + 12;
+        const maxC = Math.max(minC, targetLenCm - Math.round(spanW * 0.5) - 12);
+        const candidates = [
+          Math.round(targetLenCm * preferredRatio),
+          Math.round(targetLenCm * 0.5),
+          Math.round(targetLenCm * 0.78),
+          Math.round(targetLenCm * 0.22),
+          maxC,
+          minC,
+        ];
+        for (const c of candidates) {
+          const clamped = Math.max(minC, Math.min(maxC, c));
+          const a = clamped - spanW * 0.5 - 8;
+          const b = clamped + spanW * 0.5 + 8;
+          if (!occupied.some(([e0, e1]) => !(b <= e0 || a >= e1))) {
+            return clamped;
+          }
+        }
+        return Math.max(minC, Math.min(maxC, Math.round(targetLenCm * preferredRatio)));
+      };
+
+      setProject((prev) => {
+        if (kind === 'window') {
+          return {
+            ...prev,
+            windows: prev.windows.map((w) => {
+              if (w.id !== id) return w;
+              const safeW = Math.min(w.widthCm, targetLenCm - 30);
+              const safeOff = findFreeOffset(prev, safeW, 0.5);
+              return { ...w, wall: targetWall, widthCm: safeW, offsetCm: safeOff };
+            }),
+          };
+        }
+        if (kind === 'door') {
+          return {
+            ...prev,
+            doors: prev.doors.map((d) => {
+              if (d.id !== id) return d;
+              const safeW = Math.min(d.widthCm, targetLenCm - 30);
+              const safeOff = findFreeOffset(prev, safeW, 0.35);
+              return { ...d, wall: targetWall, widthCm: safeW, offsetCm: safeOff };
+            }),
+          };
+        }
+        return {
+          ...prev,
+          wallZones: (prev.wallZones || []).map((z) => {
+            if (z.id !== id) return z;
+            const safeW = Math.min(z.widthCm, targetLenCm);
+            return { ...z, wall: targetWall, widthCm: safeW, offsetCm: Math.round(targetLenCm * 0.5) };
+          }),
+        };
+      });
+      setActiveWall(targetWall);
+      if (cameraMode === 'free') viewportRef.current?.focusWall(targetWall);
+      showToast(`${WALL_LABELS[targetWall]} üzerine taşındı.`);
+    },
+    [project.widthM, project.depthM, cameraMode, showToast]
+  );
+
+  const enterDoorWalkthrough = useCallback(() => {
+    // Open the entrance door wide enough to walk cleanly through if closed!
+    setProject((prev) => {
+      if (prev.doors.length === 0) return prev;
+      const first = prev.doors[0];
+      if (first.openAngleDeg >= 65) return prev;
+      return {
+        ...prev,
+        doors: prev.doors.map((d, i) => (i === 0 ? { ...d, openAngleDeg: 82 } : d)),
+      };
+    });
+    setSelection(null);
+    setCameraMode('inside');
+    setTimeout(() => viewportRef.current?.enterFromDoor(), 40);
+  }, []);
+
   const snapObjectToWall = (objId: string, wall: WallId) => {
     setProject((prev) => ({
       ...prev,
@@ -648,17 +743,17 @@ export const ArchitecturalStudioPage: React.FC = () => {
     if (activeTab === 'room') {
       return (
         <div className="divide-y divide-stone-200 text-xs">
-          {/* Accordion 1: Oda Ölçüleri */}
+          {/* Accordion 1: Oda Ölçüleri (bağımsız aç/kapat) */}
           <div>
             <button
               type="button"
-              onClick={() => setOpenAccordion(openAccordion === 'dims' ? 'openings' : 'dims')}
+              onClick={() => toggleSection('dims')}
               className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
             >
               <span>01 · Oda Ölçüleri &amp; Tavan</span>
-              {openAccordion === 'dims' ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              {openSections.dims ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
-            {openAccordion === 'dims' && (
+            {openSections.dims && (
               <div className="p-3.5 space-y-3">
                 <div className="grid grid-cols-3 gap-2">
                   <label className="space-y-1">
@@ -764,19 +859,19 @@ export const ArchitecturalStudioPage: React.FC = () => {
             )}
           </div>
 
-          {/* Accordion 2: Pencere & Kapı */}
+          {/* Accordion 2: Pencere & Kapı (bağımsız aç/kapat) */}
           <div>
             <button
               type="button"
-              onClick={() => setOpenAccordion(openAccordion === 'openings' ? 'structure' : 'openings')}
+              onClick={() => toggleSection('openings')}
               className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
             >
               <span>
                 02 · Pencere &amp; Kapı ({project.windows.length}P · {project.doors.length}K)
               </span>
-              {openAccordion === 'openings' ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              {openSections.openings ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
-            {openAccordion === 'openings' && (
+            {openSections.openings && (
               <div className="p-3.5 space-y-3">
                 <div className="grid grid-cols-2 gap-1">
                   {WALL_IDS.map((wId) => (
@@ -874,17 +969,17 @@ export const ArchitecturalStudioPage: React.FC = () => {
             )}
           </div>
 
-          {/* Accordion 3: Kolon, Kiriş & Perde Havuzu */}
+          {/* Accordion 3: Kolon, Kiriş & Perde Havuzu (bağımsız aç/kapat!) */}
           <div>
             <button
               type="button"
-              onClick={() => setOpenAccordion(openAccordion === 'structure' ? 'dims' : 'structure')}
+              onClick={() => toggleSection('structure')}
               className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
             >
               <span>03 · Kolon, Kiriş &amp; Perde Havuzu</span>
-              {openAccordion === 'structure' ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              {openSections.structure ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
-            {openAccordion === 'structure' && (
+            {openSections.structure && (
               <div className="p-3.5 space-y-3.5">
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
@@ -1468,14 +1563,14 @@ export const ArchitecturalStudioPage: React.FC = () => {
           )}
         </div>
 
-        {/* Right: 3 Camera Modes + Save/Export */}
+        {/* Right: 3 Camera Modes (including First-Person Door Walkthrough!) + Save/Export */}
         <div className="flex items-center gap-1 shrink-0">
           <div className="hidden md:flex items-center border border-stone-200 bg-[#faf9f6]">
             {(
               [
                 { id: 'free', label: '3B', icon: Layers },
                 { id: 'plan', label: '2D Plan', icon: Grid3X3 },
-                { id: 'inside', label: 'İçeriden', icon: Eye },
+                { id: 'inside', label: 'Kapıdan Gez', icon: Footprints },
               ] as const
             ).map((c) => {
               const Icon = c.icon;
@@ -1484,7 +1579,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setCameraMode(c.id)}
+                  onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
                   className={`px-2.5 py-1.5 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
                     active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:text-stone-950'
                   }`}
@@ -1577,6 +1672,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 objects: prev.objects.map((o) => (o.id === id ? { ...o, x, z } : o)),
               }))
             }
+            onExitWalkthrough={() => setCameraMode('free')}
             onWarningsChange={setWarnings}
             onLoadingChange={setLoadingCount}
             onToast={showToast}
@@ -1588,13 +1684,13 @@ export const ArchitecturalStudioPage: React.FC = () => {
               [
                 { id: 'free', label: '3B' },
                 { id: 'plan', label: '2D' },
-                { id: 'inside', label: 'İç' },
+                { id: 'inside', label: 'Gez' },
               ] as const
             ).map((c) => (
               <button
                 key={c.id}
                 type="button"
-                onClick={() => setCameraMode(c.id)}
+                onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
                 className={`px-2 py-1 text-[11px] font-bold ${cameraMode === c.id ? 'bg-stone-950 text-white' : 'text-stone-700'}`}
               >
                 {c.label}
@@ -1626,11 +1722,68 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </div>
           )}
 
-          {/* Subtle Teaching Hint when nothing is selected */}
-          {!selection && (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/92 border border-stone-200 px-3.5 py-1.5 text-[11px] text-stone-700 shadow-sm pointer-events-none whitespace-nowrap hidden sm:block">
-              Düzenlemek için odada herhangi bir duvara, zemine, pencereye, kapıya veya eşyaya tıklayın
+          {/* First-Person Walkthrough Controls HUD */}
+          {cameraMode === 'inside' ? (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/95 border border-stone-300 shadow-lg px-3 py-2 flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => viewportRef.current?.walkStep(0, -0.45)}
+                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="Sola Adım (A)"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => viewportRef.current?.walkStep(0.55, 0)}
+                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="İleri Yürü (W / Tekerlek)"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => viewportRef.current?.walkStep(-0.55, 0)}
+                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="Geri Adım (S)"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => viewportRef.current?.walkStep(0, 0.45)}
+                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="Sağa Adım (D)"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <span className="text-[11px] text-stone-600 hidden sm:inline whitespace-nowrap">
+                Sürükle: Etrafa Bak · <strong className="font-mono text-stone-900">W/A/S/D</strong> veya Tekerlek: Yürü
+              </span>
+              <button
+                type="button"
+                onClick={() => viewportRef.current?.enterFromDoor()}
+                className="px-2.5 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap"
+              >
+                <DoorOpen className="w-3.5 h-3.5" />
+                <span>Kapıdan Gir</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCameraMode('free')}
+                className="px-2.5 py-1 bg-stone-950 text-white text-[11px] font-semibold whitespace-nowrap"
+              >
+                3B&apos;ye Çık
+              </button>
             </div>
+          ) : (
+            !selection && (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/92 border border-stone-200 px-3.5 py-1.5 text-[11px] text-stone-700 shadow-sm pointer-events-none whitespace-nowrap hidden sm:block">
+                Düzenlemek için odada herhangi bir duvara, zemine, pencereye, kapıya veya eşyaya tıklayın
+              </div>
+            )
           )}
         </main>
 
@@ -1663,6 +1816,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 })
               }
               onSnapObjectToWall={snapObjectToWall}
+              onMoveOpeningToWall={moveOpeningToWall}
               onDuplicateObject={duplicateObject}
               onToast={showToast}
             />

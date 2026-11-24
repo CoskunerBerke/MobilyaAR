@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {
+  WALL_LABELS,
   type ArchCurtainCove,
   type ArchDoor,
   type ArchRoomProject,
@@ -707,7 +708,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       const y1 = sillM + hM;
       const cand: HoleBox2D = { x0, x1, y0, y1 };
       if (acceptedHoles.some((hBox) => boxesOverlap(cand, hBox, 0.04))) {
-        warnings.push(`${ws.side.toUpperCase()} duvarında çakışan pencere kaydırılmalı.`);
+        warnings.push(`${WALL_LABELS[ws.side]} üzerinde çakışan pencere kaydırılmalı.`);
         continue;
       }
       acceptedHoles.push(cand);
@@ -731,7 +732,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       const x1 = cx + wM * 0.5;
       const cand: HoleBox2D = { x0, x1, y0: 0.005, y1: hM };
       if (acceptedHoles.some((hBox) => boxesOverlap(cand, hBox, 0.04))) {
-        warnings.push(`${ws.side.toUpperCase()} duvarında çakışan kapı kaydırılmalı.`);
+        warnings.push(`${WALL_LABELS[ws.side]} üzerinde çakışan kapı kaydırılmalı.`);
         continue;
       }
       acceptedHoles.push(cand);
