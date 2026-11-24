@@ -64,3 +64,24 @@ model-viewer {
   background-color: transparent;
   --poster-color: transparent;
 }
+
+/* Multi-device touch, iPad Safari, and Smart TV remote focus ergonomics for Mimari Stüdyo */
+.arch-studio-root {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.arch-studio-root button:focus-visible,
+.arch-studio-root input:focus-visible,
+.arch-studio-root select:focus-visible,
+.arch-studio-root textarea:focus-visible,
+.arch-studio-root a:focus-visible {
+  outline: 2px solid #0f172a;
+  outline-offset: 1px;
+}
+
+@media (pointer: coarse) {
+  .arch-studio-root input[type='range'] {
+    height: 24px;
+  }
+}

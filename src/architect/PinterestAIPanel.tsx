@@ -62,6 +62,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [runpodReady, setRunpodReady] = useState(false);
   const [geminiKey, setGeminiKey] = useState(() => getSavedGeminiKey());
   const [showKeyBox, setShowKeyBox] = useState(false);
+  const [testingKey, setTestingKey] = useState(false);
+  const [keyTestResult, setKeyTestResult] = useState<string | null>(null);
 
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -386,32 +388,68 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
 
         {showKeyBox && (
-          <div className="pt-2 border-t border-stone-200 space-y-1.5">
+          <div className="pt-2 border-t border-stone-200 space-y-2">
             <label className="block text-[10px] font-mono uppercase tracking-wider text-stone-500">
               Google AI Studio (Gemini API Key)
             </label>
-            <div className="flex gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
               <input
                 type="password"
                 value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
+                onChange={(e) => {
+                  setGeminiKey(e.target.value);
+                  setKeyTestResult(null);
+                }}
                 placeholder="AIzaSy..."
-                className="flex-1 px-2 py-1.5 border border-stone-300 bg-white font-mono text-[11px]"
+                className="flex-1 min-w-0 w-full px-2 py-1.5 border border-stone-300 bg-white font-mono text-[11px]"
               />
               <button
                 type="button"
-                onClick={() => {
-                  saveGeminiKey(geminiKey);
-                  setShowKeyBox(false);
-                  onToast('Gemini API anahtarı kaydedildi.');
+                disabled={testingKey}
+                onClick={async () => {
+                  const clean = geminiKey.trim();
+                  saveGeminiKey(clean);
+                  if (!clean) {
+                    setKeyTestResult(null);
+                    onToast('Oturum anahtarı temizlendi.');
+                    return;
+                  }
+                  setTestingKey(true);
+                  setKeyTestResult('Test ediliyor...');
+                  try {
+                    const r = await fetch(
+                      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash?key=${encodeURIComponent(clean)}`
+                    );
+                    if (r.ok) {
+                      setKeyTestResult('✓ Bağlantı doğrulandı (Gemini 2.5 Flash hazır)');
+                      onToast('Gemini API anahtarı doğrulandı ve kaydedildi!');
+                    } else {
+                      const d = await r.json().catch(() => null);
+                      setKeyTestResult(`Hata: ${d?.error?.message || 'Anahtar geçersiz'}`);
+                    }
+                  } catch {
+                    setKeyTestResult('Kaydedildi (doğrulama için Pinterest analizi deneyin).');
+                  } finally {
+                    setTestingKey(false);
+                  }
                 }}
-                className="px-3 py-1.5 bg-stone-950 text-white text-[11px] font-semibold whitespace-nowrap"
+                className="shrink-0 px-2.5 py-1.5 bg-stone-950 text-white text-[11px] font-semibold whitespace-nowrap disabled:opacity-50"
               >
-                Kaydet
+                {testingKey ? '...' : 'Kaydet & Test'}
               </button>
             </div>
+            {keyTestResult && (
+              <p
+                className={`text-[10px] font-mono ${
+                  keyTestResult.startsWith('✓') ? 'text-emerald-700 font-semibold' : 'text-amber-700'
+                }`}
+              >
+                {keyTestResult}
+              </p>
+            )}
             <p className="text-[10px] text-stone-500 leading-relaxed">
-              Canlı ortamda Vercel&apos;e <code className="font-mono">GEMINI_API_KEY</code> eklediğinizde tüm mimarlar anahtar girmeden kullanır.
+              Tüm cihazlarda (TV, iPad, telefon, müşteri) şifresiz çalışması için Vercel → Settings → Environment Variables kısmına{' '}
+              <code className="font-mono font-semibold text-stone-800">GEMINI_API_KEY</code> ekleyin.
             </p>
           </div>
         )}

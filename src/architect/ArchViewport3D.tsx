@@ -27,6 +27,7 @@ interface Props {
   showGrid: boolean;
   showSunOrb: boolean;
   showDoorArcs: boolean;
+  autoRotate?: boolean;
   selection: ArchSelection;
   onSelect: (sel: ArchSelection) => void;
   onMoveObject: (id: string, x: number, z: number) => void;
@@ -115,6 +116,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       showGrid,
       showSunOrb,
       showDoorArcs,
+      autoRotate = false,
       selection,
       onSelect,
       onMoveObject,
@@ -161,6 +163,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       moved: boolean;
     } | null>(null);
     const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
+    const activePointersRef = useRef<Set<number>>(new Set());
     const hitObstacleRef = useRef(false);
 
     const engineRef = useRef<{
@@ -386,7 +389,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const h = host.clientHeight || window.innerHeight - 100;
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+      // Cap pixelRatio on 4K TVs (>=2200px) to 1.0 to protect Smart TV GPU VRAM; <=1.25 on phones/iPads/laptops
+      const targetDpr = window.innerWidth >= 2200 ? 1.0 : Math.min(window.devicePixelRatio || 1, 1.25);
+      renderer.setPixelRatio(targetDpr);
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -394,6 +399,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFShadowMap;
       renderer.shadowMap.autoUpdate = false;
+
+      // Graceful WebGL context-loss recovery for Smart TVs & iOS Safari backgrounding
+      const onContextLost = (ev: Event) => {
+        ev.preventDefault();
+        onToast?.('3B grafik bağlamı yenileniyor...');
+      };
+      const onContextRestored = () => {
+        eng.scheduleRender(true);
+      };
+      renderer.domElement.addEventListener('webglcontextlost', onContextLost, false);
+      renderer.domElement.addEventListener('webglcontextrestored', onContextRestored, false);
 
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0xe8e5de);
@@ -592,16 +608,22 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         if (!hostRef.current) return;
         const nw = hostRef.current.clientWidth || window.innerWidth;
         const nh = hostRef.current.clientHeight || window.innerHeight - 100;
+        const dpr = window.innerWidth >= 2200 ? 1.0 : Math.min(window.devicePixelRatio || 1, 1.25);
+        renderer.setPixelRatio(dpr);
         camera.aspect = nw / Math.max(1, nh);
         camera.updateProjectionMatrix();
         renderer.setSize(nw, nh);
         eng.scheduleRender(false);
       };
-      const ro = new ResizeObserver(onResize);
-      ro.observe(host);
+      const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null;
+      ro?.observe(host);
+      window.addEventListener('resize', onResize);
 
       return () => {
-        ro.disconnect();
+        ro?.disconnect();
+        window.removeEventListener('resize', onResize);
+        renderer.domElement.removeEventListener('webglcontextlost', onContextLost, false);
+        renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored, false);
         controls.removeEventListener('change', onControlChange);
         if (eng.rafScheduled) cancelAnimationFrame(eng.rafScheduled);
         if (fpsRef.current.walkRaf) cancelAnimationFrame(fpsRef.current.walkRaf);
@@ -790,6 +812,35 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       applyCameraPreset(cameraMode);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [cameraMode]);
+
+    // Showroom TV 360° slow turntable mode (only runs when enabled; 0% GPU when off!)
+    useEffect(() => {
+      if (!autoRotate || cameraMode !== 'free') return;
+      let raf = 0;
+      let last = performance.now();
+      const spin = (now: number) => {
+        const eng = engineRef.current;
+        if (!eng || camModeRef.current !== 'free') return;
+        const dt = Math.min(0.06, Math.max(0.01, (now - last) / 1000));
+        last = now;
+        const tgt = eng.controls.target;
+        const offset = eng.camera.position.clone().sub(tgt);
+        const angle = dt * 0.22; // gentle cinematic showroom speed
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+        const nx = offset.x * cosA - offset.z * sinA;
+        const nz = offset.x * sinA + offset.z * cosA;
+        offset.x = nx;
+        offset.z = nz;
+        eng.camera.position.copy(tgt).add(offset);
+        eng.camera.lookAt(tgt);
+        eng.controls.update();
+        eng.scheduleRender(false);
+        raf = requestAnimationFrame(spin);
+      };
+      raf = requestAnimationFrame(spin);
+      return () => cancelAnimationFrame(raf);
+    }, [autoRotate, cameraMode]);
 
     // 6) Synchronize 3D objects
     useEffect(() => {
@@ -1027,6 +1078,22 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     const onPointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
       const eng = engineRef.current;
       if (!eng) return;
+      activePointersRef.current.add(e.pointerId);
+
+      // Multi-touch guard for iPad & iPhone: 2+ fingers ALWAYS hand straight to OrbitControls pinch-zoom/pan!
+      if (activePointersRef.current.size >= 2) {
+        if (dragRef.current) {
+          dragRef.current = null;
+          hitObstacleRef.current = false;
+        }
+        fpsRef.current.looking = false;
+        if (camModeRef.current !== 'inside') {
+          eng.controls.enabled = true;
+        }
+        pointerDownPosRef.current = null;
+        return;
+      }
+
       pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
 
       // In First-Person Walkthrough mode: drag smoothly rotates head (360° look around!)
@@ -1128,6 +1195,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     };
 
     const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      activePointersRef.current.delete(e.pointerId);
       if (camModeRef.current === 'inside' && fpsRef.current.looking) {
         fpsRef.current.looking = false;
         try {

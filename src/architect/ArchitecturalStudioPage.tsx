@@ -15,16 +15,22 @@ import {
   Grid3X3,
   Layers,
   Loader2,
+  Maximize2,
   Menu,
+  Minimize2,
   Pause,
   Play,
   Plus,
+  RefreshCw,
+  RotateCcw,
+  RotateCw,
   Save,
   Search,
   Sofa,
   Sparkles,
   Sun,
   Upload,
+  X,
 } from 'lucide-react';
 import { PRODUCTS, type Product } from '../lib/products';
 import { fetchCloudCatalog } from '../lib/storageClient';
@@ -108,6 +114,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [showSunOrb, setShowSunOrb] = useState(true);
   const [showDoorArcs, setShowDoorArcs] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [tvPresentationMode, setTvPresentationMode] = useState(false);
+  const [autoRotate360, setAutoRotate360] = useState(false);
 
   const [activeWall, setActiveWall] = useState<WallId>('north');
   const [selection, setSelection] = useState<ArchSelection>(null);
@@ -653,7 +662,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
   );
 
   const enterDoorWalkthrough = useCallback(() => {
-    // Open the entrance door wide enough to walk cleanly through if closed!
+    setAutoRotate360(false);
     setProject((prev) => {
       if (prev.doors.length === 0) return prev;
       const first = prev.doors[0];
@@ -664,8 +673,37 @@ export const ArchitecturalStudioPage: React.FC = () => {
       };
     });
     setSelection(null);
+    setMobileSidebarOpen(false);
     setCameraMode('inside');
     setTimeout(() => viewportRef.current?.enterFromDoor(), 40);
+  }, []);
+
+  const toggleTvPresentationMode = useCallback(() => {
+    setTvPresentationMode((prev) => {
+      const next = !prev;
+      const docEl = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
+      const doc = document as Document & { webkitExitFullscreen?: () => Promise<void>; webkitFullscreenElement?: Element };
+      if (next) {
+        setMobileSidebarOpen(false);
+        setMobileSearchOpen(false);
+        setSelection(null);
+        try {
+          if (docEl.requestFullscreen) docEl.requestFullscreen().catch(() => {});
+          else if (docEl.webkitRequestFullscreen) docEl.webkitRequestFullscreen().catch(() => {});
+        } catch {
+          /* ignore unsupported browsers */
+        }
+      } else {
+        setAutoRotate360(false);
+        try {
+          if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+          else if (doc.webkitFullscreenElement && doc.webkitExitFullscreen) doc.webkitExitFullscreen().catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
   }, []);
 
   const snapObjectToWall = (objId: string, wall: WallId) => {
@@ -1420,252 +1458,329 @@ export const ArchitecturalStudioPage: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 h-[100dvh] bg-[#e8e5de] text-stone-950 flex flex-col overflow-hidden">
-      {/* Ultra-Clean Single-Row Top Header with Smart Quick-Add Bar */}
-      <header className="h-14 px-3 sm:px-4 bg-white border-b border-stone-200 flex items-center justify-between gap-3 shrink-0 z-30">
-        {/* Brand + Live Room Size */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setMobileSidebarOpen((v) => !v)}
-            className="lg:hidden p-1.5 border border-stone-300 text-stone-800"
-            aria-label="Menü"
-          >
-            <Menu className="w-4 h-4" />
-          </button>
-          <div>
-            <p className="font-display text-sm font-extrabold tracking-tight text-stone-950 whitespace-nowrap leading-none">
-              MekanAR <span className="font-normal text-stone-500">Mimari</span>
-            </p>
-            <p className="text-[10px] font-mono text-stone-500 whitespace-nowrap mt-0.5">
-              {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {solar.formattedTime} ({bearingToShortCode(project.sun.northAngleDeg)})
-            </p>
+    <div className="arch-studio-root fixed inset-0 h-[100dvh] bg-[#e8e5de] text-stone-950 flex flex-col overflow-hidden">
+      {/* Ultra-Clean Single-Row Top Header (Responsive: Phone, iPad, Desktop, 4K TV) */}
+      {!tvPresentationMode && (
+        <header className="min-h-14 px-2.5 sm:px-4 pt-[env(safe-area-inset-top)] bg-white border-b border-stone-200 flex items-center justify-between gap-2 sm:gap-3 shrink-0 z-30">
+          {/* Brand + Live Room Size */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen((v) => !v)}
+              className="lg:hidden p-2 border border-stone-300 text-stone-800 shrink-0"
+              aria-label="Menü"
+            >
+              {mobileSidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+            </button>
+            <div>
+              <p className="font-display text-sm 2xl:text-base font-extrabold tracking-tight text-stone-950 whitespace-nowrap leading-none">
+                MekanAR <span className="font-normal text-stone-500 hidden xs:inline sm:inline">Mimari</span>
+              </p>
+              <p className="text-[10px] font-mono text-stone-500 whitespace-nowrap mt-0.5">
+                {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {solar.formattedTime} ({bearingToShortCode(project.sun.northAngleDeg)})
+              </p>
+            </div>
           </div>
-        </div>
 
-        {/* Center: Smart Turkish Quick-Add Bar ("televizyon 160x90", "gardırop 220x60x240"...) */}
-        <div className="relative flex-1 max-w-xl">
+          {/* Center: Smart Turkish Quick-Add Bar on iPad Landscape/Desktop/TV (collapsible on Phone & Portrait Tablet!) */}
+          <div className="relative flex-1 min-w-0 max-w-xl hidden lg:block">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                executeQuickAdd();
+              }}
+              className="flex items-center border border-stone-300 focus-within:border-stone-950 bg-[#faf9f6] transition"
+            >
+              <Search className="w-3.5 h-3.5 text-stone-400 ml-2.5 shrink-0" />
+              <input
+                type="text"
+                value={quickQuery}
+                onFocus={() => setQuickFocused(true)}
+                onBlur={() => setTimeout(() => setQuickFocused(false), 180)}
+                onChange={(e) => setQuickQuery(e.target.value)}
+                placeholder='Ne eklemek istersin? Örn: "televizyon 160x90", "gardırop", "şömine", "oval pencere"'
+                className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-xs text-stone-950 placeholder:text-stone-400 focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Ekle</span>
+              </button>
+            </form>
+
+            {quickFocused && (
+              <div
+                onMouseDown={(e) => e.preventDefault()}
+                className="absolute left-0 right-0 top-full mt-1 bg-white border border-stone-300 shadow-xl p-2.5 z-50 text-xs space-y-2"
+              >
+                {parsedQuick ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-stone-950">
+                        {parsedQuick.kind === 'parametric'
+                          ? parsedQuick.name
+                          : parsedQuick.kind === 'catalog'
+                          ? parsedQuick.product.name
+                          : parsedQuick.kind === 'window'
+                          ? WINDOW_KIND_LABELS[parsedQuick.windowKind]
+                          : parsedQuick.kind === 'door'
+                          ? DOOR_KIND_LABELS[parsedQuick.doorKind]
+                          : parsedQuick.kind === 'wallZone'
+                          ? `Kısmi Duvar Paneli (${parsedQuick.pattern})`
+                          : parsedQuick.kind === 'cove'
+                          ? 'Perde Havuzu & LED'
+                          : parsedQuick.kind === 'column'
+                          ? 'Taşıyıcı Kolon'
+                          : 'Tavan Kirişi'}
+                      </span>
+                      <span className="text-[10px] font-mono text-stone-500">Enter ile hemen ekle</span>
+                    </div>
+                    {(parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                          En
+                          <input
+                            type="number"
+                            value={quickW}
+                            onChange={(e) => setQuickW(e.target.value)}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                          Der.
+                          <input
+                            type="number"
+                            value={quickD}
+                            onChange={(e) => setQuickD(e.target.value)}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                          Yük.
+                          <input
+                            type="number"
+                            value={quickH}
+                            onChange={(e) => setQuickH(e.target.value)}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
+                          />
+                        </label>
+                        <span className="text-[10px] font-mono text-stone-400">cm</span>
+                        <button
+                          type="button"
+                          onClick={() => executeQuickAdd()}
+                          className="ml-auto px-3 py-1 bg-stone-950 text-white text-[11px] font-semibold"
+                        >
+                          Odaya Koy
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-mono uppercase text-stone-500">Hızlı Ekle (Tıkla veya Ölçüsüyle Yaz)</p>
+                    <div className="flex flex-wrap gap-1">
+                      {QUICK_ADD_SUGGESTIONS.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => executeQuickAdd(s)}
+                          className="px-2 py-1 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[11px] font-medium transition"
+                        >
+                          + {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Right: 3 Camera Modes + TV Showroom Mode + Save/Export */}
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Phone & Portrait Tablet Quick-Add Search Toggle */}
+            <button
+              type="button"
+              onClick={() => setMobileSearchOpen((v) => !v)}
+              className={`lg:hidden p-2 border shrink-0 ${
+                mobileSearchOpen ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-300 bg-[#faf9f6] text-stone-800'
+              }`}
+              aria-label="Hızlı Ekle"
+            >
+              <Search className="w-4 h-4" />
+            </button>
+
+            <div className="hidden md:flex items-center border border-stone-200 bg-[#faf9f6]">
+              {(
+                [
+                  { id: 'free', label: '3B', icon: Layers },
+                  { id: 'plan', label: '2D Plan', icon: Grid3X3 },
+                  { id: 'inside', label: 'Kapıdan Gez', icon: Footprints },
+                ] as const
+              ).map((c) => {
+                const Icon = c.icon;
+                const active = cameraMode === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
+                    className={`px-2.5 py-1.5 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                      active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:text-stone-950'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{c.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={toggleTvPresentationMode}
+              className="p-2 sm:px-2.5 sm:py-1.5 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+              title="Tam Ekran TV / Showroom Sunum Modu"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">TV Sunum</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSaveProjectJson}
+              className="hidden sm:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0"
+              title="Projeyi Kaydet (.json)"
+            >
+              <Save className="w-3.5 h-3.5" />
+            </button>
+            <label
+              className="hidden sm:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 cursor-pointer shrink-0"
+              title="Proje Aç (.json)"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={(e) => {
+                  handleLoadProjectJson(e.target.files?.[0] || null);
+                  e.currentTarget.value = '';
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={handleDownloadSnapshot}
+              className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">PNG</span>
+            </button>
+          </div>
+        </header>
+      )}
+
+      {/* Phone & Portrait Tablet Full-Width Quick-Add Drop Strip (< 1024px) */}
+      {!tvPresentationMode && mobileSearchOpen && (
+        <div className="lg:hidden bg-white border-b border-stone-200 px-3 py-2 space-y-2 z-30 shrink-0">
           <form
             onSubmit={(e) => {
               e.preventDefault();
               executeQuickAdd();
+              setMobileSearchOpen(false);
             }}
-            className="flex items-center border border-stone-300 focus-within:border-stone-950 bg-[#faf9f6] transition"
+            className="flex items-center border border-stone-300 bg-[#faf9f6]"
           >
-            <Search className="w-3.5 h-3.5 text-stone-400 ml-2.5 shrink-0" />
             <input
               type="text"
+              autoFocus
               value={quickQuery}
-              onFocus={() => setQuickFocused(true)}
-              onBlur={() => setTimeout(() => setQuickFocused(false), 180)}
               onChange={(e) => setQuickQuery(e.target.value)}
-              placeholder='Ne eklemek istersin? Örn: "televizyon 160x90", "gardırop", "şömine", "oval pencere"'
-              className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-xs text-stone-950 placeholder:text-stone-400 focus:outline-none"
+              placeholder='Örn: "televizyon 160x90", "şömine", "oval pencere"'
+              className="flex-1 min-w-0 px-2.5 py-2 bg-transparent text-xs focus:outline-none"
             />
-            <button
-              type="submit"
-              className="px-3 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 flex items-center gap-1"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Ekle</span>
+            <button type="submit" className="px-3 py-2 bg-stone-950 text-white text-xs font-semibold whitespace-nowrap">
+              + Ekle
             </button>
           </form>
-
-          {/* Instant Live Preview + Editable cm Dimensions OR Quick Chips */}
-          {quickFocused && (
-            <div
-              onMouseDown={(e) => e.preventDefault()}
-              className="absolute left-0 right-0 top-full mt-1 bg-white border border-stone-300 shadow-xl p-2.5 z-50 text-xs space-y-2"
-            >
-              {parsedQuick ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-stone-950">
-                      {parsedQuick.kind === 'parametric'
-                        ? parsedQuick.name
-                        : parsedQuick.kind === 'catalog'
-                        ? parsedQuick.product.name
-                        : parsedQuick.kind === 'window'
-                        ? WINDOW_KIND_LABELS[parsedQuick.windowKind]
-                        : parsedQuick.kind === 'door'
-                        ? DOOR_KIND_LABELS[parsedQuick.doorKind]
-                        : parsedQuick.kind === 'wallZone'
-                        ? `Kısmi Duvar Paneli (${parsedQuick.pattern})`
-                        : parsedQuick.kind === 'cove'
-                        ? 'Perde Havuzu & LED'
-                        : parsedQuick.kind === 'column'
-                        ? 'Taşıyıcı Kolon'
-                        : 'Tavan Kirişi'}
-                    </span>
-                    <span className="text-[10px] font-mono text-stone-500">Enter ile hemen ekle</span>
-                  </div>
-                  {(parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
-                    <div className="flex items-center gap-2">
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        En
-                        <input
-                          type="number"
-                          value={quickW}
-                          onChange={(e) => setQuickW(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                        />
-                      </label>
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        Der.
-                        <input
-                          type="number"
-                          value={quickD}
-                          onChange={(e) => setQuickD(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                        />
-                      </label>
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        Yük.
-                        <input
-                          type="number"
-                          value={quickH}
-                          onChange={(e) => setQuickH(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                        />
-                      </label>
-                      <span className="text-[10px] font-mono text-stone-400">cm</span>
-                      <button
-                        type="button"
-                        onClick={() => executeQuickAdd()}
-                        className="ml-auto px-3 py-1 bg-stone-950 text-white text-[11px] font-semibold"
-                      >
-                        Odaya Koy
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-mono uppercase text-stone-500">Hızlı Ekle (Tıkla veya Ölçüsüyle Yaz)</p>
-                  <div className="flex flex-wrap gap-1">
-                    {QUICK_ADD_SUGGESTIONS.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => executeQuickAdd(s)}
-                        className="px-2 py-1 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[11px] font-medium transition"
-                      >
-                        + {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Right: 3 Camera Modes (including First-Person Door Walkthrough!) + Save/Export */}
-        <div className="flex items-center gap-1 shrink-0">
-          <div className="hidden md:flex items-center border border-stone-200 bg-[#faf9f6]">
-            {(
-              [
-                { id: 'free', label: '3B', icon: Layers },
-                { id: 'plan', label: '2D Plan', icon: Grid3X3 },
-                { id: 'inside', label: 'Kapıdan Gez', icon: Footprints },
-              ] as const
-            ).map((c) => {
-              const Icon = c.icon;
-              const active = cameraMode === c.id;
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
-                  className={`px-2.5 py-1.5 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                    active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:text-stone-950'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{c.label}</span>
-                </button>
-              );
-            })}
+          <div className="flex gap-1 overflow-x-auto pb-0.5">
+            {QUICK_ADD_SUGGESTIONS.slice(0, 7).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => {
+                  executeQuickAdd(s);
+                  setMobileSearchOpen(false);
+                }}
+                className="px-2 py-1 border border-stone-200 bg-[#faf9f6] text-[11px] font-medium whitespace-nowrap shrink-0"
+              >
+                + {s}
+              </button>
+            ))}
           </div>
-
-          <button
-            type="button"
-            onClick={handleSaveProjectJson}
-            className="p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0"
-            title="Projeyi Kaydet (.json)"
-          >
-            <Save className="w-3.5 h-3.5" />
-          </button>
-          <label
-            className="p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 cursor-pointer shrink-0"
-            title="Proje Aç (.json)"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <input
-              type="file"
-              accept=".json"
-              className="hidden"
-              onChange={(e) => {
-                handleLoadProjectJson(e.target.files?.[0] || null);
-                e.currentTarget.value = '';
-              }}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={handleDownloadSnapshot}
-            className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">PNG</span>
-          </button>
         </div>
-      </header>
+      )}
 
-      {/* Main 3-Zone Workspace: Slim Left Drawer + Breathing 3D Canvas + Contextual Right Inspector */}
+      {/* Main 3-Zone Workspace: Responsive for Phone, iPad, Laptop, Desktop & 4K TV */}
       <div className="flex-1 min-h-0 flex relative overflow-hidden">
-        {/* Left Slim 4-Tab Panel */}
-        <aside
-          className={`${
-            mobileSidebarOpen ? 'fixed inset-y-14 left-0 z-30 flex' : 'hidden lg:flex'
-          } w-[290px] xl:w-[308px] bg-white border-r border-stone-200 flex-col shrink-0 shadow-xl lg:shadow-none`}
-        >
-          <nav className="grid grid-cols-4 border-b border-stone-200 bg-[#faf9f6] shrink-0">
-            {TABS.map((t) => {
-              const Icon = t.icon;
-              const active = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setActiveTab(t.id)}
-                  className={`py-2.5 px-1 flex flex-col items-center justify-center gap-1 border-b-2 text-[10px] font-semibold transition whitespace-nowrap ${
-                    active ? 'border-stone-950 bg-white text-stone-950' : 'border-transparent text-stone-500 hover:text-stone-900'
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  <span>{t.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-          <div className="flex-1 min-h-0 overflow-y-auto">{renderLeftSidebar()}</div>
-        </aside>
+        {/* Tap-outside backdrop for mobile/tablet drawer */}
+        {!tvPresentationMode && mobileSidebarOpen && (
+          <div
+            onClick={() => setMobileSidebarOpen(false)}
+            className="fixed inset-0 top-14 bg-black/40 z-20 lg:hidden"
+          />
+        )}
 
-        {/* Center Full-Bleed 60 FPS 3D Architectural Viewport */}
+        {/* Left Slim 4-Tab Panel (Hidden in TV Presentation Mode; Drawer on Phone/Portrait iPad; Docked on Landscape iPad/Desktop/TV) */}
+        {!tvPresentationMode && (
+          <aside
+            className={`${
+              mobileSidebarOpen ? 'fixed inset-y-14 left-0 z-30 flex' : 'hidden lg:flex'
+            } w-[85vw] max-w-[320px] lg:w-[272px] xl:w-[306px] 2xl:w-[348px] bg-white border-r border-stone-200 flex-col shrink-0 shadow-2xl lg:shadow-none pb-[env(safe-area-inset-bottom)]`}
+          >
+            <nav className="grid grid-cols-4 border-b border-stone-200 bg-[#faf9f6] shrink-0">
+              {TABS.map((t) => {
+                const Icon = t.icon;
+                const active = activeTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setActiveTab(t.id)}
+                    className={`py-2.5 px-1 flex flex-col items-center justify-center gap-1 border-b-2 text-[10px] 2xl:text-[11px] font-semibold transition whitespace-nowrap ${
+                      active ? 'border-stone-950 bg-white text-stone-950' : 'border-transparent text-stone-500 hover:text-stone-900'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span>{t.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="flex-1 min-h-0 overflow-y-auto">{renderLeftSidebar()}</div>
+          </aside>
+        )}
+
+        {/* Center Full-Bleed Multi-Touch & 4K TV-Safe 3D Viewport */}
         <main className="flex-1 min-w-0 relative overflow-hidden">
           <ArchViewport3D
             ref={viewportRef}
             project={project}
             cameraMode={cameraMode}
-            showGrid={showGrid}
-            showSunOrb={showSunOrb}
-            showDoorArcs={showDoorArcs}
-            selection={selection}
-            onSelect={setSelection}
+            showGrid={showGrid && !tvPresentationMode}
+            showSunOrb={showSunOrb && !tvPresentationMode}
+            showDoorArcs={showDoorArcs && !tvPresentationMode}
+            autoRotate={autoRotate360}
+            selection={tvPresentationMode ? null : selection}
+            onSelect={(sel) => {
+              if (!tvPresentationMode) setSelection(sel);
+            }}
             onMoveObject={(id, x, z) =>
               setProject((prev) => ({
                 ...prev,
@@ -1679,24 +1794,26 @@ export const ArchitecturalStudioPage: React.FC = () => {
           />
 
           {/* Mobile Camera Switcher */}
-          <div className="md:hidden absolute top-3 left-3 flex items-center gap-1 bg-white/95 border border-stone-300 p-1 shadow-sm">
-            {(
-              [
-                { id: 'free', label: '3B' },
-                { id: 'plan', label: '2D' },
-                { id: 'inside', label: 'Gez' },
-              ] as const
-            ).map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
-                className={`px-2 py-1 text-[11px] font-bold ${cameraMode === c.id ? 'bg-stone-950 text-white' : 'text-stone-700'}`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
+          {!tvPresentationMode && (
+            <div className="md:hidden absolute top-3 left-3 flex items-center gap-1 bg-white/95 border border-stone-300 p-1 shadow-sm">
+              {(
+                [
+                  { id: 'free', label: '3B' },
+                  { id: 'plan', label: '2D' },
+                  { id: 'inside', label: 'Gez' },
+                ] as const
+              ).map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
+                  className={`px-2.5 py-1.5 text-[11px] font-bold ${cameraMode === c.id ? 'bg-stone-950 text-white' : 'text-stone-700'}`}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {loadingCount > 0 && (
             <div className="absolute top-3 left-3 hidden md:flex items-center gap-2 bg-white/95 border border-stone-200 px-3 py-1.5 text-xs font-semibold text-stone-800 shadow-sm pointer-events-none">
@@ -1705,7 +1822,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </div>
           )}
 
-          {warnings.length > 0 && (
+          {warnings.length > 0 && !tvPresentationMode && (
             <div className="absolute top-3 right-3 max-w-xs bg-amber-50 border border-amber-400 px-3 py-2 text-[11px] text-amber-950 shadow-sm flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <div>
@@ -1717,19 +1834,88 @@ export const ArchitecturalStudioPage: React.FC = () => {
           )}
 
           {toastMsg && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-stone-950 text-white px-4 py-2 text-xs font-medium shadow-lg pointer-events-none max-w-[90vw] truncate">
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-stone-950 text-white px-4 py-2 text-xs font-medium shadow-lg pointer-events-none max-w-[90vw] truncate z-40">
               {toastMsg}
             </div>
           )}
 
-          {/* First-Person Walkthrough Controls HUD */}
-          {cameraMode === 'inside' ? (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/95 border border-stone-300 shadow-lg px-3 py-2 flex items-center gap-3 text-xs">
+          {/* TV / Showroom Full-Screen Presentation Floating Remote Bar */}
+          {tvPresentationMode && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 bg-white/95 border border-stone-300 shadow-2xl px-3 py-2 flex flex-wrap items-center justify-center gap-2 text-xs z-40 max-w-[95vw]">
+              <span className="font-display font-bold text-stone-950 px-1.5 hidden sm:inline">
+                MekanAR · {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m
+              </span>
+              <span className="h-4 w-px bg-stone-300 hidden sm:inline-block" />
+              <button
+                type="button"
+                onClick={() => setCameraMode('free')}
+                className={`px-3 py-1.5 font-semibold border ${cameraMode === 'free' ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'}`}
+              >
+                3B
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAutoRotate360(false);
+                  setCameraMode('plan');
+                }}
+                className={`px-3 py-1.5 font-semibold border ${cameraMode === 'plan' ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'}`}
+              >
+                2D Plan
+              </button>
+              <button
+                type="button"
+                onClick={enterDoorWalkthrough}
+                className={`px-3 py-1.5 font-semibold border ${cameraMode === 'inside' ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'}`}
+              >
+                Kapıdan Gez
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCameraMode('free');
+                  setAutoRotate360((v) => !v);
+                }}
+                className={`px-3 py-1.5 font-semibold border flex items-center gap-1 ${autoRotate360 ? 'border-amber-600 bg-amber-600 text-white' : 'border-stone-200 bg-white'}`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${autoRotate360 ? 'animate-spin' : ''}`} />
+                <span>360° Tur</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSunPlaying((v) => !v)}
+                className={`px-3 py-1.5 font-semibold border flex items-center gap-1 ${sunPlaying ? 'border-amber-600 bg-amber-600 text-white' : 'border-stone-200 bg-white'}`}
+              >
+                {sunPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                <span>Güneş</span>
+              </button>
+              <button
+                type="button"
+                onClick={toggleTvPresentationMode}
+                className="px-3 py-1.5 bg-stone-950 text-white font-semibold flex items-center gap-1"
+              >
+                <Minimize2 className="w-3.5 h-3.5" />
+                <span>Çık</span>
+              </button>
+            </div>
+          )}
+
+          {/* First-Person Walkthrough Controls HUD (Touch/iPad/TV-Remote + Keyboard Friendly!) */}
+          {!tvPresentationMode && cameraMode === 'inside' ? (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/95 border border-stone-300 shadow-lg px-2.5 sm:px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex flex-wrap items-center justify-center gap-2 text-xs max-w-[96vw]">
               <div className="flex items-center gap-1">
                 <button
                   type="button"
+                  onClick={() => viewportRef.current?.turnLook(22)}
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="Sola Bak"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => viewportRef.current?.walkStep(0, -0.45)}
-                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
                   title="Sola Adım (A)"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
@@ -1737,7 +1923,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => viewportRef.current?.walkStep(0.55, 0)}
-                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
                   title="İleri Yürü (W / Tekerlek)"
                 >
                   <ArrowUp className="w-3.5 h-3.5" />
@@ -1745,7 +1931,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => viewportRef.current?.walkStep(-0.55, 0)}
-                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
                   title="Geri Adım (S)"
                 >
                   <ArrowDown className="w-3.5 h-3.5" />
@@ -1753,19 +1939,27 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => viewportRef.current?.walkStep(0, 0.45)}
-                  className="p-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
                   title="Sağa Adım (D)"
                 >
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => viewportRef.current?.turnLook(-22)}
+                  className="p-2 border border-stone-300 hover:border-stone-950 bg-[#faf9f6]"
+                  title="Sağa Bak"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <span className="text-[11px] text-stone-600 hidden sm:inline whitespace-nowrap">
-                Sürükle: Etrafa Bak · <strong className="font-mono text-stone-900">W/A/S/D</strong> veya Tekerlek: Yürü
+              <span className="text-[11px] text-stone-600 hidden lg:inline whitespace-nowrap">
+                Sürükle: Bak · <strong className="font-mono text-stone-900">WASD</strong> / Tekerlek: Yürü
               </span>
               <button
                 type="button"
                 onClick={() => viewportRef.current?.enterFromDoor()}
-                className="px-2.5 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap"
+                className="px-2.5 py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap"
               >
                 <DoorOpen className="w-3.5 h-3.5" />
                 <span>Kapıdan Gir</span>
@@ -1773,12 +1967,13 @@ export const ArchitecturalStudioPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setCameraMode('free')}
-                className="px-2.5 py-1 bg-stone-950 text-white text-[11px] font-semibold whitespace-nowrap"
+                className="px-2.5 py-1.5 bg-stone-950 text-white text-[11px] font-semibold whitespace-nowrap"
               >
-                3B&apos;ye Çık
+                3B
               </button>
             </div>
           ) : (
+            !tvPresentationMode &&
             !selection && (
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/92 border border-stone-200 px-3.5 py-1.5 text-[11px] text-stone-700 shadow-sm pointer-events-none whitespace-nowrap hidden sm:block">
                 Düzenlemek için odada herhangi bir duvara, zemine, pencereye, kapıya veya eşyaya tıklayın
@@ -1787,9 +1982,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
           )}
         </main>
 
-        {/* Right Contextual Inspector — Opens ONLY when user clicks a wall, wall zone, floor, window, door, column, beam, or object! */}
-        {selection && (
-          <aside className="w-[290px] xl:w-[310px] bg-white border-l border-stone-200 shrink-0 flex flex-col z-20 shadow-lg lg:shadow-none">
+        {/* Right Contextual Inspector: Docked Side Panel on Desktop/Landscape iPad/TV; Clean Bottom Sheet on Phone/Portrait iPad! */}
+        {!tvPresentationMode && selection && (
+          <aside className="fixed inset-x-0 bottom-0 max-h-[48dvh] border-t-2 border-stone-950 shadow-2xl pb-[env(safe-area-inset-bottom)] lg:static lg:inset-auto lg:max-h-none lg:border-t-0 lg:border-l lg:border-stone-200 lg:shadow-none lg:pb-0 lg:w-[276px] xl:w-[306px] 2xl:w-[348px] bg-white shrink-0 flex flex-col z-30">
             <SelectionInspector
               project={project}
               selection={selection}
