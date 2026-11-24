@@ -42,13 +42,18 @@ const GEMINI_DIRECT_BASE = 'https://generativelanguage.googleapis.com/v1beta/mod
 const DIRECT_VISION_MODELS = [
   'gemini-3.8-flash',
   'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
-  'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-4-neon',
 ];
 const DIRECT_IMAGE_MODELS = [
+  'gemini-nano-banana-2.1',
+  'gemini-3.1-flash-lite-image',
   'gemini-3.1-flash-image',
   'gemini-3.1-flash-image-preview',
-  'gemini-3-pro-image-preview',
   'gemini-3-pro-image',
   'gemini-2.5-flash-image',
 ];

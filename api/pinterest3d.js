@@ -17,15 +17,19 @@
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const VISION_MODELS = [
   'gemini-3.8-flash',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
-  'gemini-2.5-pro',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-4-neon',
 ];
 const IMAGE_MODELS = [
+  'gemini-nano-banana-2.1',
+  'gemini-3.1-flash-lite-image',
   'gemini-3.1-flash-image',
   'gemini-3.1-flash-image-preview',
-  'gemini-3-pro-image-preview',
   'gemini-3-pro-image',
   'gemini-2.5-flash-image',
 ];
@@ -95,7 +99,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(22000),
+          signal: AbortSignal.timeout(16000),
         });
       } catch (netErr) {
         errors.push(`${model} (timeout): ${netErr instanceof Error ? netErr.message : 'zaman aşımı'}`);
