@@ -8,7 +8,9 @@ export type WallPattern =
   | 'slats'
   | 'concrete'
   | 'stone'
-  | 'wallpaper';
+  | 'wallpaper'
+  | 'marble'
+  | 'mirror';
 
 export type FloorMaterialKind =
   | 'herringbone_oak'
@@ -39,18 +41,41 @@ export type ParametricFurnitureKind =
   | 'tv_wall_unit'
   | 'wall_tv'
   | 'rug_custom'
-  | 'chandelier';
+  | 'chandelier'
+  | 'wardrobe'
+  | 'dining_table'
+  | 'bookshelf'
+  | 'bed_frame'
+  | 'ac_unit'
+  | 'wall_mirror'
+  | 'floor_lamp'
+  | 'console_table'
+  | 'wall_art';
 
 export interface WallFinish {
   colorHex: string;
   pattern: WallPattern;
 }
 
+/** Partial region / accent panel painted or clad on a specific section of any wall */
+export interface ArchWallZone {
+  id: string;
+  wall: WallId;
+  label: string;
+  /** Center distance from the left interior edge of this wall (cm) */
+  offsetCm: number;
+  widthCm: number;
+  /** Bottom distance from floor (cm), 0 = floor-to-top */
+  bottomCm: number;
+  heightCm: number;
+  pattern: WallPattern;
+  colorHex: string;
+}
+
 export interface ArchWindow {
   id: string;
   wall: WallId;
   kind: WindowKind;
-  /** Center distance from the left interior corner of this wall (cm) */
   offsetCm: number;
   widthCm: number;
   heightCm: number;
@@ -59,7 +84,6 @@ export interface ArchWindow {
   hasSill: boolean;
   curtainStyle: CurtainStyle;
   curtainColorHex: string;
-  /** 0 = closed, 1 = open to sides */
   curtainOpenRatio: number;
 }
 
@@ -67,7 +91,6 @@ export interface ArchDoor {
   id: string;
   wall: WallId;
   kind: DoorKind;
-  /** Center distance from the left interior corner of this wall (cm) */
   offsetCm: number;
   widthCm: number;
   heightCm: number;
@@ -82,9 +105,7 @@ export interface ArchColumn {
   id: string;
   label: string;
   shape: 'rect' | 'round';
-  /** Room-local X in cm (0 = room center) */
   xCm: number;
-  /** Room-local Z in cm (0 = room center) */
   zCm: number;
   widthCm: number;
   depthCm: number;
@@ -94,9 +115,7 @@ export interface ArchColumn {
 export interface ArchBeam {
   id: string;
   label: string;
-  /** 'x' runs West->East across roomW; 'z' runs North->South across roomD */
   axis: 'x' | 'z';
-  /** Position along the perpendicular axis in cm (0 = center) */
   positionCm: number;
   widthCm: number;
   dropCm: number;
@@ -106,9 +125,7 @@ export interface ArchBeam {
 export interface ArchCurtainCove {
   id: string;
   wall: WallId;
-  /** Distance from interior wall face into the room (cm), e.g. 20 cm */
   depthCm: number;
-  /** Drop height from ceiling (cm), e.g. 18 cm */
   dropCm: number;
   ledEnabled: boolean;
   ledColorHex: string;
@@ -119,9 +136,7 @@ export interface ArchCurtainCove {
 export type SolarSeason = 'summer' | 'equinox' | 'winter';
 
 export interface SunConfig {
-  /** Compass bearing of the room's 'north' (-Z) wall in degrees (0=N, 90=E, 180=S, 270=W) */
   northAngleDeg: number;
-  /** Local solar hour 6.0 .. 20.5 */
   hour: number;
   season: SolarSeason;
   sunIntensity: number;
@@ -136,13 +151,9 @@ export interface ArchPlacedObject {
   parametricKind?: ParametricFurnitureKind;
   parametricColorHex?: string;
   parametricAccentHex?: string;
-  /** Center X in meters */
   x: number;
-  /** Bottom elevation from floor in meters (0 for floor items, >0 for wall-mounted TVs/art) */
   y: number;
-  /** Center Z in meters */
   z: number;
-  /** Rotation around Y axis in radians */
   rot: number;
   widthM: number;
   depthM: number;
@@ -154,8 +165,19 @@ export interface ArchPlacedObject {
   productRef?: Product;
 }
 
+export type ArchSelection =
+  | { type: 'object'; id: string }
+  | { type: 'wall'; wall: WallId }
+  | { type: 'wallZone'; id: string }
+  | { type: 'floor' }
+  | { type: 'window'; id: string }
+  | { type: 'door'; id: string }
+  | { type: 'column'; id: string }
+  | { type: 'beam'; id: string }
+  | null;
+
 export interface ArchRoomProject {
-  version: 1;
+  version: 2;
   projectName: string;
   widthM: number;
   depthM: number;
@@ -170,6 +192,7 @@ export interface ArchRoomProject {
   floorMaterial: FloorMaterialKind;
   floorTintHex: string;
   walls: Record<WallId, WallFinish>;
+  wallZones: ArchWallZone[];
   windows: ArchWindow[];
   doors: ArchDoor[];
   columns: ArchColumn[];
@@ -206,12 +229,14 @@ export const DOOR_KIND_LABELS: Record<DoorKind, string> = {
 };
 
 export const WALL_PATTERN_LABELS: Record<WallPattern, string> = {
-  smooth: 'Mat Mimari Boya',
-  boiserie: 'Klasik Duvar Çıtası',
-  slats: 'Ahşap Akustik Çıta',
+  smooth: 'Mat Boya',
+  boiserie: 'Duvar Çıtası',
+  slats: 'Ahşap Çıta',
+  marble: 'Mermer Panel',
+  stone: 'Traverten Taş',
   concrete: 'Brüt Beton',
-  stone: 'Doğal Traverten Taş',
-  wallpaper: 'Keten Duvar Kağıdı',
+  wallpaper: 'Keten Kağıt',
+  mirror: 'Dekoratif Ayna',
 };
 
 export const FLOOR_MATERIAL_LABELS: Record<FloorMaterialKind, { label: string; defaultTint: string }> = {
@@ -238,41 +263,15 @@ export const ARCHITECTURAL_PAINT_SWATCHES = [
 ];
 
 export const FRAME_COLOR_SWATCHES = [
-  { name: 'Antrasit RAL 7016', hex: '#2b2e33' },
+  { name: 'Antrasit', hex: '#2b2e33' },
   { name: 'Siyah Mat', hex: '#18181a' },
   { name: 'Beyaz PVC', hex: '#f2f1ed' },
   { name: 'Doğal Meşe', hex: '#8b6848' },
-  { name: 'Bronz Alüminyum', hex: '#5f5143' },
+  { name: 'Bronz', hex: '#5f5143' },
 ];
 
 export function getWallLengthM(wall: WallId, roomW: number, roomD: number): number {
   return wall === 'north' || wall === 'south' ? roomW : roomD;
-}
-
-/**
- * Converts wall-local (offsetCm from left interior edge, yM from floor, inwardDistM from interior wall face)
- * into world (x, y, z) coordinates and the inward-facing Y rotation.
- */
-export function wallLocalToWorld(
-  wall: WallId,
-  offsetCm: number,
-  yM: number,
-  inwardDistM: number,
-  roomW: number,
-  roomD: number
-): { x: number; y: number; z: number; rotY: number } {
-  const lenM = getWallLengthM(wall, roomW, roomD);
-  const localU = offsetCm / 100 - lenM / 2;
-  switch (wall) {
-    case 'north':
-      return { x: localU, y: yM, z: -roomD / 2 + inwardDistM, rotY: 0 };
-    case 'south':
-      return { x: -localU, y: yM, z: roomD / 2 - inwardDistM, rotY: Math.PI };
-    case 'west':
-      return { x: -roomW / 2 + inwardDistM, y: yM, z: -localU, rotY: Math.PI / 2 };
-    case 'east':
-      return { x: roomW / 2 - inwardDistM, y: yM, z: localU, rotY: -Math.PI / 2 };
-  }
 }
 
 export function createDefaultArchitectProject(catalogProducts: Product[]): ArchRoomProject {
@@ -285,7 +284,7 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
       id: 'obj-rug-main',
       name: 'Dokuma Salon Halısı',
       category: 'Mimari Modül',
-      dimensionsCm: '240 × 320 × 2 cm',
+      dimensionsCm: '300 × 220 × 2 cm',
       parametricKind: 'rug_custom',
       parametricColorHex: '#e7e0d4',
       parametricAccentHex: '#bfb4a2',
@@ -301,17 +300,17 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
     },
     {
       id: 'obj-fireplace-west',
-      name: 'Calacatta Mermer Şömine & TV Duvarı',
-      category: 'Mimari Modül',
-      dimensionsCm: '240 × 44 × 280 cm',
+      name: 'Calacatta Mermer Şömine',
+      category: 'Şömine',
+      dimensionsCm: '220 × 44 × 280 cm',
       parametricKind: 'fireplace_marble',
       parametricColorHex: '#ece9e2',
       parametricAccentHex: '#252423',
-      x: -2.48,
+      x: -2.47,
       y: 0,
       z: 0.05,
       rot: Math.PI / 2,
-      widthM: 2.4,
+      widthM: 2.2,
       depthM: 0.44,
       heightM: 2.8,
       mountMode: 'wall',
@@ -319,20 +318,39 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
       source: 'parametric',
     },
     {
+      id: 'obj-tv-west',
+      name: 'Duvar OLED TV (65")',
+      category: 'Televizyon',
+      dimensionsCm: '145 × 6 × 84 cm',
+      parametricKind: 'wall_tv',
+      parametricColorHex: '#18181b',
+      parametricAccentHex: '#0b0c10',
+      x: -2.26,
+      y: 1.28,
+      z: 0.05,
+      rot: Math.PI / 2,
+      widthM: 1.45,
+      depthM: 0.06,
+      heightM: 0.84,
+      mountMode: 'wall',
+      attachedWall: 'west',
+      source: 'parametric',
+    },
+    {
       id: 'obj-chandelier-center',
-      name: 'Pirinç Halka Mimari Avize',
-      category: 'Mimari Modül',
-      dimensionsCm: '90 × 90 × 55 cm',
+      name: 'Pirinç Halka Avize',
+      category: 'Aydınlatma',
+      dimensionsCm: '85 × 85 × 50 cm',
       parametricKind: 'chandelier',
       parametricColorHex: '#c8a86b',
       parametricAccentHex: '#fff4dc',
-      x: 0.1,
-      y: 2.25,
-      z: 0.2,
+      x: 0.25,
+      y: 2.32,
+      z: 0.15,
       rot: 0,
-      widthM: 0.9,
-      depthM: 0.9,
-      heightM: 0.55,
+      widthM: 0.85,
+      depthM: 0.85,
+      heightM: 0.5,
       mountMode: 'ceiling',
       source: 'parametric',
     },
@@ -402,8 +420,8 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
   }
 
   return {
-    version: 1,
-    projectName: 'Modern Salon Mimari Projesi',
+    version: 2,
+    projectName: 'Modern Salon Projesi',
     widthM: 5.4,
     depthM: 4.8,
     ceilingM: 2.85,
@@ -419,9 +437,22 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
     walls: {
       north: { colorHex: '#f2efe8', pattern: 'smooth' },
       south: { colorHex: '#f2efe8', pattern: 'boiserie' },
-      west: { colorHex: '#e9e4db', pattern: 'smooth' },
-      east: { colorHex: '#d7cfc2', pattern: 'slats' },
+      west: { colorHex: '#ece7de', pattern: 'smooth' },
+      east: { colorHex: '#f0ece4', pattern: 'smooth' },
     },
+    wallZones: [
+      {
+        id: 'zone-east-slats',
+        wall: 'east',
+        label: 'Ahşap Çıta Bölgesi',
+        offsetCm: 335,
+        widthCm: 190,
+        bottomCm: 0,
+        heightCm: 285,
+        pattern: 'slats',
+        colorHex: '#b9936c',
+      },
+    ],
     windows: [
       {
         id: 'win-north-triple',
@@ -441,7 +472,7 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
         id: 'win-east-arched',
         wall: 'east',
         kind: 'arched',
-        offsetCm: 130,
+        offsetCm: 125,
         widthCm: 105,
         heightCm: 175,
         sillHeightCm: 65,
@@ -482,7 +513,7 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
     beams: [
       {
         id: 'beam-north',
-        label: 'Üst Taşıyıcı Kiriş',
+        label: 'Üst Kiriş',
         axis: 'x',
         positionCm: -225,
         widthCm: 30,
@@ -503,7 +534,6 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
       },
     ],
     sun: {
-      // North wall faces Güney-Güneydoğu (155°) so dramatic daylight streams in through the main triple window
       northAngleDeg: 155,
       hour: 14.5,
       season: 'equinox',

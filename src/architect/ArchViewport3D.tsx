@@ -2,17 +2,13 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import {
-  clampToRoomWalls,
-  resolveMoveOBB,
-  type OBB2D,
-} from '../lib/collision2d';
+import { clampToRoomWalls, resolveMoveOBB, type OBB2D } from '../lib/collision2d';
 import { buildContactShadow } from '../lib/contactShadow';
 import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
 import { computeSolarLighting } from './solarMath';
-import type { ArchPlacedObject, ArchRoomProject, WallId } from './types';
+import type { ArchPlacedObject, ArchRoomProject, ArchSelection, WallId } from './types';
 
 export type ArchCameraMode = 'free' | 'plan' | 'inside';
 
@@ -28,8 +24,8 @@ interface Props {
   showGrid: boolean;
   showSunOrb: boolean;
   showDoorArcs: boolean;
-  selectedObjectId: string | null;
-  onSelectObject: (id: string | null) => void;
+  selection: ArchSelection;
+  onSelect: (sel: ArchSelection) => void;
   onMoveObject: (id: string, x: number, z: number) => void;
   onWarningsChange?: (warnings: string[]) => void;
   onLoadingChange?: (loadingCount: number) => void;
@@ -42,8 +38,8 @@ function objectToOBB(o: ArchPlacedObject): OBB2D {
     x: o.x,
     z: o.z,
     rot: o.rot,
-    halfW: Math.max(0.12, o.widthM * 0.5),
-    halfD: Math.max(0.06, o.depthM * 0.5),
+    halfW: Math.max(0.1, o.widthM * 0.5),
+    halfD: Math.max(0.04, o.depthM * 0.5),
   };
 }
 
@@ -55,8 +51,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       showGrid,
       showSunOrb,
       showDoorArcs,
-      selectedObjectId,
-      onSelectObject,
+      selection,
+      onSelect,
       onMoveObject,
       onWarningsChange,
       onLoadingChange,
@@ -69,14 +65,25 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     projectRef.current = project;
     const camModeRef = useRef(cameraMode);
     camModeRef.current = cameraMode;
-    const selectedIdRef = useRef(selectedObjectId);
-    selectedIdRef.current = selectedObjectId;
+    const selectionRef = useRef(selection);
+    selectionRef.current = selection;
     const showGridRef = useRef(showGrid);
     showGridRef.current = showGrid;
     const showDoorArcsRef = useRef(showDoorArcs);
     showDoorArcsRef.current = showDoorArcs;
 
-    const dragRef = useRef<{ id: string; hx: number; hz: number; px: number; pz: number } | null>(null);
+    // Zero-React-re-render dragging state!
+    const dragRef = useRef<{
+      id: string;
+      hx: number;
+      hz: number;
+      px: number;
+      pz: number;
+      liveX: number;
+      liveZ: number;
+      moved: boolean;
+    } | null>(null);
+    const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
     const hitObstacleRef = useRef(false);
 
     const engineRef = useRef<{
@@ -92,13 +99,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       bounceLight: THREE.DirectionalLight;
       sunOrbGroup: THREE.Group;
       sunRayLine: THREE.Line;
-      selFrame: THREE.LineLoop;
+      selBox: THREE.LineSegments;
       selMat: THREE.LineBasicMaterial;
       builtRoom: BuiltRoomResult | null;
       gltfCache: Map<string, THREE.Group>;
       mountedObjects: Map<string, { sig: string; root: THREE.Group; dispose?: () => void }>;
       loadingKeys: Set<string>;
+      shadowsDirty: boolean;
+      lastCutawayMask: number;
     } | null>(null);
+
+    const markShadowsDirty = () => {
+      if (engineRef.current) engineRef.current.shadowsDirty = true;
+    };
 
     const applyCameraPreset = (mode: ArchCameraMode) => {
       const eng = engineRef.current;
@@ -106,15 +119,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const p = projectRef.current;
       const maxSpan = Math.max(p.widthM, p.depthM);
       if (mode === 'plan') {
-        // Low-FOV high-altitude top-down camera with vertical margin so all 4 A/B/C/D cm badges stay inside frame
+        // Aspect-aware top-down camera so all 4 A/B/C/D cm badges stay inside frame even with right inspector open
         eng.camera.fov = 16;
-        eng.camera.far = 180;
+        eng.camera.far = 220;
         eng.camera.updateProjectionMatrix();
-        eng.camera.position.set(0, maxSpan * 5.25, 0.01);
+        const aspect = Math.max(0.55, eng.camera.aspect || 1);
+        const fitDiv = Math.min(1, aspect * 0.92);
+        eng.camera.position.set(0, (maxSpan * 5.25) / fitDiv, 0.01);
         eng.controls.target.set(0, 0, 0);
         eng.controls.maxPolarAngle = Math.PI * 0.49;
         eng.controls.minDistance = 4.0;
-        eng.controls.maxDistance = 65;
+        eng.controls.maxDistance = 80;
       } else if (mode === 'inside') {
         eng.camera.fov = 56;
         eng.camera.far = 90;
@@ -135,6 +150,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         eng.controls.maxDistance = 24;
       }
       eng.controls.update();
+      markShadowsDirty();
     };
 
     const focusOnWall = (wall: WallId) => {
@@ -162,27 +178,29 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         eng.controls.target.set(p.widthM * 0.25, targetY, 0);
       }
       eng.controls.update();
+      markShadowsDirty();
     };
 
     useImperativeHandle(ref, () => ({
       captureSnapshot: (hideSelection = true) => {
         const eng = engineRef.current;
         if (!eng) return null;
-        const prevSel = eng.selFrame.visible;
+        const prevSel = eng.selBox.visible;
         const prevOrb = eng.sunOrbGroup.visible;
         const prevCompass = eng.builtRoom?.compassRingGroup.visible ?? false;
         const prevOverlay = eng.builtRoom?.planOverlayGroup.visible ?? false;
         if (hideSelection) {
-          eng.selFrame.visible = false;
+          eng.selBox.visible = false;
           eng.sunOrbGroup.visible = false;
           if (eng.builtRoom && camModeRef.current !== 'plan') {
             eng.builtRoom.compassRingGroup.visible = false;
             eng.builtRoom.planOverlayGroup.visible = false;
           }
         }
+        eng.renderer.shadowMap.needsUpdate = true;
         eng.renderer.render(eng.scene, eng.camera);
         const url = eng.renderer.domElement.toDataURL('image/jpeg', 0.94);
-        eng.selFrame.visible = prevSel;
+        eng.selBox.visible = prevSel;
         eng.sunOrbGroup.visible = prevOrb;
         if (eng.builtRoom) {
           eng.builtRoom.compassRingGroup.visible = prevCompass;
@@ -191,33 +209,30 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         eng.renderer.render(eng.scene, eng.camera);
         return url;
       },
-      resetCamera: (mode) => {
-        applyCameraPreset(mode || camModeRef.current);
-      },
-      focusWall: (wall) => {
-        focusOnWall(wall);
-      },
+      resetCamera: (mode) => applyCameraPreset(mode || camModeRef.current),
+      focusWall: (wall) => focusOnWall(wall),
     }));
 
-    // 1) Mount Three.js WebGL Engine once
+    // 1) Mount 60 FPS WebGL Engine
     useEffect(() => {
       const host = hostRef.current;
       if (!host) return;
       const w = host.clientWidth || window.innerWidth;
-      const h = host.clientHeight || window.innerHeight - 120;
+      const h = host.clientHeight || window.innerHeight - 100;
 
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
         powerPreference: 'high-performance',
         preserveDrawingBuffer: true,
       });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.04;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.autoUpdate = false; // Update shadow map ONLY when geometry/sun/objects change!
 
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0xe8e5de);
@@ -225,22 +240,22 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const camera = new THREE.PerspectiveCamera(42, w / Math.max(1, h), 0.08, 90);
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
-      controls.dampingFactor = 0.08;
+      controls.dampingFactor = 0.09;
 
       const hemiLight = new THREE.HemisphereLight(0xf8fbff, 0xc9c2b6, 0.9);
       scene.add(hemiLight);
 
       const sunLight = new THREE.DirectionalLight(0xfff6e5, 1.75);
       sunLight.castShadow = true;
-      sunLight.shadow.mapSize.set(2048, 2048);
+      sunLight.shadow.mapSize.set(1536, 1536);
       sunLight.shadow.camera.near = 1.0;
-      sunLight.shadow.camera.far = 42;
+      sunLight.shadow.camera.far = 40;
       const sBound = 9.0;
       sunLight.shadow.camera.left = -sBound;
       sunLight.shadow.camera.right = sBound;
       sunLight.shadow.camera.top = sBound;
       sunLight.shadow.camera.bottom = -sBound;
-      sunLight.shadow.bias = -0.00045;
+      sunLight.shadow.bias = -0.0005;
       sunLight.shadow.normalBias = 0.025;
       scene.add(sunLight);
       scene.add(sunLight.target);
@@ -249,33 +264,32 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       bounceLight.position.set(-5, 3.5, 4);
       scene.add(bounceLight);
 
-      // Visible 3D sun beacon + ray indicator
+      // Visible 3D sun beacon + ray
       const sunOrbGroup = new THREE.Group();
-      const orbGeo = new THREE.SphereGeometry(0.28, 24, 24);
+      const orbGeo = new THREE.SphereGeometry(0.26, 20, 20);
       const orbMat = new THREE.MeshBasicMaterial({ color: 0xffc857 });
       const orbMesh = new THREE.Mesh(orbGeo, orbMat);
+      orbMesh.raycast = () => {};
       sunOrbGroup.add(orbMesh);
 
-      const haloGeo = new THREE.RingGeometry(0.36, 0.46, 32);
+      const haloGeo = new THREE.RingGeometry(0.34, 0.44, 24);
       const haloMat = new THREE.MeshBasicMaterial({
         color: 0xffd578,
         side: THREE.DoubleSide,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.52,
       });
       const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+      haloMesh.raycast = () => {};
       sunOrbGroup.add(haloMesh);
 
       const rayGeo = new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(0, 0, 0),
         new THREE.Vector3(0, 2, 0),
       ]);
-      const rayMat = new THREE.LineBasicMaterial({
-        color: 0xf59e0b,
-        transparent: true,
-        opacity: 0.55,
-      });
+      const rayMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.5 });
       const sunRayLine = new THREE.Line(rayGeo, rayMat);
+      sunRayLine.raycast = () => {};
       sunOrbGroup.add(sunRayLine);
       scene.add(sunOrbGroup);
 
@@ -285,17 +299,15 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const objectsRoot = new THREE.Group();
       scene.add(objectsRoot);
 
-      const framePts = [
-        new THREE.Vector3(-0.5, 0.02, -0.5),
-        new THREE.Vector3(0.5, 0.02, -0.5),
-        new THREE.Vector3(0.5, 0.02, 0.5),
-        new THREE.Vector3(-0.5, 0.02, 0.5),
-      ];
-      const selGeo = new THREE.BufferGeometry().setFromPoints(framePts);
+      // Tight 3D bounding wireframe box matching exact selected object's W × H × D!
+      const unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+      const selEdgesGeo = new THREE.EdgesGeometry(unitBoxGeo);
+      unitBoxGeo.dispose();
       const selMat = new THREE.LineBasicMaterial({ color: 0x0f172a });
-      const selFrame = new THREE.LineLoop(selGeo, selMat);
-      selFrame.visible = false;
-      scene.add(selFrame);
+      const selBox = new THREE.LineSegments(selEdgesGeo, selMat);
+      selBox.visible = false;
+      selBox.raycast = () => {};
+      scene.add(selBox);
 
       host.innerHTML = '';
       host.appendChild(renderer.domElement);
@@ -313,12 +325,14 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         bounceLight,
         sunOrbGroup,
         sunRayLine,
-        selFrame,
+        selBox,
         selMat,
         builtRoom: null as BuiltRoomResult | null,
         gltfCache: new Map<string, THREE.Group>(),
         mountedObjects: new Map<string, { sig: string; root: THREE.Group; dispose?: () => void }>(),
         loadingKeys: new Set<string>(),
+        shadowsDirty: true,
+        lastCutawayMask: -1,
       };
       engineRef.current = eng;
       applyCameraPreset(camModeRef.current);
@@ -339,46 +353,63 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           br.compassRingGroup.visible = mode !== 'inside';
           br.compassRingGroup.rotation.y = (p.sun.northAngleDeg * Math.PI) / 180;
 
-          // Wall cutaway with preserved shadow casting!
-          for (const wall of br.walls) {
-            if (mode === 'inside' || mode === 'plan') {
-              wall.visualGroup.visible = true;
-              wall.shadowGhost.visible = false;
-            } else {
+          let mask = 0;
+          for (let wi = 0; wi < br.walls.length; wi++) {
+            const wall = br.walls[wi];
+            let showSolid = true;
+            if (mode === 'free') {
               toCam.subVectors(camera.position, wall.center);
-              const showSolid = toCam.dot(wall.inwardNormal) > 0.05;
-              wall.visualGroup.visible = showSolid;
-              // Shadow ghost stays active when cutaway so outdoor sunlight still enters strictly via windows!
-              wall.shadowGhost.visible = !showSolid;
+              showSolid = toCam.dot(wall.inwardNormal) > 0.05;
             }
+            wall.visualGroup.visible = showSolid;
+            wall.shadowGhost.visible = mode === 'free' && !showSolid;
+            if (showSolid) mask |= 1 << wi;
           }
 
-          // Ceiling visibility & shadow roof blocker
           if (mode === 'inside') {
             br.ceilingVisualGroup.visible = true;
             br.ceilingShadowGhost.visible = false;
+            mask |= 1 << 5;
           } else if (mode === 'plan') {
             br.ceilingVisualGroup.visible = false;
             br.ceilingShadowGhost.visible = false;
           } else {
             br.ceilingVisualGroup.visible = p.showCeiling;
             br.ceilingShadowGhost.visible = !p.showCeiling;
+            if (p.showCeiling) mask |= 1 << 5;
+          }
+
+          if (mask !== eng.lastCutawayMask) {
+            eng.lastCutawayMask = mask;
+            eng.shadowsDirty = true;
           }
         }
 
-        // Keep sun halo facing camera
-        haloMesh.lookAt(camera.position);
+        if (eng.sunOrbGroup.visible) haloMesh.lookAt(camera.position);
 
-        // Selection frame update
-        const sel = p.objects.find((o) => o.id === selectedIdRef.current);
-        if (sel) {
-          selFrame.visible = true;
-          selFrame.position.set(sel.x, sel.y, sel.z);
-          selFrame.rotation.y = sel.rot;
-          selFrame.scale.set(sel.widthM + 0.08, 1, sel.depthM + 0.08);
-          selMat.color.setHex(hitObstacleRef.current ? 0xdc2626 : 0x0f172a);
+        // Tight 3D wireframe around selected object (follows live drag position with 0 React re-render!)
+        const sel = selectionRef.current;
+        if (sel?.type === 'object') {
+          const obj = p.objects.find((o) => o.id === sel.id);
+          if (obj) {
+            const d = dragRef.current;
+            const ox = d && d.id === obj.id ? d.liveX : obj.x;
+            const oz = d && d.id === obj.id ? d.liveZ : obj.z;
+            selBox.visible = true;
+            selBox.position.set(ox, obj.y + obj.heightM * 0.5, oz);
+            selBox.rotation.y = obj.rot;
+            selBox.scale.set(obj.widthM + 0.04, Math.max(0.06, obj.heightM + 0.03), obj.depthM + 0.04);
+            selMat.color.setHex(hitObstacleRef.current ? 0xdc2626 : 0x0f172a);
+          } else {
+            selBox.visible = false;
+          }
         } else {
-          selFrame.visible = false;
+          selBox.visible = false;
+        }
+
+        if (eng.shadowsDirty) {
+          renderer.shadowMap.needsUpdate = true;
+          eng.shadowsDirty = false;
         }
 
         renderer.render(scene, camera);
@@ -388,7 +419,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const onResize = () => {
         if (!hostRef.current) return;
         const nw = hostRef.current.clientWidth || window.innerWidth;
-        const nh = hostRef.current.clientHeight || window.innerHeight - 120;
+        const nh = hostRef.current.clientHeight || window.innerHeight - 100;
         camera.aspect = nw / Math.max(1, nh);
         camera.updateProjectionMatrix();
         renderer.setSize(nw, nh);
@@ -407,7 +438,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         haloMat.dispose();
         rayGeo.dispose();
         rayMat.dispose();
-        selGeo.dispose();
+        selEdgesGeo.dispose();
         selMat.dispose();
         controls.dispose();
         renderer.dispose();
@@ -416,7 +447,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // 2) Rebuild architectural shell when room dimensions, walls, windows, doors, beams, columns, coves change
+    // 2) Rebuild architectural room geometry when structural props change
     const archKey = JSON.stringify({
       w: project.widthM,
       d: project.depthM,
@@ -430,6 +461,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       fm: project.floorMaterial,
       ft: project.floorTintHex,
       walls: project.walls,
+      wallZones: project.wallZones,
       windows: project.windows,
       doors: project.doors,
       columns: project.columns,
@@ -451,11 +483,13 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const built = buildArchitecturalRoom(project, eng.roomRoot);
       eng.builtRoom = built;
+      eng.lastCutawayMask = -1;
+      markShadowsDirty();
       onWarningsChange?.(built.warnings);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [archKey]);
 
-    // 3) Update live physical solar light, compass orb, and evening interior light boost
+    // 3) Live solar lighting update
     useEffect(() => {
       const eng = engineRef.current;
       if (!eng) return;
@@ -479,11 +513,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       eng.hemiLight.groundColor.copy(sol.groundColor);
       eng.hemiLight.intensity = sol.effectiveHemiIntensity;
 
-      // Opposite gentle sky-bounce fill
       eng.bounceLight.position.set(-sol.sunPosition.x * 0.5, 4.5, -sol.sunPosition.z * 0.5);
-      eng.bounceLight.intensity = sol.isNight ? 0.12 : 0.34;
+      eng.bounceLight.intensity = sol.isNight ? 0.14 : 0.34;
 
-      // Update visible sun orb & directional beam arrow outside room
       const orbDist = Math.max(project.widthM, project.depthM) * 0.85 + 2.2;
       const orbPos = sol.sunDirWorld.clone().multiplyScalar(orbDist);
       orbPos.y = Math.max(0.6, orbPos.y);
@@ -496,22 +528,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       rayAttr.setXYZ(1, 0, Math.min(1.0, project.ceilingM * 0.35), 0);
       rayAttr.needsUpdate = true;
 
-      // Boost interior cove LEDs & ceiling spots gracefully at dusk/night
-      if (eng.builtRoom) {
-        const boost = sol.isNight ? 1.85 : sol.elevationDeg < 18 ? 1.3 : 0.85;
-        eng.builtRoom.spotLights.forEach((l) => {
-          l.intensity = 0.65 * boost;
-        });
+      if (eng.builtRoom?.interiorFillLight) {
+        eng.builtRoom.interiorFillLight.intensity = sol.isNight ? 1.55 : sol.elevationDeg < 18 ? 1.05 : 0.65;
       }
+      markShadowsDirty();
     }, [project.sun, project.widthM, project.depthM, project.ceilingM, showSunOrb, cameraMode, archKey]);
 
-    // 4) Apply camera preset change
+    // 4) Camera mode changes
     useEffect(() => {
       applyCameraPreset(cameraMode);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [cameraMode]);
 
-    // 5) Synchronize placed 3D objects (parametric architectural modules + GLB models)
+    // 5) Synchronize 3D objects
     useEffect(() => {
       const eng = engineRef.current;
       if (!eng) return;
@@ -523,6 +552,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           eng.objectsRoot.remove(entry.root);
           entry.dispose?.();
           eng.mountedObjects.delete(id);
+          markShadowsDirty();
         }
       }
 
@@ -539,7 +569,6 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         root.userData.objectId = obj.id;
         const clone = template.clone(true);
 
-        // Scale cloned GLB accurately to target widthM / depthM / heightM
         const rawBox = new THREE.Box3().setFromObject(clone);
         const rawSize = new THREE.Vector3();
         rawBox.getSize(rawSize);
@@ -547,14 +576,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           const sx = obj.widthM / rawSize.x;
           const sy = obj.heightM / rawSize.y;
           const sz = obj.depthM / rawSize.z;
-          // Preserve aspect ratio cleanly unless dimensions match closely
           const ratioSpread = Math.max(sx, sy, sz) / Math.max(0.01, Math.min(sx, sy, sz));
-          if (ratioSpread < 1.35) {
-            clone.scale.set(sx, sy, sz);
-          } else {
-            const uniform = Math.min(sx, sy, sz);
-            clone.scale.setScalar(uniform);
-          }
+          if (ratioSpread < 1.35) clone.scale.set(sx, sy, sz);
+          else clone.scale.setScalar(Math.min(sx, sy, sz));
           clone.updateMatrixWorld(true);
           const scaledBox = new THREE.Box3().setFromObject(clone);
           const center = new THREE.Vector3();
@@ -564,9 +588,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           clone.position.z -= center.z;
         }
 
-        const maxAniso = Math.min(8, cur.renderer.capabilities.getMaxAnisotropy());
-        const isFabric =
-          obj.category === 'Kanepe' || obj.category === 'Berjer' || obj.category === 'Yatak';
+        const maxAniso = Math.min(4, cur.renderer.capabilities.getMaxAnisotropy());
+        const isFabric = obj.category === 'Kanepe' || obj.category === 'Berjer' || obj.category === 'Yatak';
         clone.traverse((node) => {
           const m = node as THREE.Mesh;
           if (m.isMesh) {
@@ -581,13 +604,14 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         });
         root.add(clone);
 
+        // Contact shadow NEVER intercepts pointer clicks!
         if (obj.mountMode === 'floor') {
           try {
             const sh = buildContactShadow(clone);
-            sh.userData.objectId = obj.id;
+            sh.raycast = () => {};
             root.add(sh);
           } catch {
-            /* ignore contact shadow fallback */
+            /* ignore */
           }
         }
 
@@ -596,6 +620,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         root.rotation.y = live.rot;
         cur.objectsRoot.add(root);
         cur.mountedObjects.set(obj.id, { sig, root });
+        markShadowsDirty();
       };
 
       for (const obj of project.objects) {
@@ -607,6 +632,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         if (existing && existing.sig === sig) {
           existing.root.position.set(obj.x, obj.y, obj.z);
           existing.root.rotation.y = obj.rot;
+          markShadowsDirty();
           continue;
         }
 
@@ -624,6 +650,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           built.group.rotation.y = obj.rot;
           eng.objectsRoot.add(built.group);
           eng.mountedObjects.set(obj.id, { sig, root: built.group, dispose: built.dispose });
+          markShadowsDirty();
           continue;
         }
 
@@ -674,8 +701,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       }
     }, [project.objects, onLoadingChange, onToast]);
 
-    // Raycast helpers
-    const raycastPlaneY = (clientX: number, clientY: number, planeY = 0): THREE.Vector3 | null => {
+    const getRay = (clientX: number, clientY: number): THREE.Raycaster | null => {
       const eng = engineRef.current;
       if (!eng) return null;
       const rect = eng.renderer.domElement.getBoundingClientRect();
@@ -685,56 +711,103 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       );
       const ray = new THREE.Raycaster();
       ray.setFromCamera(ndc, eng.camera);
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
-      const hit = new THREE.Vector3();
-      return ray.ray.intersectPlane(plane, hit) ? hit : null;
+      return ray;
     };
 
-    const findHitObjectId = (clientX: number, clientY: number): string | null => {
+    const raycastPlaneY = (clientX: number, clientY: number, planeY = 0): THREE.Vector3 | null => {
+      const ray = getRay(clientX, clientY);
+      if (!ray) return null;
+      const hit = new THREE.Vector3();
+      return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), hit) ? hit : null;
+    };
+
+    /**
+     * Smart Priority Object Picker:
+     * Priority 1: Floor & Wall objects (TV, Fireplace, Sofa, Table...) -> ALWAYS win over hanging chandeliers & floor rugs!
+     * Priority 2: Ceiling chandelier (only if user didn't click through it onto a TV/fireplace/sofa behind!)
+     * Priority 3: Floor rug
+     */
+    const pickDraggableObjectId = (clientX: number, clientY: number): string | null => {
       const eng = engineRef.current;
-      if (!eng) return null;
-      const rect = eng.renderer.domElement.getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-        -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
-      );
-      const ray = new THREE.Raycaster();
-      ray.setFromCamera(ndc, eng.camera);
+      const ray = getRay(clientX, clientY);
+      if (!eng || !ray) return null;
+
       const hits = ray.intersectObjects(eng.objectsRoot.children, true);
-      // Prefer non-rug items if cursor hits both furniture and rug underneath
+      let ceilingHit: string | null = null;
       let rugHit: string | null = null;
+
       for (const h of hits) {
+        if (!h.object.visible) continue;
         let cur: THREE.Object3D | null = h.object;
         while (cur) {
           if (typeof cur.userData?.objectId === 'string') {
-            const found = projectRef.current.objects.find((o) => o.id === cur!.userData.objectId);
-            if (found && found.mountMode === 'rug') {
-              if (!rugHit) rugHit = found.id;
-            } else if (found) {
-              return found.id;
+            const obj = projectRef.current.objects.find((o) => o.id === cur!.userData.objectId);
+            if (!obj) break;
+            if (obj.mountMode === 'floor' || obj.mountMode === 'wall') {
+              return obj.id; // TV, fireplace, sofa, table ALWAYS take priority over chandelier & rug!
             }
+            if (obj.mountMode === 'ceiling' && !ceilingHit) ceilingHit = obj.id;
+            if (obj.mountMode === 'rug' && !rugHit) rugHit = obj.id;
             break;
           }
           cur = cur.parent;
         }
       }
-      return rugHit;
+      return ceilingHit || rugHit;
+    };
+
+    /** Picks any visible architectural surface (window, door, wallZone, column, beam, wall, floor) on clean click */
+    const pickArchitecturalElement = (clientX: number, clientY: number): ArchSelection => {
+      const eng = engineRef.current;
+      const ray = getRay(clientX, clientY);
+      if (!eng || !ray) return null;
+
+      const isVisibleUpTree = (o: THREE.Object3D): boolean => {
+        let cur: THREE.Object3D | null = o;
+        while (cur) {
+          if (!cur.visible) return false;
+          cur = cur.parent;
+        }
+        return true;
+      };
+
+      const hits = ray.intersectObjects(eng.roomRoot.children, true);
+      for (const h of hits) {
+        if (!isVisibleUpTree(h.object)) continue;
+        let cur: THREE.Object3D | null = h.object;
+        while (cur) {
+          if (cur.userData?.pickTarget) {
+            return cur.userData.pickTarget as ArchSelection;
+          }
+          cur = cur.parent;
+        }
+      }
+      return null;
     };
 
     const onPointerDownCapture = (e: React.PointerEvent<HTMLDivElement>) => {
       const eng = engineRef.current;
       if (!eng) return;
-      const hitId = findHitObjectId(e.clientX, e.clientY);
-      if (!hitId) {
-        onSelectObject(null);
-        return;
-      }
-      onSelectObject(hitId);
-      const obj = projectRef.current.objects.find((o) => o.id === hitId);
+      pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
+
+      const hitObjId = pickDraggableObjectId(e.clientX, e.clientY);
+      if (!hitObjId) return; // Allow OrbitControls to orbit smoothly; architectural click handled on pointerUp if < 5px!
+
+      onSelect({ type: 'object', id: hitObjId });
+      const obj = projectRef.current.objects.find((o) => o.id === hitObjId);
       if (!obj) return;
       const pt = raycastPlaneY(e.clientX, e.clientY, obj.y);
       if (pt) {
-        dragRef.current = { id: hitId, hx: pt.x, hz: pt.z, px: obj.x, pz: obj.z };
+        dragRef.current = {
+          id: hitObjId,
+          hx: pt.x,
+          hz: pt.z,
+          px: obj.x,
+          pz: obj.z,
+          liveX: obj.x,
+          liveZ: obj.z,
+          moved: false,
+        };
         eng.controls.enabled = false;
         hitObstacleRef.current = false;
         (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
@@ -753,30 +826,18 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const targetX = d.px + (pt.x - d.hx);
       const targetZ = d.pz + (pt.z - d.hz);
-
       let nextX = targetX;
       let nextZ = targetZ;
 
-      if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling') {
-        const c = clampToRoomWalls(
-          targetX,
-          targetZ,
-          obj.rot,
-          obj.widthM * 0.5,
-          obj.depthM * 0.5,
-          p.widthM,
-          p.depthM,
-          0.02
-        );
+      if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling' || obj.y >= 1.0) {
+        const c = clampToRoomWalls(targetX, targetZ, obj.rot, obj.widthM * 0.5, obj.depthM * 0.5, p.widthM, p.depthM, 0.015);
         nextX = c.x;
         nextZ = c.z;
         hitObstacleRef.current = c.clamped;
       } else {
-        // Collide against solid floor/wall items AND architectural columns!
         const others: OBB2D[] = [
           ...p.objects
-            .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
-            .filter((o) => Math.abs(o.y - obj.y) < Math.max(o.heightM, obj.heightM) * 0.75)
+            .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 1.0)
             .map(objectToOBB),
           ...p.columns.map((col) => ({
             id: `col-${col.id}`,
@@ -787,28 +848,25 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
             halfD: col.depthCm / 200,
           })),
         ];
-        const res = resolveMoveOBB(
-          objectToOBB(obj),
-          targetX,
-          targetZ,
-          others,
-          p.widthM,
-          p.depthM
-        );
+        const res = resolveMoveOBB(objectToOBB({ ...obj, x: d.liveX, z: d.liveZ }), targetX, targetZ, others, p.widthM, p.depthM);
         nextX = res.x;
         nextZ = res.z;
         hitObstacleRef.current = res.hitObstacle;
       }
 
+      d.liveX = nextX;
+      d.liveZ = nextZ;
+      d.moved = true;
+
+      // Update Three.js directly at 60 FPS without triggering React re-renders!
       const mounted = eng.mountedObjects.get(d.id);
-      if (mounted) {
-        mounted.root.position.set(nextX, obj.y, nextZ);
-      }
-      onMoveObject(d.id, nextX, nextZ);
+      if (mounted) mounted.root.position.set(nextX, obj.y, nextZ);
+      markShadowsDirty();
     };
 
     const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-      if (dragRef.current) {
+      const d = dragRef.current;
+      if (d) {
         dragRef.current = null;
         hitObstacleRef.current = false;
         if (engineRef.current) engineRef.current.controls.enabled = true;
@@ -817,6 +875,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         } catch {
           /* ignore */
         }
+        if (d.moved) {
+          onMoveObject(d.id, d.liveX, d.liveZ);
+        }
+        pointerDownPosRef.current = null;
+        return;
+      }
+
+      // Clean single-click (not an orbit drag) -> pick exact Wall, WallZone, Window, Door, Column, Beam, or Floor!
+      const down = pointerDownPosRef.current;
+      pointerDownPosRef.current = null;
+      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) {
+        const picked = pickArchitecturalElement(e.clientX, e.clientY);
+        onSelect(picked);
       }
     };
 
