@@ -40,7 +40,9 @@ jobs:
           docker build \
             -f ./worker-ar3d/Dockerfile \
             -t ghcr.io/coskunerberke/mobilya-ar-worker:ar3d \
+            -t ghcr.io/coskunerberke/mobilya-ar-worker:ar3d-v3 \
             -t ghcr.io/coskunerberke/mobilya-ar-worker:latest \
             ./worker-ar3d
           docker push ghcr.io/coskunerberke/mobilya-ar-worker:ar3d
+          docker push ghcr.io/coskunerberke/mobilya-ar-worker:ar3d-v3
           docker push ghcr.io/coskunerberke/mobilya-ar-worker:latest

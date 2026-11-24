@@ -7,7 +7,10 @@ import { createFloorTexture, createWallTexture, createWovenRugTexture } from './
  * centered at X=0, Z=0 with bottom resting strictly at Y=0.
  * Cached textures from textures.ts are NEVER disposed here.
  */
-export function buildParametricObject3D(obj: ArchPlacedObject): { group: THREE.Group; dispose: () => void } {
+export function buildParametricObject3D(
+  obj: ArchPlacedObject,
+  onTextureReady?: () => void
+): { group: THREE.Group; dispose: () => void } {
   const grp = new THREE.Group();
   const disposables: Array<() => void> = [];
 
@@ -254,20 +257,55 @@ export function buildParametricObject3D(obj: ArchPlacedObject): { group: THREE.G
       frameMat.dispose();
       mirrorMat.dispose();
     });
-    addBox(W, H, D, 0, H * 0.5, 0, frameMat);
-    addBox(W - 0.05, H - 0.05, 0.01, 0, H * 0.5, D * 0.5 + 0.003, mirrorMat, false);
+    const isRoundMirror = /yuvarlak|round|daire|oval/i.test(obj.name);
+    if (isRoundMirror) {
+      const r = Math.min(W, H) * 0.5;
+      const rx = W * 0.5;
+      const ry = H * 0.5;
+      const rimGeo = new THREE.CylinderGeometry(r, r, D, 40);
+      rimGeo.rotateX(Math.PI / 2);
+      const glassGeo = new THREE.CylinderGeometry(Math.max(0.05, r - 0.025), Math.max(0.05, r - 0.025), 0.008, 40);
+      glassGeo.rotateX(Math.PI / 2);
+      disposables.push(() => {
+        rimGeo.dispose();
+        glassGeo.dispose();
+      });
+      const rim = new THREE.Mesh(rimGeo, frameMat);
+      rim.position.set(0, H * 0.5, 0);
+      rim.scale.set(rx / r, ry / r, 1);
+      rim.castShadow = true;
+      grp.add(rim);
+      const glass = new THREE.Mesh(glassGeo, mirrorMat);
+      glass.position.set(0, H * 0.5, D * 0.5 + 0.003);
+      glass.scale.set(rx / r, ry / r, 1);
+      grp.add(glass);
+    } else {
+      addBox(W, H, D, 0, H * 0.5, 0, frameMat);
+      addBox(W - 0.05, H - 0.05, 0.01, 0, H * 0.5, D * 0.5 + 0.003, mirrorMat, false);
+    }
   } else if (obj.parametricKind === 'wall_art') {
     const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.45 });
-    const canvasMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.85 });
-    const accentBlock = new THREE.MeshStandardMaterial({ color: 0xb67d65, roughness: 0.85 });
-    disposables.push(() => {
-      frameMat.dispose();
-      canvasMat.dispose();
-      accentBlock.dispose();
-    });
+    disposables.push(() => frameMat.dispose());
     addBox(W, H, D, 0, H * 0.5, 0, frameMat);
-    addBox(W - 0.07, H - 0.07, 0.012, 0, H * 0.5, D * 0.5 + 0.002, canvasMat, false);
-    addBox(W * 0.42, H * 0.52, 0.014, -W * 0.12, H * 0.48, D * 0.5 + 0.005, accentBlock, false);
+    if (obj.thumbUrl) {
+      const tex = new THREE.TextureLoader().load(obj.thumbUrl, () => onTextureReady?.());
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const artMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.78, metalness: 0.02 });
+      disposables.push(() => {
+        tex.dispose();
+        artMat.dispose();
+      });
+      addBox(Math.max(0.1, W - 0.05), Math.max(0.1, H - 0.05), 0.01, 0, H * 0.5, D * 0.5 + 0.003, artMat, false);
+    } else {
+      const canvasMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.85 });
+      const accentBlock = new THREE.MeshStandardMaterial({ color: 0xb67d65, roughness: 0.85 });
+      disposables.push(() => {
+        canvasMat.dispose();
+        accentBlock.dispose();
+      });
+      addBox(W - 0.07, H - 0.07, 0.012, 0, H * 0.5, D * 0.5 + 0.002, canvasMat, false);
+      addBox(W * 0.42, H * 0.52, 0.014, -W * 0.12, H * 0.48, D * 0.5 + 0.005, accentBlock, false);
+    }
   } else if (obj.parametricKind === 'console_table') {
     const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.54 });
     const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.65 });
@@ -314,10 +352,34 @@ export function buildParametricObject3D(obj: ArchPlacedObject): { group: THREE.G
     shade.position.y = H - 0.17;
     grp.add(shade);
   } else if (obj.parametricKind === 'rug_custom') {
-    const rugTex = createWovenRugTexture(primaryHex, accentHex);
+    const isRoundRug = /yuvarlak|round|daire/i.test(obj.name);
+    let rugTex: THREE.Texture;
+    let disposeTex = false;
+    if (obj.thumbUrl) {
+      rugTex = new THREE.TextureLoader().load(obj.thumbUrl, () => onTextureReady?.());
+      rugTex.colorSpace = THREE.SRGBColorSpace;
+      disposeTex = true;
+    } else {
+      rugTex = createWovenRugTexture(primaryHex, accentHex);
+    }
     const rugMat = new THREE.MeshStandardMaterial({ map: rugTex, roughness: 0.94, metalness: 0.01 });
-    disposables.push(() => rugMat.dispose());
-    addBox(W, Math.max(0.012, H), D, 0, Math.max(0.006, H * 0.5), 0, rugMat, false);
+    disposables.push(() => {
+      if (disposeTex) rugTex.dispose();
+      rugMat.dispose();
+    });
+    const rugH = Math.max(0.012, Math.min(0.025, H));
+    if (isRoundRug) {
+      const r = Math.max(W, D) * 0.5;
+      const geo = new THREE.CylinderGeometry(r, r, rugH, 48);
+      disposables.push(() => geo.dispose());
+      const m = new THREE.Mesh(geo, rugMat);
+      m.position.set(0, rugH * 0.5, 0);
+      m.scale.set(W / (r * 2), 1, D / (r * 2));
+      m.receiveShadow = true;
+      grp.add(m);
+    } else {
+      addBox(W, rugH, D, 0, rugH * 0.5, 0, rugMat, false);
+    }
   } else if (obj.parametricKind === 'chandelier') {
     const brassMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(primaryHex),

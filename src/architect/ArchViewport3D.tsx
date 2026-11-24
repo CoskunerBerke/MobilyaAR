@@ -874,13 +874,29 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const rawBox = new THREE.Box3().setFromObject(clone);
         const rawSize = new THREE.Vector3();
         rawBox.getSize(rawSize);
-        if (rawSize.x > 0.01 && rawSize.y > 0.01 && rawSize.z > 0.01) {
+        if (rawSize.x > 0.005 && rawSize.y > 0.005 && rawSize.z > 0.005) {
           const sx = obj.widthM / rawSize.x;
           const sy = obj.heightM / rawSize.y;
           const sz = obj.depthM / rawSize.z;
-          const ratioSpread = Math.max(sx, sy, sz) / Math.max(0.01, Math.min(sx, sy, sz));
-          if (ratioSpread < 1.35) clone.scale.set(sx, sy, sz);
-          else clone.scale.setScalar(Math.min(sx, sy, sz));
+          if (obj.mountMode === 'rug') {
+            // Rugs must always span full W × D and stay thin (never shrink to tiny stamp because heightM=0.01)
+            const targetH = Math.max(0.008, Math.min(0.03, obj.heightM));
+            clone.scale.set(sx, targetH / rawSize.y, sz);
+          } else if (obj.mountMode === 'wall' && obj.depthM <= 0.14) {
+            // Thin wall mirrors / frames / wall TVs: fit W × H cleanly without letting tiny 5cm depth shrink everything
+            const faceScale = Math.min(sx, sy);
+            const depthScale = Math.min(faceScale, Math.max(0.02, obj.depthM) / rawSize.z);
+            clone.scale.set(faceScale, faceScale, depthScale);
+          } else {
+            const ratioSpread = Math.max(sx, sy, sz) / Math.max(0.01, Math.min(sx, sy, sz));
+            if (ratioSpread < 1.45) {
+              clone.scale.set(sx, sy, sz);
+            } else {
+              // Uniform scale by dominant dimensions so 3D furniture stays true to room scale
+              const sorted = [sx, sy, sz].sort((a, b) => a - b);
+              clone.scale.setScalar(sorted[1]);
+            }
+          }
           clone.updateMatrixWorld(true);
           const scaledBox = new THREE.Box3().setFromObject(clone);
           const center = new THREE.Vector3();
@@ -926,7 +942,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       for (const obj of project.objects) {
         const sig = obj.parametricKind
-          ? `param:${obj.parametricKind}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.parametricColorHex}:${obj.parametricAccentHex}`
+          ? `param:${obj.parametricKind}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.parametricColorHex}:${obj.parametricAccentHex}:${obj.thumbUrl ? obj.thumbUrl.slice(-24) : ''}:${obj.name}`
           : `glb:${obj.glbUrl}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}`;
 
         const existing = eng.mountedObjects.get(obj.id);
@@ -942,7 +958,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
             eng.objectsRoot.remove(existing.root);
             existing.dispose?.();
           }
-          const built = buildParametricObject3D(obj);
+          const built = buildParametricObject3D(obj, () => engineRef.current?.scheduleRender(false));
           built.group.userData.objectId = obj.id;
           built.group.traverse((n) => {
             n.userData.objectId = obj.id;

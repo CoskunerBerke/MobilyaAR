@@ -21,6 +21,7 @@ import { NumericInput } from './NumericInput';
 import {
   analyzePinterestRoom,
   cropBoxFromDataUrl,
+  cropRawTightDataUrl,
   fetchPinterestConfig,
   generatePhotorealRender,
   getSavedGeminiKey,
@@ -32,7 +33,13 @@ import {
   type PinterestRoomStyle,
   type PinterestServerConfig,
 } from './pinterestClient';
-import { WALL_LABELS, type ArchPlacedObject, type ArchRoomProject, type WallId } from './types';
+import {
+  WALL_LABELS,
+  type ArchPlacedObject,
+  type ArchRoomProject,
+  type ParametricFurnitureKind,
+  type WallId,
+} from './types';
 
 interface Props {
   project: ArchRoomProject;
@@ -355,32 +362,47 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
   };
 
-  const buildPlacedFromDetected = (item: PinterestDetectedObject, glbUrl: string, thumbUrl: string): ArchPlacedObject => {
+  const detectInstantFlatKind = (item: PinterestDetectedObject): ParametricFurnitureKind | null => {
+    const label = `${item.nameTr} ${item.category}`.toLowerCase();
+    if (item.mountMode === 'rug' || /halı|hali|kilim|rug|carpet/.test(label)) return 'rug_custom';
+    if (/ayna|mirror/.test(label)) return 'wall_mirror';
+    if (/tablo|poster|resim|çerçeve|cerceve|painting|artwork|frame/.test(label)) return 'wall_art';
+    return null;
+  };
+
+  const buildPlacedFromDetected = (
+    item: PinterestDetectedObject,
+    glbUrl: string | undefined,
+    thumbUrl: string,
+    parametricKind?: ParametricFurnitureKind
+  ): ArchPlacedObject => {
     const wM = Math.max(0.2, item.widthCm / 100);
-    const dM = Math.max(0.05, item.depthCm / 100);
-    const hM = Math.max(0.03, item.heightCm / 100);
+    const dM = Math.max(0.04, item.depthCm / 100);
+    const hM = Math.max(0.015, item.heightCm / 100);
     let x = Math.max(-project.widthM * 0.44, Math.min(project.widthM * 0.44, item.relativeX * (project.widthM * 0.45)));
     let z = Math.max(-project.depthM * 0.44, Math.min(project.depthM * 0.44, item.relativeZ * (project.depthM * 0.45)));
     let rot = (item.facingDeg * Math.PI) / 180;
-    const y =
-      item.mountMode === 'wall'
-        ? Math.max(0, item.elevationCm / 100)
-        : item.mountMode === 'ceiling'
-        ? Math.max(1.5, project.ceilingM - hM)
-        : 0;
+    const isWallItem = item.mountMode === 'wall' || parametricKind === 'wall_mirror' || parametricKind === 'wall_art';
+    const y = isWallItem
+      ? Math.max(0.9, item.elevationCm > 0 ? item.elevationCm / 100 : 1.25)
+      : item.mountMode === 'ceiling'
+      ? Math.max(1.5, project.ceilingM - hM)
+      : 0;
 
-    if (item.mountMode === 'wall' && item.suggestedWall !== 'center') {
-      const wId: WallId = item.suggestedWall;
-      if (wId === 'north') {
+    const wallTarget: WallId =
+      item.suggestedWall && item.suggestedWall !== 'center' ? item.suggestedWall : 'north';
+
+    if (isWallItem) {
+      if (wallTarget === 'north') {
         z = -project.depthM * 0.5 + dM * 0.5 + 0.01;
         rot = 0;
-      } else if (wId === 'south') {
+      } else if (wallTarget === 'south') {
         z = project.depthM * 0.5 - dM * 0.5 - 0.01;
         rot = Math.PI;
-      } else if (wId === 'west') {
+      } else if (wallTarget === 'west') {
         x = -project.widthM * 0.5 + dM * 0.5 + 0.01;
         rot = Math.PI / 2;
-      } else if (wId === 'east') {
+      } else if (wallTarget === 'east') {
         x = project.widthM * 0.5 - dM * 0.5 - 0.01;
         rot = -Math.PI / 2;
       }
@@ -392,6 +414,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
       category: item.category,
       dimensionsCm: `${Math.round(item.widthCm)} × ${Math.round(item.depthCm)} × ${Math.round(item.heightCm)} cm`,
       glbUrl,
+      parametricKind,
+      parametricColorHex: parametricKind ? '#1c1b1a' : undefined,
+      parametricAccentHex: parametricKind === 'wall_mirror' ? '#d8e2ec' : parametricKind ? '#ece8df' : undefined,
       x,
       y,
       z,
@@ -399,8 +424,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
       widthM: wM,
       depthM: dM,
       heightM: hM,
-      mountMode: item.mountMode,
-      attachedWall: item.suggestedWall !== 'center' ? item.suggestedWall : undefined,
+      mountMode: parametricKind === 'rug_custom' ? 'rug' : isWallItem ? 'wall' : item.mountMode,
+      attachedWall: isWallItem ? wallTarget : item.suggestedWall !== 'center' ? item.suggestedWall : undefined,
       thumbUrl,
       source: 'pinterest-ai',
     };
@@ -413,12 +438,32 @@ export const PinterestAIPanel: React.FC<Props> = ({
       [item.id]: {
         ...(prev[item.id] || { selected: true }),
         status: 'isolating',
-        progressText: 'Kırpılıyor...',
+        progressText: 'Hazırlanıyor...',
         errorMsg: undefined,
       },
     }));
 
     try {
+      // Fast 0.1s 1:1 Textured 3D path for flat rugs, framed wall art & mirrors (sharper than sculpted mesh & $0 GPU!)
+      const flatKind = detectInstantFlatKind(item);
+      if (flatKind) {
+        const rawCrop = await cropRawTightDataUrl(photoDataUrl, item.box2d);
+        const placed = buildPlacedFromDetected(item, undefined, rawCrop, flatKind);
+        onAddGeneratedObject(placed);
+        setJobs((prev) => ({
+          ...prev,
+          [item.id]: {
+            ...(prev[item.id] || { selected: true }),
+            status: 'done',
+            cropPreviewUrl: rawCrop,
+            studioPreviewUrl: rawCrop,
+            progressText: 'Anında 1:1 dokuyla odaya yerleştirildi',
+          },
+        }));
+        onToast(`${item.nameTr} birebir dokusuyla anında 3B odaya yerleştirildi!`);
+        return;
+      }
+
       // Step 1: High-res tight crop onto clean 1024×1024 pure white canvas
       const croppedUrl = await cropBoxFromDataUrl(photoDataUrl, item.box2d, 0.025);
       let modelInputImage = croppedUrl;
@@ -461,27 +506,48 @@ export const PinterestAIPanel: React.FC<Props> = ({
         },
       }));
 
-      // Step 3: Reconstruct faithful 2K PBR 3D .GLB via RunPod Hunyuan3D-2.1 (uploads directly to Cloudflare R2!)
+      // Step 3: Reconstruct faithful 2K PBR 3D .GLB via RunPod Hunyuan3D-2.1 (with 1x automatic worker retry!)
       const mem = getMembershipState();
-      const gen = await generateFurniture3DServerless({
-        engine: 'runpod',
-        images: { front: modelInputImage },
-        name: item.nameTr,
-        widthCm: item.widthCm,
-        depthCm: item.depthCm,
-        heightCm: item.heightCm,
-        runpodApiKey: mem.runpodApiKey || undefined,
-        runpod3dEndpointId: mem.runpod3dEndpointId || undefined,
-        runpodGpuTier: mem.runpodGpuTier || 'RTX4090',
-        falApiKey: mem.falApiKey || undefined,
-        onProgress: (msg: string) => {
-          setStatusBanner(`${item.nameTr}: ${msg}`);
+      const runOnce = () =>
+        generateFurniture3DServerless({
+          engine: 'runpod',
+          images: { front: modelInputImage },
+          name: item.nameTr,
+          widthCm: item.widthCm,
+          depthCm: item.depthCm,
+          heightCm: item.heightCm,
+          runpodApiKey: mem.runpodApiKey || undefined,
+          runpod3dEndpointId: mem.runpod3dEndpointId || undefined,
+          runpodGpuTier: mem.runpodGpuTier || 'RTX4090',
+          falApiKey: mem.falApiKey || undefined,
+          onProgress: (msg: string) => {
+            setStatusBanner(`${item.nameTr}: ${msg}`);
+            setJobs((prev) => ({
+              ...prev,
+              [item.id]: { ...(prev[item.id] || { selected: true }), progressText: msg },
+            }));
+          },
+        });
+
+      let gen;
+      try {
+        gen = await runOnce();
+      } catch (firstErr) {
+        const em = firstErr instanceof Error ? firstErr.message : String(firstErr);
+        // Auto-retry once if a stale RunPod worker threw ImportError/transient error
+        if (/libusb|ImportError|timeout|502|503|FAILED/i.test(em)) {
           setJobs((prev) => ({
             ...prev,
-            [item.id]: { ...(prev[item.id] || { selected: true }), progressText: msg },
+            [item.id]: {
+              ...(prev[item.id] || { selected: true }),
+              progressText: 'Sağlıklı GPU worker ile tekrar deneniyor...',
+            },
           }));
-        },
-      });
+          gen = await runOnce();
+        } else {
+          throw firstErr;
+        }
+      }
 
       const glbUrl = gen.remoteGlbUrl || gen.localBlobUrl;
       const placed = buildPlacedFromDetected(item, glbUrl, modelInputImage);
@@ -516,9 +582,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return;
     }
     setBatchRunning(true);
-    setStatusBanner(`${targets.length} parça paralel olarak RunPod 2K PBR 3B motorunda üretiliyor...`);
+    setStatusBanner(`${targets.length} parça paralel olarak 3B üretilip odaya yerleştiriliyor...`);
     try {
-      const concurrency = 3;
+      const concurrency = 2;
       let idx = 0;
       const runNext = async (): Promise<void> => {
         if (idx >= targets.length) return;
@@ -1109,7 +1175,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
                       onClick={() => generateSingleItem3D(item)}
                       className="px-2.5 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-[10px] font-semibold whitespace-nowrap shrink-0 disabled:opacity-50"
                     >
-                      {st.status === 'done' ? 'Tekrar Üret' : 'Tekil 3B Üret'}
+                      {st.status === 'done'
+                        ? 'Tekrar Yerleştir'
+                        : detectInstantFlatKind(item)
+                        ? 'Anında Odaya Koy'
+                        : '3B Üret & Koy'}
                     </button>
                   </div>
                 </div>

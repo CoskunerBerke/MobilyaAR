@@ -152,6 +152,42 @@ export function cropBoxFromDataUrl(
   });
 }
 
+/**
+ * Edge-to-edge tight crop (zero white padding) for instant 1:1 textured flat items
+ * such as patterned rugs, framed wall art, and posters.
+ */
+export function cropRawTightDataUrl(
+  imageDataUrl: string,
+  box2d: [number, number, number, number]
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const [ymin, xmin, ymax, xmax] = box2d;
+      const sx = Math.max(0, Math.round((xmin / 1000) * img.width));
+      const sy = Math.max(0, Math.round((ymin / 1000) * img.height));
+      const sw = Math.max(16, Math.min(img.width - sx, Math.round(((xmax - xmin) / 1000) * img.width)));
+      const sh = Math.max(16, Math.min(img.height - sy, Math.round(((ymax - ymin) / 1000) * img.height)));
+      const maxDim = 1024;
+      const sc = Math.min(1, maxDim / Math.max(sw, sh));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(32, Math.round(sw * sc));
+      canvas.height = Math.max(32, Math.round(sh * sc));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(imageDataUrl);
+        return;
+      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
+    };
+    img.onerror = reject;
+    img.src = imageDataUrl;
+  });
+}
+
 export function isGeminiQuotaZeroError(msg: string): boolean {
   const s = String(msg || '').toLowerCase();
   return (
