@@ -889,15 +889,15 @@ export function App() {
             />
             <div className="relative p-7 sm:p-10 space-y-4">
               <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#e0c09a]">
-                01 · CANLI KAMERA AR · DİKEY &amp; YATAY AKILLI REHBER
+                01 · CANLI KAMERA AR · AKILLI MESAFE &amp; ZEMİN REHBERİ
               </p>
               <h3 className="font-display text-2xl sm:text-[28px] font-bold leading-snug">
                 Ayakları yere oturan, gerçek ölçülü canlı AR yerleşimi.
               </h3>
               <p className="text-xs sm:text-sm text-stone-200/90 leading-relaxed max-w-lg">
-                Sistem ürün genişliğine göre kullanıcıya telefonu dikey mi yatay mı tutacağını
-                söyler; canlı AR içindeki yükseklik (cm) ve orantılı ölçek kontrolleriyle mobilya
-                ayakları zemine kusursuz oturur.
+                Sistem ürün genişliğine göre ideal çekim mesafesini (2.5–3 m veya 1.5–2 m) önerir;
+                canlı AR içindeki yükseklik (cm) ve orantılı ölçek kontrolleriyle mobilya ayakları
+                zemine kusursuz oturur.
               </p>
               <div className="pt-2 flex flex-wrap items-center gap-3">
                 <button
@@ -1057,7 +1057,7 @@ export function App() {
                       <Smartphone
                         className={`w-3.5 h-3.5 ${stageOrient === 'landscape' ? 'rotate-90' : ''}`}
                       />
-                      <span>{stageOrient === 'landscape' ? 'Yatay Çekim' : 'Dikey Çekim'}</span>
+                      <span>{stageOrient === 'landscape' ? 'Dikey · 2.5–3 m' : 'Dikey · 1.5–2 m'}</span>
                     </span>
                   </div>
                   <div className="py-2.5 flex items-center justify-between">
@@ -1190,8 +1190,8 @@ export function App() {
                 Gerçek Santimetre Ölçülü Mobilya Koleksiyonu
               </h2>
               <p className="text-sm text-stone-600 max-w-2xl">
-                Her parça gerçek ölçüsünde ve zemin hizalıdır. Ürün boyutuna göre yatay veya dikey
-                çekim yönlendirmesi otomatik çıkar.
+                Her parça gerçek santimetre ölçüsünde ve zemin hizalıdır. Ürün boyutuna göre ideal
+                AR çekim mesafesi otomatik gösterilir.
               </p>
             </div>
             <button
@@ -1276,7 +1276,7 @@ export function App() {
                       </button>
                     )}
                     <span className="absolute bottom-2.5 right-3 text-[10px] font-mono text-stone-500 bg-white/85 px-2 py-0.5 border border-stone-200/80">
-                      {orient === 'landscape' ? 'AR: Yatay' : 'AR: Dikey'}
+                      {orient === 'landscape' ? 'AR: 2.5–3 m' : 'AR: 1.5–2 m'}
                     </span>
                   </div>
 
@@ -1423,8 +1423,8 @@ export function App() {
             {[
               {
                 no: '01',
-                title: 'Akıllı Yatay / Dikey AR Rehberi',
-                desc: 'Geniş koltuk ve masalar için yatay, berjer ve kitaplıklar için dikey çekim yönlendirmesi vererek odanın her köşesinde hatasız yerleşim sağlar.',
+                title: 'Akıllı AR Mesafe & Zemin Rehberi',
+                desc: 'Geniş koltuklar için 2.5–3 m, berjer ve sehpalar için 1.5–2 m dikey kadraj rehberi vererek odanın her köşesinde hatasız 1:1 yerleşim sağlar.',
               },
               {
                 no: '02',
@@ -1722,8 +1722,8 @@ export function App() {
               <div className="text-left min-w-0">
                 <p className="text-[10px] font-mono uppercase tracking-wider text-[#9c7349]">
                   {getOrientationGuide(qrFor.dimensionsCm) === 'landscape'
-                    ? 'Önerilen AR Tutuşu: YATAY'
-                    : 'Önerilen AR Tutuşu: DİKEY'}
+                    ? 'AR Kadrajı: DİKEY · 2.5–3 m Geriden'
+                    : 'AR Kadrajı: DİKEY · 1.5–2 m Mesafe'}
                 </p>
                 <h3 className="font-display text-sm font-bold truncate text-stone-950">
                   {qrFor.name}
@@ -1766,8 +1766,8 @@ export function App() {
             <p className="text-xs text-stone-600 leading-relaxed">
               {qrMode === 'ar'
                 ? getOrientationGuide(qrFor.dimensionsCm) === 'landscape'
-                  ? 'Telefon kamerasıyla okutun; aydınlık zeminde telefonu YATAY tutarak ürünü 1:1 yerleştirin.'
-                  : 'Telefon kamerasıyla okutun; aydınlık zeminde telefonu DİKEY tutarak ürünü 1:1 yerleştirin.'
+                  ? 'Telefon kamerasıyla okutun; telefonu DİKEY tutup 2.5–3 m geriden aydınlık zemine yerleştirin (Android’de canlı ayak/ölçek tuşları için Chrome kullanın).'
+                  : 'Telefon kamerasıyla okutun; telefonu DİKEY tutup 1.5–2 m mesafeden aydınlık zemine yerleştirin.'
                 : 'Telefon kamerasıyla okutun ve ürünü 3B Oda Planlayıcıda diğer eşyalarla düzenleyin.'}
             </p>
             <button

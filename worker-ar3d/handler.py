@@ -1,14 +1,10 @@
 """
 MekanAR — RunPod Serverless 1:1 3B Mobilya Üretim Worker'ı (Hunyuan3D-2.1 Full PBR · 2K)
-  - 1 veya 2–4 açılı (ön/arka/sol/sağ) ürün fotoğraflarından:
-      1) Hunyuan3D-2.1 Shape (40 adım tam difüzyon, octree 384) ile keskin 3B geometri,
-      2) Hunyuan3D-2.1 Paint PBR + RealESRGAN x4 ile GERÇEK fiziksel PBR haritaları
-         (Albedo + Metallic + Roughness + Normal),
-      3) Gerçek santimetre (1:1) ölçekleme ve tabanı y=0 zemin kilidi uygular.
-  - r2_put_url verilirse 2048x2048 (2K) PBR .GLB dosyasını sıkıştırma kaybı olmadan
-    DOĞRUDAN Cloudflare R2'ye yükler (Vercel 4.5 MB sınırına hiç takılmaz!).
-  - L40S (48 GB) / A100 (80 GB) üzerinde yüksek çözünürlükte tam hızda;
-    RTX 4090 / L4 (24 GB) üzerinde otomatik sıralı VRAM yönetimiyle sorunsuz çalışır.
+  - Temiz arka plan + stüdyo zemin gölgesi filtresi -> ham beyaz mesh üzerinde otomatik zemin
+    katmanı temizliği (UV atlasının %100'ü yalnızca mobilyaya ayrılır -> sıfır doku taşması!).
+  - Hunyuan3D-2.1 Paint PBR + RealESRGAN x4 (downsample=False -> gerçek 2048x2048 2K Albedo,
+    Roughness, Metallic, Normal) + yumuşak vertex NORMAL'ları (gerçekçi AR ışıklandırması!).
+  - Doğrudan Cloudflare R2'ye 2K PBR .GLB yükler (Vercel 4.5 MB sınırına hiç takılmaz!).
 """
 
 import base64
@@ -41,6 +37,7 @@ try:
 except Exception as exc:
     print(f"[ar3d-21] torchvision_fix uyarı: {exc}", flush=True)
 
+import cv2
 import numpy as np
 import requests
 import runpod
@@ -49,7 +46,7 @@ import trimesh
 from PIL import Image, ImageOps
 
 MODEL_DIR = "/models/hy3d21"
-MAX_FALLBACK_BASE64_BYTES = 2_550_000  # Yalnızca R2 verilmezse Vercel 4.5 MB JSON sınırı için
+MAX_FALLBACK_BASE64_BYTES = 2_550_000
 
 _STATE = {
     "rembg": None,
@@ -88,6 +85,105 @@ def _ensure_rembg():
     return _STATE["rembg"]
 
 
+def _clean_studio_background(rembg, rgb_img: Image.Image) -> Image.Image:
+    """
+    rembg çıktısındaki yarı saydam stüdyo zemin gölgelerini keskinleştirip atar;
+    böylece 3B şekil üretici mobilya ayaklarının altına sahte beyaz zemin levhası çizmez.
+    """
+    rgba = rembg(rgb_img).convert("RGBA")
+    arr = np.array(rgba)
+    alpha = arr[:, :, 3]
+
+    # Zayıf gölge piksellerini temizle (stüdyo zemin gölgeleri genelde alpha 20..195 arası olur)
+    hard_mask = (alpha >= 205).astype(np.uint8) * 255
+    kernel = np.ones((3, 3), np.uint8)
+    hard_mask = cv2.morphologyEx(hard_mask, cv2.MORPH_OPEN, kernel)
+
+    # Sadece en büyük bağlı bileşeni (mobilyanın kendisini) koru -> kopuk gölge adalarını sil
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(hard_mask, connectivity=8)
+    if num_labels > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        main_label = 1 + int(np.argmax(areas))
+        keep = (labels == main_label).astype(np.uint8) * 255
+        # Küçük 1 px kenar yumuşatması
+        keep = cv2.GaussianBlur(keep, (3, 3), 0)
+        arr[:, :, 3] = np.where(keep > 120, alpha, 0)
+    else:
+        arr[:, :, 3] = np.where(alpha >= 205, alpha, 0)
+
+    # Sıkı kırp ve temiz %10 çerçeve ile kareye ortala (Hunyuan3D Shape için en yüksek detay!)
+    ys, xs = np.where(arr[:, :, 3] > 20)
+    if len(xs) > 50 and len(ys) > 50:
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        crop = Image.fromarray(arr[y0:y1, x0:x1], mode="RGBA")
+        side = int(round(max(crop.width, crop.height) * 1.18))
+        side = max(256, min(1024, side))
+        sc = (side * 0.84) / float(max(crop.width, crop.height))
+        nw, nh = max(16, int(round(crop.width * sc))), max(16, int(round(crop.height * sc)))
+        crop = crop.resize((nw, nh), Image.Resampling.LANCZOS)
+        out = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        out.paste(crop, ((side - nw) // 2, (side - nh) // 2), crop)
+        return out
+
+    return Image.fromarray(arr, mode="RGBA")
+
+
+def _strip_floor_sheet_from_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    UV açma ve PBR boyamadan ÖNCE şekil çıktısında kalan olası ince stüdyo zemin levhasını
+    temizler. Böylece 2K UV dokusunun %100'ü yalnızca mobilyanın kendisine ayrılır!
+    """
+    try:
+        if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) < 500:
+            return mesh
+        pts = np.asarray(mesh.vertices, dtype=np.float32)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        ys = pts[:, 1]
+        ymin, ymax = float(ys.min()), float(ys.max())
+        h = ymax - ymin
+        if h < 1e-4:
+            return mesh
+
+        # Mobilya gövdesinin (en alt %10'un üstündeki kısım) X-Z kapladığı alanı ölç
+        body_pts = pts[ys > ymin + h * 0.12]
+        if len(body_pts) < 100:
+            return mesh
+        bx0, bx1 = float(body_pts[:, 0].min()), float(body_pts[:, 0].max())
+        bz0, bz1 = float(body_pts[:, 2].min()), float(body_pts[:, 2].max())
+        bw, bd = bx1 - bx0, bz1 - bz0
+        total_w = float(pts[:, 0].max() - pts[:, 0].min())
+        total_d = float(pts[:, 2].max() - pts[:, 2].min())
+
+        # Eğer en alt dilim gövdeden belirgin biçimde taşıyorsa zemin levhası vardır -> temizle!
+        if total_w > bw * 1.18 or total_d > bd * 1.18:
+            v0, v1, v2 = pts[faces[:, 0]], pts[faces[:, 1]], pts[faces[:, 2]]
+            tri_y_max = np.maximum(np.maximum(v0[:, 1], v1[:, 1]), v2[:, 1])
+            tri_cx = (v0[:, 0] + v1[:, 0] + v2[:, 0]) / 3.0
+            tri_cz = (v0[:, 2] + v1[:, 2] + v2[:, 2]) / 3.0
+            n = np.cross(v1 - v0, v2 - v0)
+            ny = np.abs(n[:, 1]) / (np.linalg.norm(n, axis=1) + 1e-12)
+
+            outside = (
+                (tri_cx < bx0 - bw * 0.03)
+                | (tri_cx > bx1 + bw * 0.03)
+                | (tri_cz < bz0 - bd * 0.03)
+                | (tri_cz > bz1 + bd * 0.03)
+            )
+            is_sheet = (tri_y_max < ymin + h * 0.06) & (outside | (ny > 0.82))
+            removed = int(is_sheet.sum())
+            if 0 < removed < len(faces) * 0.5:
+                cleaned = mesh.submesh([~is_sheet], append=True)
+                print(
+                    f"[ar3d-21] Boyama öncesi zemin levhası temizlendi: -{removed} yüzey (kalan {len(cleaned.faces)})",
+                    flush=True,
+                )
+                return cleaned
+    except Exception as exc:
+        print(f"[ar3d-21] Zemin filtresi uyarı (devam): {exc}", flush=True)
+    return mesh
+
+
 def _get_shape_pipeline():
     if _STATE["shape"] is None:
         from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
@@ -113,8 +209,6 @@ def _get_paint_pipeline():
 
         t0 = time.time()
         high_vram = _vram_gb() >= 36.0
-        # 48GB L40S / 80GB A100: 768px çok-açılı + 4K bake -> 2K cam gibi PBR
-        # 24GB RTX 4090 / L4: 512px çok-açılı + RealESRGAN x4 -> 2K PBR (sıfır OOM!)
         conf = Hunyuan3DPaintConfig(max_num_view=6, resolution=768 if high_vram else 512)
         conf.multiview_pretrained_path = MODEL_DIR
         conf.multiview_cfg_path = os.path.join(HY3D_ROOT, "hy3dpaint", "cfgs", "hunyuan-paint-pbr.yaml")
@@ -149,18 +243,38 @@ def _encode_jpg(im: Image.Image, q: int) -> bytes:
     return b.getvalue()
 
 
+def _compute_smooth_vertex_normals(pts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Açı/alan ağırlıklı yumuşak vertex normal vektörleri üretir.
+    AR (ARKit / ARCore / WebXR) ışıklandırmasının plastik/düz görünmemesi için ZORUNLUDUR!
+    """
+    normals = np.zeros_like(pts, dtype=np.float64)
+    v0 = pts[faces[:, 0]].astype(np.float64)
+    v1 = pts[faces[:, 1]].astype(np.float64)
+    v2 = pts[faces[:, 2]].astype(np.float64)
+    fn = np.cross(v1 - v0, v2 - v0)
+    np.add.at(normals, faces[:, 0], fn)
+    np.add.at(normals, faces[:, 1], fn)
+    np.add.at(normals, faces[:, 2], fn)
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    bad = lengths[:, 0] < 1e-12
+    normals = np.divide(normals, np.where(lengths < 1e-12, 1.0, lengths))
+    normals[bad] = [0.0, 1.0, 0.0]
+    return normals.astype(np.float32)
+
+
 def _build_pbr_glb_from_obj(
     obj_path: str,
     width_cm: Optional[float],
     depth_cm: Optional[float],
     height_cm: Optional[float],
     tex_max_side: int = 2048,
-    jpg_q: int = 91,
+    jpg_q: int = 92,
 ):
     """
-    Hunyuan3D-2.1 Paint PBR çıktısı olan (.obj + albedo + _metallic + _roughness + opsiyonel _normal)
-    dosyalarını okur; 1:1 gerçek cm ölçüsüne ölçekleyip tabanı y=0'a kilitler ve tam glTF 2.0
-    PBR (Albedo + ORM + Normal) ikili .GLB üretir.
+    Hunyuan3D-2.1 Paint PBR çıktısı (.obj + 2K Albedo + Metallic + Roughness + opsiyonel Normal)
+    dosyalarını doğrudan 1:1 gerçek cm ölçülü, y=0 tabanlı, YUMUŞAK VERTEX NORMAL'lı ve
+    mobilya PBR kalibrasyonlu ikili .GLB olarak paketler.
     """
     base_no_ext = os.path.splitext(obj_path)[0]
     albedo_path = f"{base_no_ext}.jpg"
@@ -168,230 +282,242 @@ def _build_pbr_glb_from_obj(
     roughness_path = f"{base_no_ext}_roughness.jpg"
     normal_path = f"{base_no_ext}_normal.jpg"
 
-    scene = trimesh.load(obj_path, force="scene", process=False)
-    bounds = scene.bounds
-    if bounds is not None:
-        ext = bounds[1] - bounds[0]
-        tw = (float(width_cm) / 100.0) if (width_cm and float(width_cm) > 5) else 0.0
-        td = (float(depth_cm) / 100.0) if (depth_cm and float(depth_cm) > 5) else 0.0
-        th = (float(height_cm) / 100.0) if (height_cm and float(height_cm) > 5) else 0.0
+    mesh = trimesh.load(obj_path, force="mesh", process=False)
+    pts = np.asarray(mesh.vertices, dtype=np.float32).copy()
+    faces = np.asarray(mesh.faces, dtype=np.uint32).copy()
+    uvs = None
+    if hasattr(mesh.visual, "uv") and mesh.visual.uv is not None:
+        uvs = np.asarray(mesh.visual.uv, dtype=np.float32).copy()
+        # OBJ UV (alt-sol orijin) -> glTF 2.0 UV (üst-sol orijin)
+        uvs[:, 1] = 1.0 - uvs[:, 1]
 
-        # Uzun yatay eksen hedef genişlikle uyuşmuyorsa 90° döndür
-        if tw > 0 and td > 0 and (
-            (tw > td * 1.15 and ext[2] > ext[0] * 1.15)
-            or (td > tw * 1.15 and ext[0] > ext[2] * 1.15)
-        ):
-            rot_y = trimesh.transformations.rotation_matrix(np.pi / 2.0, [0, 1, 0])
-            scene.apply_transform(rot_y)
-            bounds = scene.bounds
-            ext = bounds[1] - bounds[0]
+    # Ölçek ve eksen hizalama (doğrudan vertex koordinatlarına işlenir -> sıfır node-matrix hatası!)
+    pmin, pmax = pts.min(axis=0), pts.max(axis=0)
+    ext = pmax - pmin
+    tw = (float(width_cm) / 100.0) if (width_cm and float(width_cm) > 5) else 0.0
+    td = (float(depth_cm) / 100.0) if (depth_cm and float(depth_cm) > 5) else 0.0
+    th = (float(height_cm) / 100.0) if (height_cm and float(height_cm) > 5) else 0.0
 
-        if tw > 0 and td > 0 and th > 0 and ext[0] > 1e-4 and ext[1] > 1e-4 and ext[2] > 1e-4:
-            sx, sy, sz = tw / float(ext[0]), th / float(ext[1]), td / float(ext[2])
-            base_s = sorted([sx, sy, sz])[1]
-            clamp = lambda v: max(base_s * 0.84, min(base_s * 1.18, v))
-            S = np.diag([clamp(sx), clamp(sy), clamp(sz), 1.0])
-            scene.apply_transform(S)
-        elif tw > 0 and ext[0] > 1e-4:
-            scene.apply_scale(tw / float(ext[0]))
-        elif th > 0 and ext[1] > 1e-4:
-            scene.apply_scale(th / float(ext[1]))
+    # Uzun yatay eksen hedef genişlikle uyuşmuyorsa 90° Y etrafında döndür
+    if tw > 0 and td > 0 and (
+        (tw > td * 1.15 and ext[2] > ext[0] * 1.15)
+        or (td > tw * 1.15 and ext[0] > ext[2] * 1.15)
+    ):
+        old_x = pts[:, 0].copy()
+        pts[:, 0] = pts[:, 2]
+        pts[:, 2] = -old_x
+        pmin, pmax = pts.min(axis=0), pts.max(axis=0)
+        ext = pmax - pmin
 
-        b2 = scene.bounds
-        cx = (float(b2[0][0]) + float(b2[1][0])) * 0.5
-        min_y = float(b2[0][1])
-        cz = (float(b2[0][2]) + float(b2[1][2])) * 0.5
-        scene.apply_translation([-cx, -min_y, -cz])
+    if tw > 0 and td > 0 and th > 0 and ext[0] > 1e-4 and ext[1] > 1e-4 and ext[2] > 1e-4:
+        sx, sy, sz = tw / float(ext[0]), th / float(ext[1]), td / float(ext[2])
+        base_s = sorted([sx, sy, sz])[1]
+        clamp = lambda v: max(base_s * 0.84, min(base_s * 1.18, v))
+        pts[:, 0] *= clamp(sx)
+        pts[:, 1] *= clamp(sy)
+        pts[:, 2] *= clamp(sz)
+    elif tw > 0 and ext[0] > 1e-4:
+        pts *= tw / float(ext[0])
+    elif th > 0 and ext[1] > 1e-4:
+        pts *= th / float(ext[1])
 
-    b_fin = scene.bounds
-    if b_fin is not None:
-        fin_ext = b_fin[1] - b_fin[0]
-        w_cm = max(1, int(round(float(fin_ext[0]) * 100.0)))
-        h_cm = max(1, int(round(float(fin_ext[1]) * 100.0)))
-        d_cm = max(1, int(round(float(fin_ext[2]) * 100.0)))
-    else:
-        w_cm, d_cm, h_cm = 100, 100, 80
+    pmin, pmax = pts.min(axis=0), pts.max(axis=0)
+    pts[:, 0] -= (pmin[0] + pmax[0]) * 0.5
+    pts[:, 1] -= pmin[1]
+    pts[:, 2] -= (pmin[2] + pmax[2]) * 0.5
 
-    raw_glb = scene.export(file_type="glb")
-    if isinstance(raw_glb, str):
-        raw_glb = raw_glb.encode("latin1")
+    fmin, fmax = pts.min(axis=0), pts.max(axis=0)
+    fext = fmax - fmin
+    w_cm = max(1, int(round(float(fext[0]) * 100.0)))
+    h_cm = max(1, int(round(float(fext[1]) * 100.0)))
+    d_cm = max(1, int(round(float(fext[2]) * 100.0)))
 
-    packed = _inject_real_pbr_maps(
-        raw_glb,
-        albedo_path=albedo_path if os.path.exists(albedo_path) else None,
-        metallic_path=metallic_path if os.path.exists(metallic_path) else None,
-        roughness_path=roughness_path if os.path.exists(roughness_path) else None,
-        normal_path=normal_path if os.path.exists(normal_path) else None,
-        tex_max_side=tex_max_side,
-        jpg_q=jpg_q,
-    )
-    return packed, w_cm, d_cm, h_cm
+    # Yumuşak vertex normal'larını hesapla (kumaş ve kolçaklarda gerçek oda ışığı!)
+    v_normals = _compute_smooth_vertex_normals(pts, faces)
 
+    # Sıfırdan temiz glTF 2.0 ikili .GLB inşa et
+    def pad4(n: int) -> int:
+        return (4 - (n % 4)) % 4
 
-def _inject_real_pbr_maps(
-    glb_buf: bytes,
-    albedo_path: Optional[str],
-    metallic_path: Optional[str],
-    roughness_path: Optional[str],
-    normal_path: Optional[str],
-    tex_max_side: int = 2048,
-    jpg_q: int = 91,
-) -> bytes:
-    """
-    GLB geometrisini ve UV'lerini koruyarak eski görselleri temizler ve gerçek
-    Hunyuan3D-2.1 Albedo + ORM (AO/Roughness/Metallic) + Normal haritalarını
-    kompakt, cam gibi JPEG olarak gömer.
-    """
-    try:
-        magic, version, _ = struct.unpack_from("<III", glb_buf, 0)
-        if magic != 0x46546C67 or version != 2:
-            return glb_buf
-        json_len, json_type = struct.unpack_from("<II", glb_buf, 12)
-        if json_type != 0x4E4F534A:
-            return glb_buf
+    bin_buf = bytearray()
+    bvs = []
+    accessors = []
 
-        gltf = json.loads(glb_buf[20 : 20 + json_len].decode("utf-8"))
-        orig_bin = bytes(glb_buf[20 + json_len + 8 :])
+    def push_bv(data: bytes, target: Optional[int] = None) -> int:
+        p = pad4(len(bin_buf))
+        if p:
+            bin_buf.extend(b"\x00" * p)
+        off = len(bin_buf)
+        bin_buf.extend(data)
+        entry = {"buffer": 0, "byteOffset": off, "byteLength": len(data)}
+        if target is not None:
+            entry["target"] = target
+        bvs.append(entry)
+        return len(bvs) - 1
 
-        def pad4(n: int) -> int:
-            return (4 - (n % 4)) % 4
-
-        # Eski gömülü görselleri çıkar, yalnızca geometri + UV bufferView'larını koru
-        img_bv_set = {im.get("bufferView") for im in gltf.get("images", []) if "bufferView" in im}
-        new_bin = bytearray()
-        new_bvs = []
-        bv_remap: Dict[int, int] = {}
-
-        for old_i, bv in enumerate(gltf.get("bufferViews", [])):
-            if old_i in img_bv_set:
-                continue
-            off = bv.get("byteOffset", 0)
-            ln = bv["byteLength"]
-            p = pad4(len(new_bin))
-            if p:
-                new_bin.extend(b"\x00" * p)
-            new_off = len(new_bin)
-            new_bin.extend(orig_bin[off : off + ln])
-            nbv = dict(bv)
-            nbv["buffer"] = 0
-            nbv["byteOffset"] = new_off
-            nbv["byteLength"] = ln
-            bv_remap[old_i] = len(new_bvs)
-            new_bvs.append(nbv)
-
-        for acc in gltf.get("accessors", []):
-            if "bufferView" in acc and acc["bufferView"] in bv_remap:
-                acc["bufferView"] = bv_remap[acc["bufferView"]]
-            if "sparse" in acc:
-                for subk in ("indices", "values"):
-                    if subk in acc["sparse"] and acc["sparse"][subk].get("bufferView") in bv_remap:
-                        acc["sparse"][subk]["bufferView"] = bv_remap[acc["sparse"][subk]["bufferView"]]
-
-        gltf["bufferViews"] = new_bvs
-        gltf["images"] = []
-        gltf["textures"] = []
-        gltf["samplers"] = [
-            {"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}
-        ]
-
-        def add_image_texture(pil_img: Image.Image, name: str, q: int) -> int:
-            jb = _encode_jpg(pil_img, q)
-            p = pad4(len(new_bin))
-            if p:
-                new_bin.extend(b"\x00" * p)
-            off = len(new_bin)
-            new_bin.extend(jb)
-            bv_idx = len(gltf["bufferViews"])
-            gltf["bufferViews"].append({"buffer": 0, "byteOffset": off, "byteLength": len(jb)})
-            img_idx = len(gltf["images"])
-            gltf["images"].append({"name": name, "mimeType": "image/jpeg", "bufferView": bv_idx})
-            tex_idx = len(gltf["textures"])
-            gltf["textures"].append({"sampler": 0, "source": img_idx})
-            return tex_idx
-
-        albedo_pil = _resize_pil(Image.open(albedo_path).convert("RGB"), tex_max_side) if albedo_path else None
-        if albedo_pil is None:
-            return glb_buf
-
-        tw, th = albedo_pil.size
-        albedo_tex = add_image_texture(albedo_pil, "pbr_albedo", jpg_q)
-
-        # Gerçek Hunyuan3D-2.1 Metallic & Roughness haritalarını glTF 2.0 ORM kanalına birleştir (R=AO, G=Roughness, B=Metallic)
-        rgb_f = np.asarray(albedo_pil, dtype=np.float32) / 255.0
-        lum = 0.2126 * rgb_f[:, :, 0] + 0.7152 * rgb_f[:, :, 1] + 0.0722 * rgb_f[:, :, 2]
-        ao_u8 = np.clip(np.round(((lum ** 0.35) * 0.65 + 0.35) * 255.0), 90, 255).astype(np.uint8)
-
-        if roughness_path:
-            rough_pil = Image.open(roughness_path).convert("L").resize((tw, th), Image.Resampling.LANCZOS)
-            rough_u8 = np.asarray(rough_pil, dtype=np.uint8)
-        else:
-            rough_u8 = np.clip(np.round((0.84 - lum * 0.14) * 255.0), 150, 235).astype(np.uint8)
-
-        if metallic_path:
-            metal_pil = Image.open(metallic_path).convert("L").resize((tw, th), Image.Resampling.LANCZOS)
-            metal_u8 = np.asarray(metal_pil, dtype=np.uint8)
-        else:
-            metal_u8 = np.zeros((th, tw), dtype=np.uint8)
-
-        orm_pil = Image.fromarray(np.stack([ao_u8, rough_u8, metal_u8], axis=-1), mode="RGB")
-        orm_tex = add_image_texture(orm_pil, "pbr_orm", max(82, jpg_q - 3))
-
-        # Gerçek Normal haritası varsa onu kullan, yoksa yüksek çözünürlüklü mikro-yüzey normal haritası çıkar
-        if normal_path:
-            norm_pil = Image.open(normal_path).convert("RGB").resize((tw, th), Image.Resampling.LANCZOS)
-        else:
-            gy, gx = np.gradient(lum)
-            nx, ny, nz = -gx * 2.0, -gy * 2.0, np.ones_like(lum)
-            inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
-            norm_arr = np.stack(
-                [
-                    np.clip(np.round((nx * inv * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8),
-                    np.clip(np.round((ny * inv * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8),
-                    np.clip(np.round((nz * inv * 0.5 + 0.5) * 255.0), 128, 255).astype(np.uint8),
-                ],
-                axis=-1,
-            )
-            norm_pil = Image.fromarray(norm_arr, mode="RGB")
-        norm_tex = add_image_texture(norm_pil, "pbr_normal", max(82, jpg_q - 4))
-
-        mat = {
-            "name": "MekanAR_PBR_21",
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-                "baseColorTexture": {"index": albedo_tex},
-                "metallicFactor": 1.0 if metallic_path else 0.0,
-                "roughnessFactor": 1.0,
-                "metallicRoughnessTexture": {"index": orm_tex},
-            },
-            "normalTexture": {"index": norm_tex, "scale": 0.72},
-            "occlusionTexture": {"index": orm_tex, "strength": 0.75},
+    pos_bv = push_bv(pts.astype(np.float32).tobytes(), 34962)
+    pos_acc = len(accessors)
+    accessors.append(
+        {
+            "bufferView": pos_bv,
+            "componentType": 5126,
+            "count": len(pts),
+            "type": "VEC3",
+            "min": [float(v) for v in fmin],
+            "max": [float(v) for v in fmax],
         }
-        gltf["materials"] = [mat]
-        for m in gltf.get("meshes", []):
-            for prim in m.get("primitives", []):
-                prim["material"] = 0
+    )
 
-        p_end = pad4(len(new_bin))
-        if p_end:
-            new_bin.extend(b"\x00" * p_end)
-        gltf["buffers"][0]["byteLength"] = len(new_bin)
+    norm_bv = push_bv(v_normals.astype(np.float32).tobytes(), 34962)
+    norm_acc = len(accessors)
+    accessors.append(
+        {
+            "bufferView": norm_bv,
+            "componentType": 5126,
+            "count": len(v_normals),
+            "type": "VEC3",
+        }
+    )
 
-        new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
-        jp = pad4(len(new_json))
-        if jp:
-            new_json += b" " * jp
+    attrs = {"POSITION": pos_acc, "NORMAL": norm_acc}
+    if uvs is not None and len(uvs) == len(pts):
+        uv_bv = push_bv(uvs.astype(np.float32).tobytes(), 34962)
+        uv_acc = len(accessors)
+        accessors.append(
+            {
+                "bufferView": uv_bv,
+                "componentType": 5126,
+                "count": len(uvs),
+                "type": "VEC2",
+            }
+        )
+        attrs["TEXCOORD_0"] = uv_acc
 
-        total = 12 + 8 + len(new_json) + 8 + len(new_bin)
-        out = bytearray()
-        out.extend(struct.pack("<III", 0x46546C67, 2, total))
-        out.extend(struct.pack("<II", len(new_json), 0x4E4F534A))
-        out.extend(new_json)
-        out.extend(struct.pack("<II", len(new_bin), 0x004E4942))
-        out.extend(new_bin)
-        return bytes(out)
-    except Exception:
-        traceback.print_exc()
-        return glb_buf
+    idx_bv = push_bv(faces.astype(np.uint32).tobytes(), 34963)
+    idx_acc = len(accessors)
+    accessors.append(
+        {
+            "bufferView": idx_bv,
+            "componentType": 5125,
+            "count": int(faces.size),
+            "type": "SCALAR",
+        }
+    )
+
+    images = []
+    textures = []
+
+    def push_tex(pil_img: Image.Image, name: str, q: int) -> int:
+        jb = _encode_jpg(pil_img, q)
+        bv_i = push_bv(jb)
+        im_i = len(images)
+        images.append({"name": name, "mimeType": "image/jpeg", "bufferView": bv_i})
+        t_i = len(textures)
+        textures.append({"sampler": 0, "source": im_i})
+        return t_i
+
+    albedo_pil = _resize_pil(Image.open(albedo_path).convert("RGB"), tex_max_side)
+    tw_px, th_px = albedo_pil.size
+    albedo_tex = push_tex(albedo_pil, "pbr_albedo_2k", jpg_q)
+
+    # Gerçek Hunyuan3D-2.1 Roughness & Metallic + mobilya dielektrik kalibrasyonu
+    # (Kumaş/ahşapta gürültülü %20-30 metaliklik değerlerini 0'a indirir -> plastik/gri parlaklık YOK!)
+    rgb_f = np.asarray(albedo_pil, dtype=np.float32) / 255.0
+    lum = 0.2126 * rgb_f[:, :, 0] + 0.7152 * rgb_f[:, :, 1] + 0.0722 * rgb_f[:, :, 2]
+    ao_u8 = np.clip(np.round(((lum ** 0.35) * 0.55 + 0.45) * 255.0), 115, 255).astype(np.uint8)
+
+    if os.path.exists(roughness_path):
+        r_raw = np.asarray(
+            Image.open(roughness_path).convert("L").resize((tw_px, th_px), Image.Resampling.LANCZOS),
+            dtype=np.float32,
+        )
+        # Mobilya kumaş/ahşap doğal matlık aralığı (0.55..0.95)
+        rough_u8 = np.clip(np.round(r_raw * 0.75 + 75.0), 135, 245).astype(np.uint8)
+    else:
+        rough_u8 = np.clip(np.round((0.86 - lum * 0.12) * 255.0), 165, 238).astype(np.uint8)
+
+    if os.path.exists(metallic_path):
+        m_raw = np.asarray(
+            Image.open(metallic_path).convert("L").resize((tw_px, th_px), Image.Resampling.LANCZOS),
+            dtype=np.float32,
+        )
+        # Yalnızca gerçekten parlak metal (> 150) bölgeleri metalik bırak; kumaş & ahşap = 0!
+        metal_u8 = np.where(m_raw > 150.0, np.clip((m_raw - 150.0) * 2.2, 0, 230), 0.0).astype(np.uint8)
+    else:
+        metal_u8 = np.zeros((th_px, tw_px), dtype=np.uint8)
+
+    orm_pil = Image.fromarray(np.stack([ao_u8, rough_u8, metal_u8], axis=-1), mode="RGB")
+    orm_tex = push_tex(orm_pil, "pbr_orm_2k", max(84, jpg_q - 3))
+
+    if os.path.exists(normal_path):
+        norm_pil = Image.open(normal_path).convert("RGB").resize((tw_px, th_px), Image.Resampling.LANCZOS)
+    else:
+        gy, gx = np.gradient(lum)
+        nx, ny, nz = -gx * 1.8, -gy * 1.8, np.ones_like(lum)
+        inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
+        norm_arr = np.stack(
+            [
+                np.clip(np.round((nx * inv * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8),
+                np.clip(np.round((ny * inv * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8),
+                np.clip(np.round((nz * inv * 0.5 + 0.5) * 255.0), 128, 255).astype(np.uint8),
+            ],
+            axis=-1,
+        )
+        norm_pil = Image.fromarray(norm_arr, mode="RGB")
+    norm_tex = push_tex(norm_pil, "pbr_normal_2k", max(84, jpg_q - 4))
+
+    has_real_metal = bool(metal_u8.max() > 30)
+    gltf = {
+        "asset": {"version": "2.0", "generator": "MekanAR Hunyuan3D-2.1 2K PBR"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "MekanAR_Furniture", "mesh": 0}],
+        "meshes": [
+            {
+                "name": "FurnitureMesh",
+                "primitives": [{"attributes": attrs, "indices": idx_acc, "material": 0, "mode": 4}],
+            }
+        ],
+        "materials": [
+            {
+                "name": "MekanAR_PBR_21_2K",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+                    "baseColorTexture": {"index": albedo_tex},
+                    "metallicFactor": 1.0 if has_real_metal else 0.0,
+                    "roughnessFactor": 1.0,
+                    "metallicRoughnessTexture": {"index": orm_tex},
+                },
+                "normalTexture": {"index": norm_tex, "scale": 0.55},
+                "occlusionTexture": {"index": orm_tex, "strength": 0.85},
+            }
+        ],
+        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}],
+        "textures": textures,
+        "images": images,
+        "accessors": accessors,
+        "bufferViews": bvs,
+        "buffers": [{"byteLength": 0}],
+    }
+
+    p_end = pad4(len(bin_buf))
+    if p_end:
+        bin_buf.extend(b"\x00" * p_end)
+    gltf["buffers"][0]["byteLength"] = len(bin_buf)
+
+    new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    jp = pad4(len(new_json))
+    if jp:
+        new_json += b" " * jp
+
+    total = 12 + 8 + len(new_json) + 8 + len(bin_buf)
+    out = bytearray()
+    out.extend(struct.pack("<III", 0x46546C67, 2, total))
+    out.extend(struct.pack("<II", len(new_json), 0x4E4F534A))
+    out.extend(new_json)
+    out.extend(struct.pack("<II", len(bin_buf), 0x004E4942))
+    out.extend(bin_buf)
+    return bytes(out), w_cm, d_cm, h_cm, (tw_px, th_px)
 
 
 def handler(job):
@@ -421,18 +547,11 @@ def handler(job):
         r2_public_url = inp.get("r2_public_url")
 
         rembg = _ensure_rembg()
-        cleaned_list: List[Image.Image] = []
-        front_clean: Optional[Image.Image] = None
-        for k in ("front", "back", "left", "right"):
-            if k in imgs_dict:
-                rgba = rembg(_decode_image(imgs_dict[k]))
-                if k == "front":
-                    front_clean = rgba
-                cleaned_list.append(rgba)
+        front_clean = _clean_studio_background(rembg, _decode_image(imgs_dict["front"]))
 
         low_vram = _vram_gb() < 36.0
 
-        # 1) Şekil Üretimi: Hunyuan3D-2.1 Full (40 adım, octree 384 -> keskin mobilya kenarları!)
+        # 1) Şekil Üretimi: Hunyuan3D-2.1 Full (40 adım, octree 384)
         shape_pipe = _get_shape_pipeline()
         if low_vram and torch.cuda.is_available():
             shape_pipe.to("cuda")
@@ -441,7 +560,7 @@ def handler(job):
         with torch.no_grad():
             mesh = shape_pipe(
                 image=front_clean,
-                num_inference_steps=35,
+                num_inference_steps=40,
                 guidance_scale=7.5,
                 octree_resolution=384,
                 num_chunks=20000,
@@ -450,12 +569,15 @@ def handler(job):
             )[0]
         shape_sec = round(time.time() - t_shape, 2)
 
+        # UV açma ve boyamadan ÖNCE olası stüdyo zemin levhasını temizle!
+        mesh = _strip_floor_sheet_from_mesh(mesh)
+
         if low_vram and torch.cuda.is_available():
             shape_pipe.to("cpu")
             gc.collect()
             torch.cuda.empty_cache()
 
-        # 2) Gerçek PBR Boyama: Hunyuan3D-2.1 Paint PBR (Albedo + Metallic + Roughness + RealESRGAN x4)
+        # 2) Gerçek 2K PBR Boyama: Hunyuan3D-2.1 Paint PBR + RealESRGAN x4 (downsample=False!)
         with tempfile.TemporaryDirectory(prefix="hy3d21_") as tmpdir:
             raw_mesh_path = os.path.join(tmpdir, "white_mesh.glb")
             out_obj_path = os.path.join(tmpdir, "textured_mesh.obj")
@@ -477,17 +599,15 @@ def handler(job):
                 gc.collect()
                 torch.cuda.empty_cache()
 
-            # 3) 1:1 gerçek cm ölçek + y=0 zemin kilidi + 2K PBR .GLB paketleme
             use_direct_r2 = bool(r2_put_url and r2_public_url)
             if use_direct_r2:
-                # R2 doğrudan yüklemede 2.55 MB sınırı YOK -> tam 2048x2048 2K PBR kalite!
-                final_glb, w_cm, d_cm, h_cm = _build_pbr_glb_from_obj(
+                final_glb, w_cm, d_cm, h_cm, tex_wh = _build_pbr_glb_from_obj(
                     out_obj_path,
                     width_cm=width_cm,
                     depth_cm=depth_cm,
                     height_cm=height_cm,
                     tex_max_side=2048,
-                    jpg_q=91,
+                    jpg_q=92,
                 )
                 put_res = requests.put(
                     r2_put_url,
@@ -501,8 +621,8 @@ def handler(job):
                 total_sec = round(time.time() - t_start, 2)
                 gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
                 print(
-                    f"[ar3d-21] R2 DIRECT OK: views={len(cleaned_list)} shape={shape_sec}s paint={paint_sec}s "
-                    f"total={total_sec}s size={len(final_glb)/1024:.0f}KB dims={w_cm}x{d_cm}x{h_cm}cm gpu={gpu_name}",
+                    f"[ar3d-21] R2 DIRECT 2K OK: shape={shape_sec}s paint={paint_sec}s total={total_sec}s "
+                    f"tex={tex_wh[0]}x{tex_wh[1]} size={len(final_glb)/1024:.0f}KB dims={w_cm}x{d_cm}x{h_cm}cm gpu={gpu_name}",
                     flush=True,
                 )
                 return {
@@ -515,19 +635,19 @@ def handler(job):
                     "heightCm": h_cm,
                     "dimensionsCm": f"{w_cm} × {d_cm} × {h_cm} cm",
                     "sizeKB": round(len(final_glb) / 1024.0, 1),
+                    "texSize": f"{tex_wh[0]}x{tex_wh[1]}",
                     "shapeSec": shape_sec,
                     "paintSec": paint_sec,
                     "elapsedSec": total_sec,
-                    "model": "Hunyuan3D-2.1 Full PBR (2K)",
+                    "model": "Hunyuan3D-2.1 Studio 2K PBR",
                     "gpu": gpu_name,
                 }
 
-            # Yedek yol (R2 verilmediyse <= 2.55 MB base64 yanıtı)
-            final_glb, w_cm, d_cm, h_cm = _build_pbr_glb_from_obj(
+            final_glb, w_cm, d_cm, h_cm, tex_wh = _build_pbr_glb_from_obj(
                 out_obj_path, width_cm=width_cm, depth_cm=depth_cm, height_cm=height_cm, tex_max_side=1024, jpg_q=88
             )
             if len(final_glb) > MAX_FALLBACK_BASE64_BYTES:
-                final_glb, w_cm, d_cm, h_cm = _build_pbr_glb_from_obj(
+                final_glb, w_cm, d_cm, h_cm, tex_wh = _build_pbr_glb_from_obj(
                     out_obj_path, width_cm=width_cm, depth_cm=depth_cm, height_cm=height_cm, tex_max_side=768, jpg_q=82
                 )
 
@@ -541,10 +661,11 @@ def handler(job):
                 "heightCm": h_cm,
                 "dimensionsCm": f"{w_cm} × {d_cm} × {h_cm} cm",
                 "sizeKB": round(len(final_glb) / 1024.0, 1),
+                "texSize": f"{tex_wh[0]}x{tex_wh[1]}",
                 "shapeSec": shape_sec,
                 "paintSec": paint_sec,
                 "elapsedSec": total_sec,
-                "model": "Hunyuan3D-2.1 Full PBR",
+                "model": "Hunyuan3D-2.1 Studio PBR",
                 "gpu": gpu_name,
             }
     except Exception as exc:
