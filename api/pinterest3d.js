@@ -163,7 +163,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
         /* fall through */
       }
     }
-    throw new Error(errors.slice(0, 3).join(' | ') || 'Gemini Vision sunucuları şu an yoğun, lütfen 5 saniye sonra tekrar deneyin.');
+    throw new Error(errors.join(' | ').slice(0, 480) || 'Gemini Vision sunucuları şu an yoğun, lütfen 5 saniye sonra tekrar deneyin.');
   }
 
   // Image generation mode: sequential fallback across image models
@@ -282,13 +282,46 @@ export default async function handler(req, res) {
         availableModels = [];
       }
     }
+    let probeResults;
+    if (req.query?.probe === '1' && key) {
+      const probeModels = [
+        'gemini-3.8-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-3.1-pro-preview',
+        'gemini-4-neon',
+        'gemini-4-argon',
+        'gemini-4-hydrogen',
+        'gemini-4-carbon',
+        'gemini-omni-1.2-flash',
+        'gemma-4-31b-it',
+        'gemma-4-26b-a4b-it',
+      ];
+      probeResults = await Promise.all(
+        probeModels.map(async (m) => {
+          try {
+            const r = await fetch(`${GEMINI_BASE}/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Return JSON {"ok":true}' }] }] }),
+              signal: AbortSignal.timeout(8000),
+            });
+            const txt = await r.text();
+            return { model: m, status: r.status, sample: r.ok ? 'OK' : txt.slice(0, 90) };
+          } catch (e) {
+            return { model: m, status: 'timeout', sample: String(e?.message || e).slice(0, 60) };
+          }
+        })
+      );
+    }
     return res.status(200).json({
       ok: true,
       geminiConfigured: envGemini,
+      openaiConfigured: Boolean(String(process.env.OPENAI_API_KEY || '').trim()),
       runpodConfigured: envRunpod,
       visionModel: VISION_MODELS[0],
       imageModel: IMAGE_MODELS[0],
       ...(availableModels ? { availableModels } : {}),
+      ...(probeResults ? { probeResults } : {}),
     });
   }
 
