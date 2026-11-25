@@ -435,16 +435,22 @@ export async function analyzePinterestRoom(params: {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (key) headers['x-gemini-key'] = key;
 
-  const resp = await fetch('/api/pinterest3d?action=analyze', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      imageDataUrl: params.imageDataUrl,
-      roomWidthM: params.roomWidthM,
-      roomDepthM: params.roomDepthM,
-      roomCeilingM: params.roomCeilingM,
-    }),
-  });
+  const runFetch = () =>
+    fetch('/api/pinterest3d?action=analyze', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        imageDataUrl: params.imageDataUrl,
+        roomWidthM: params.roomWidthM,
+        roomDepthM: params.roomDepthM,
+        roomCeilingM: params.roomCeilingM,
+      }),
+    });
+
+  let resp = await runFetch();
+  if (resp.status === 502 || resp.status === 503 || resp.status === 504) {
+    resp = await runFetch();
+  }
 
   if (resp.ok) {
     const data = await resp.json();

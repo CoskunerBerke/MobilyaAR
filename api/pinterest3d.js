@@ -162,7 +162,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : /3\.8-flash|3\.5-flash/.test(m) ? 32000 : 18000, true).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 24000 : /3\.8-flash/.test(m) ? 22000 : /3\.5-flash/.test(m) ? 18000 : 12000, true).catch((e) => {
               recordErr(m, e);
               throw e;
             })
