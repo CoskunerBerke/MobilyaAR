@@ -127,6 +127,13 @@ const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind, { c1:
   ac_unit: { c1: '#f4f3ef', c2: '#2b2b2b' },
 };
 
+interface WallSlot {
+  along: number;
+  halfW: number;
+  y0: number;
+  y1: number;
+}
+
 const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'wall_art',
   'wall_mirror',
@@ -139,6 +146,14 @@ const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'console_table',
   'vanity_table',
   'ac_unit',
+]);
+
+/** Floor furniture that snaps flush to its wall whenever AI assigns a specific wall (never left floating sideways!) */
+const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
+  'bed_frame',
+  'sofa',
+  'desk',
+  'nightstand',
 ]);
 
 export const PinterestAIPanel: React.FC<Props> = ({
@@ -238,9 +253,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
     item: PinterestDetectedObject,
     imgUrl: string,
     occupiedGround: OBB2D[],
-    wallCursorsGround: Record<WallId, number[]>,
+    wallCursorsGround: Record<WallId, WallSlot[]>,
     occupiedUpper: OBB2D[] = [],
-    wallCursorsUpper: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] },
+    wallCursorsUpper: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] },
     effectiveCeilingM: number = project.ceilingM,
     mezBounds: MezzanineBounds | null = getMezzanineBounds(project),
     mezSpec: ArchMezzanine | null = project.mezzanine?.enabled ? project.mezzanine : null
@@ -249,7 +264,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const defaults = DEFAULT_COLORS_BY_ARCHETYPE[archetype] || { c1: '#b8aea0', c2: '#2c2b29' };
 
     const cropPreview = await cropBoxFromDataUrl(imgUrl, item.box2d, 0.025).catch(() => undefined);
-    const needsRawTexture = archetype === 'rug_custom' || archetype === 'wall_art';
+    const needsRawTexture = archetype === 'wall_art';
     const rawCrop = needsRawTexture ? await cropRawTightDataUrl(imgUrl, item.box2d).catch(() => undefined) : undefined;
 
     let primaryHex = isValidHexColor(item.primaryColorHex) ? item.primaryColorHex : '';
@@ -295,14 +310,21 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
     const isRug = archetype === 'rug_custom';
     const isCeiling = archetype === 'chandelier' || item.mountMode === 'ceiling';
-    const isHighWall = archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv' || archetype === 'ac_unit';
-    const isWallBacked = item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype);
+    const isFloorMirror =
+      archetype === 'wall_mirror' &&
+      (hM >= 1.25 || (item.elevationCm !== undefined && item.elevationCm <= 15) || /boy|ayakta|zemin|full.?length/i.test(item.nameTr));
+    const isHighWall =
+      !isFloorMirror &&
+      (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv' || archetype === 'ac_unit');
+    const isWallAnchoredFloor =
+      WALL_ANCHORABLE_FLOOR_KINDS.has(archetype) && Boolean(item.suggestedWall && item.suggestedWall !== 'center');
+    const isWallBacked = item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype) || isWallAnchoredFloor;
 
     const mountMode: ArchPlacedObject['mountMode'] = isRug
       ? 'rug'
       : isCeiling
       ? 'ceiling'
-      : isWallBacked
+      : isWallBacked && !isWallAnchoredFloor
       ? 'wall'
       : 'floor';
 
@@ -322,10 +344,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
     };
 
     if (archetype === 'stairs' && mezBounds && mezSpec) {
-      // Anchor staircase cleanly right at the mezzanine stairwell gap / landing edge!
       y = 0;
       if (mezSpec.anchorWall === 'north') {
-        rot = 0; // climbs from +Z up toward -Z
+        rot = 0;
         if (mezSpec.stairGapSide === 'west') {
           x = Math.max(-project.widthM * 0.5 + wM * 0.5 + 0.08, mezBounds.minX - wM * 0.5 - 0.04);
           z = mezBounds.maxZ - dM * 0.15;
@@ -364,55 +385,75 @@ export const PinterestAIPanel: React.FC<Props> = ({
           : 'south';
       attachedWall = targetWall;
 
-      const isHoriz = targetWall === 'north' || targetWall === 'south';
-      const spanMin = isUpper && mezBounds
-        ? (isHoriz ? mezBounds.minX : mezBounds.minZ) + wM * 0.5 + 0.12
-        : -(isHoriz ? project.widthM : project.depthM) * 0.5 + wM * 0.5 + 0.12;
-      const spanMax = isUpper && mezBounds
-        ? (isHoriz ? mezBounds.maxX : mezBounds.maxZ) - wM * 0.5 - 0.12
-        : (isHoriz ? project.widthM : project.depthM) * 0.5 - wM * 0.5 - 0.12;
-      let along = Math.max(spanMin, Math.min(spanMax, isHoriz ? x : z));
-
-      const used = activeWallCursors[targetWall];
-      const collidesAlong = (pos: number) => used.some((u) => Math.abs(u - pos) < Math.max(0.45, wM * 0.72));
-      if (collidesAlong(along) && spanMax > spanMin + 0.2) {
-        const mid = (spanMin + spanMax) * 0.5;
-        const half = (spanMax - spanMin) * 0.5;
-        const candidates = [mid, mid - half * 0.65, mid + half * 0.65, spanMin, spanMax, mid - half * 0.3, mid + half * 0.3];
-        const free = candidates.find((c) => c >= spanMin - 0.01 && c <= spanMax + 0.01 && !collidesAlong(c));
-        if (free !== undefined) along = free;
-      }
-      used.push(along);
-
-      if (targetWall === 'north') {
-        x = along;
-        z = -project.depthM * 0.5 + dM * 0.5 + 0.02;
-        rot = 0;
-      } else if (targetWall === 'south') {
-        x = along;
-        z = project.depthM * 0.5 - dM * 0.5 - 0.02;
-        rot = Math.PI;
-      } else if (targetWall === 'west') {
-        z = along;
-        x = -project.widthM * 0.5 + dM * 0.5 + 0.02;
-        rot = Math.PI / 2;
-      } else {
-        z = along;
-        x = project.widthM * 0.5 - dM * 0.5 - 0.02;
-        rot = -Math.PI / 2;
-      }
-
+      // Determine vertical span [y0, y1] FIRST so items stacked vertically (e.g. memo board ABOVE floor mirror, ivy ABOVE bed!) never push each other sideways!
       if (isHighWall) {
-        const relElev = archetype === 'ac_unit'
-          ? Math.max(1.75, headroomM - hM - 0.15)
-          : Math.max(0.85, Math.min(headroomM - hM - 0.12, (item.elevationCm || 115) / 100));
+        const relElev =
+          archetype === 'ac_unit'
+            ? Math.max(1.75, headroomM - hM - 0.15)
+            : Math.max(0.75, Math.min(headroomM - hM - 0.08, (item.elevationCm || 125) / 100));
         y = baseFloorY + relElev;
       } else {
         y = baseFloorY;
+      }
+      const myY0 = y;
+      const myY1 = y + hM;
+
+      const isHoriz = targetWall === 'north' || targetWall === 'south';
+      const spanMin =
+        isUpper && mezBounds
+          ? (isHoriz ? mezBounds.minX : mezBounds.minZ) + wM * 0.5 + 0.1
+          : -(isHoriz ? project.widthM : project.depthM) * 0.5 + wM * 0.5 + 0.1;
+      const spanMax =
+        isUpper && mezBounds
+          ? (isHoriz ? mezBounds.maxX : mezBounds.maxZ) - wM * 0.5 - 0.1
+          : (isHoriz ? project.widthM : project.depthM) * 0.5 - wM * 0.5 - 0.1;
+      let along = Math.max(spanMin, Math.min(spanMax, isHoriz ? x : z));
+
+      // True 2D wall collision (horizontal AND vertical overlap check!)
+      const used = activeWallCursors[targetWall];
+      const collides2D = (pos: number) =>
+        used.some((s) => {
+          const horizOverlap = Math.abs(s.along - pos) < s.halfW + wM * 0.5 + 0.04;
+          const vertOverlap = myY0 < s.y1 - 0.06 && myY1 > s.y0 + 0.06;
+          return horizOverlap && vertOverlap;
+        });
+
+      if (collides2D(along) && spanMax > spanMin + 0.15) {
+        // Nudge gently outward from desired position instead of teleporting across the room!
+        const steps = [0.25, -0.25, 0.55, -0.55, 0.9, -0.9, 1.3, -1.3, 1.8, -1.8];
+        const freeShift = steps.find((d) => {
+          const cand = along + d;
+          return cand >= spanMin - 0.01 && cand <= spanMax + 0.01 && !collides2D(cand);
+        });
+        if (freeShift !== undefined) along = Math.max(spanMin, Math.min(spanMax, along + freeShift));
+      }
+
+      // Wall art/ivy behind bed shouldn't block floor furniture; floor items register their exact height band!
+      used.push({ along, halfW: wM * 0.5, y0: myY0, y1: myY1 });
+
+      const wallInset = isWallAnchoredFloor ? 0.03 : 0.02;
+      if (targetWall === 'north') {
+        x = along;
+        z = -project.depthM * 0.5 + dM * 0.5 + wallInset;
+        rot = 0;
+      } else if (targetWall === 'south') {
+        x = along;
+        z = project.depthM * 0.5 - dM * 0.5 - wallInset;
+        rot = Math.PI;
+      } else if (targetWall === 'west') {
+        z = along;
+        x = -project.widthM * 0.5 + dM * 0.5 + wallInset;
+        rot = Math.PI / 2;
+      } else {
+        z = along;
+        x = project.widthM * 0.5 - dM * 0.5 - wallInset;
+        rot = -Math.PI / 2;
+      }
+
+      if (!isHighWall) {
         activeOccupied.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
       }
     } else if (isUpper && mezBounds) {
-      // Upper-floor free furniture (bed, nightstands, stool, table lamps) placed cleanly ON the mezzanine deck!
       const localW = mezBounds.widthM;
       const localD = mezBounds.depthM;
       const mezCx = (mezBounds.minX + mezBounds.maxX) * 0.5;
@@ -431,7 +472,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
       if (pos) {
         x = pos.x + mezCx;
         z = pos.z + mezCz;
-        rot = pos.rot;
       } else {
         x = cl.cx;
         z = cl.cz;
@@ -439,7 +479,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       y = baseFloorY;
       occupiedUpper.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     } else {
-      // Ground-floor furniture: anchor near Pinterest relative (x,z) without colliding into walls or other items!
+      // Ground-floor free furniture: anchor cleanly near Pinterest (x,z) while PRESERVING intended facingDeg!
       const pos = findOpenSpawnPosition(
         wM * 0.5,
         dM * 0.5,
@@ -452,7 +492,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
       if (pos) {
         x = pos.x;
         z = pos.z;
-        rot = pos.rot;
       }
       y = 0;
       occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
@@ -548,8 +587,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
           .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
     const occupiedUpper: OBB2D[] = [];
 
-    const wallCursorsGround: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
-    const wallCursorsUpper: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
+    const wallCursorsGround: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+    const wallCursorsUpper: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+    // Reserve active window openings so wall art/mirrors/shelves NEVER clip through windows!
+    if (styleToApply?.hasVisibleWindow && styleToApply.primaryWindowWall) {
+      const ww = styleToApply.primaryWindowWall;
+      const winSpan = ww === 'north' || ww === 'south' ? project.widthM : project.depthM;
+      const winAlong = styleToApply.hasMezzanine ? -winSpan * 0.18 : 0;
+      wallCursorsGround[ww].push({ along: winAlong, halfW: 0.9, y0: 0.2, y1: effectiveCeilingM });
+      wallCursorsUpper[ww].push({ along: winAlong, halfW: 0.9, y0: 0.2, y1: effectiveCeilingM });
+    }
     const builtObjects: ArchPlacedObject[] = [];
     const jobPatches: Record<string, Partial<ItemJobState>> = {};
 

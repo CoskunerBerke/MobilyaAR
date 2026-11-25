@@ -675,29 +675,33 @@ export function buildParametricObject3D(
     }
   } else if (obj.parametricKind === 'bed_frame') {
     const duvetMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.86 });
-    const sheetMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#eee9df'), roughness: 0.88 });
-    const headboardMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(accentHex || '#e5ded2').multiplyScalar(0.92),
-      roughness: 0.85,
+    const frameWoodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#b9936c'), roughness: 0.72 });
+    const sheetMat = new THREE.MeshStandardMaterial({ color: 0xf5f3ee, roughness: 0.88 });
+    const pillowAccentMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex).lerp(new THREE.Color(accentHex || '#b9936c'), 0.35),
+      roughness: 0.86,
     });
-    const darkBaseMat = new THREE.MeshStandardMaterial({ color: 0x3b3833, roughness: 0.78 });
     disposables.push(() => {
       duvetMat.dispose();
+      frameWoodMat.dispose();
       sheetMat.dispose();
-      headboardMat.dispose();
-      darkBaseMat.dispose();
+      pillowAccentMat.dispose();
     });
-    const hbH = Math.max(0.88, H);
-    // Upholstered twin-panel headboard at -Z
-    addBox(W + 0.1, hbH, 0.1, 0, hbH * 0.5, -D * 0.5 + 0.05, headboardMat);
-    addBox(W * 0.46, hbH * 0.54, 0.05, -W * 0.24, hbH * 0.64, -D * 0.5 + 0.12, headboardMat);
-    addBox(W * 0.46, hbH * 0.54, 0.05, W * 0.24, hbH * 0.64, -D * 0.5 + 0.12, headboardMat);
-    // Recessed plinth base & mattress
-    addBox(W - 0.04, 0.22, D - 0.1, 0, 0.11, 0.05, darkBaseMat);
-    addBox(W - 0.02, 0.22, D - 0.14, 0, 0.33, 0.05, sheetMat);
-    // Quilted plush duvet grid (3x3 soft puff segments so it reads like real designer bedding!)
-    const duvZ0 = -D * 0.06;
-    const duvD = D * 0.56;
+    const isLowPallet = H < 0.72;
+    const hbH = isLowPallet ? Math.max(0.45, H) : Math.max(0.88, H);
+    // Clean wood or upholstered headboard at -Z
+    if (!isLowPallet) {
+      addBox(W + 0.08, hbH, 0.09, 0, hbH * 0.5, -D * 0.5 + 0.045, frameWoodMat);
+      addBox(W * 0.45, hbH * 0.5, 0.045, -W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
+      addBox(W * 0.45, hbH * 0.5, 0.045, W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
+    }
+    // Natural wood bed/pallet base frame (uses accentHex instead of harsh black!)
+    addBox(W + 0.04, 0.2, D - 0.04, 0, 0.1, 0.02, frameWoodMat);
+    // Crisp white mattress
+    addBox(W - 0.04, 0.22, D - 0.12, 0, 0.31, 0.03, sheetMat);
+    // Quilted plush duvet grid (3x3 soft puff segments in true duvet color primaryHex!)
+    const duvZ0 = -D * 0.08;
+    const duvD = D * 0.58;
     const cols = 3;
     const rows = 3;
     const cellW = (W + 0.02) / cols;
@@ -709,21 +713,21 @@ export function buildParametricObject3D(
           0.14,
           cellD - 0.025,
           -W * 0.5 + cellW * (cx + 0.5),
-          0.46,
+          0.44,
           duvZ0 + cellD * (cz + 0.5),
           duvetMat
         );
       }
     }
-    // Folded linen sheet collar above duvet
-    addBox(W + 0.01, 0.1, 0.22, 0, 0.46, duvZ0 - 0.11, sheetMat);
-    // 2 back sleeping pillows + 2 front accent cushions
+    // Folded sheet collar above duvet
+    addBox(W + 0.01, 0.1, 0.2, 0, 0.44, duvZ0 - 0.1, sheetMat);
+    // Sleeping pillows + front accent cushions
     const pw = Math.min(0.68, W * 0.42);
-    addBox(pw, 0.16, 0.36, -W * 0.24, 0.52, -D * 0.5 + 0.34, sheetMat);
-    if (W > 1.25) {
-      addBox(pw, 0.16, 0.36, W * 0.24, 0.52, -D * 0.5 + 0.34, sheetMat);
-      addBox(pw * 0.72, 0.15, 0.22, -W * 0.2, 0.54, -D * 0.5 + 0.54, duvetMat);
-      addBox(pw * 0.72, 0.15, 0.22, W * 0.2, 0.54, -D * 0.5 + 0.54, duvetMat);
+    addBox(pw, 0.16, 0.34, -W * 0.24, 0.5, -D * 0.5 + 0.32, sheetMat);
+    if (W > 1.2) {
+      addBox(pw, 0.16, 0.34, W * 0.24, 0.5, -D * 0.5 + 0.32, sheetMat);
+      addBox(pw * 0.68, 0.15, 0.2, -W * 0.2, 0.52, -D * 0.5 + 0.52, pillowAccentMat);
+      addBox(pw * 0.68, 0.15, 0.2, W * 0.2, 0.52, -D * 0.5 + 0.52, pillowAccentMat);
     }
   } else if (obj.parametricKind === 'ac_unit') {
     const shellMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.08 });
@@ -736,17 +740,21 @@ export function buildParametricObject3D(
     addBox(W * 0.88, H * 0.18, 0.02, 0, H * 0.18, D * 0.5 + 0.002, ventMat, false);
     addBox(W * 0.94, 0.012, 0.01, 0, H * 0.52, D * 0.5 + 0.003, ventMat, false);
   } else if (obj.parametricKind === 'wall_mirror') {
-    const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.28, metalness: 0.8 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.3, metalness: 0.65 });
     const mirrorMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(accentHex || '#dbe5ee'),
-      roughness: 0.08,
-      metalness: 0.88,
+      color: 0xe3ecf4,
+      emissive: 0x3b4856,
+      emissiveIntensity: 0.18,
+      roughness: 0.12,
+      metalness: 0.62,
     });
     disposables.push(() => {
       frameMat.dispose();
       mirrorMat.dispose();
     });
-    const isRoundMirror = /yuvarlak|round|daire|oval/i.test(obj.name);
+    // Only render round/oval if genuinely circular (NOT "oval köşeli boy aynası" or tall rectangular full-length mirror!)
+    const isTallRect = H / Math.max(0.2, W) > 1.45 || /boy|dikdörtgen|köşeli|full.?length|zemin/i.test(obj.name);
+    const isRoundMirror = !isTallRect && /yuvarlak|round|daire|circular/i.test(obj.name);
     if (isRoundMirror) {
       const r = Math.min(W, H) * 0.5;
       const rx = W * 0.5;
@@ -769,8 +777,10 @@ export function buildParametricObject3D(
       glass.scale.set(rx / r, ry / r, 1);
       grp.add(glass);
     } else {
+      // Sleek architectural thin-frame rectangular mirror (great for Boy Aynası & wall mirrors!)
+      const border = 0.028;
       addBox(W, H, D, 0, H * 0.5, 0, frameMat);
-      addBox(W - 0.05, H - 0.05, 0.01, 0, H * 0.5, D * 0.5 + 0.003, mirrorMat, false);
+      addBox(Math.max(0.1, W - border * 2), Math.max(0.1, H - border * 2), 0.01, 0, H * 0.5, D * 0.5 + 0.003, mirrorMat, false);
     }
   } else if (obj.parametricKind === 'wall_art') {
     const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.45 });
@@ -842,18 +852,10 @@ export function buildParametricObject3D(
     grp.add(shade);
   } else if (obj.parametricKind === 'rug_custom') {
     const isRoundRug = /yuvarlak|round|daire/i.test(obj.name);
-    let rugTex: THREE.Texture;
-    let disposeTex = false;
-    if (obj.thumbUrl) {
-      rugTex = new THREE.TextureLoader().load(obj.thumbUrl, () => onTextureReady?.());
-      rugTex.colorSpace = THREE.SRGBColorSpace;
-      disposeTex = true;
-    } else {
-      rugTex = createWovenRugTexture(primaryHex, accentHex);
-    }
+    // Always use clean woven architectural rug texture tinted to the rug's true colors (no warped camera crop legs + live recolorable!)
+    const rugTex = createWovenRugTexture(primaryHex, accentHex);
     const rugMat = new THREE.MeshStandardMaterial({ map: rugTex, roughness: 0.94, metalness: 0.01 });
     disposables.push(() => {
-      if (disposeTex) rugTex.dispose();
       rugMat.dispose();
     });
     const rugH = Math.max(0.012, Math.min(0.025, H));

@@ -31,6 +31,7 @@ export interface PinterestRoomStyle {
   curtainColorHex: string;
   suggestedSunHour: number;
   suggestedCeilingCm?: number;
+  hasVisibleWindow?: boolean;
   primaryWindowWall?: WallId;
   hasMezzanine?: boolean;
   mezzanine?: PinterestMezzanineSpec;

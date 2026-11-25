@@ -1609,33 +1609,55 @@ export const ArchitecturalStudioPage: React.FC = () => {
 
               const winWall = style?.primaryWindowWall || 'west';
               const nextWindows =
-                replaceExisting && style?.hasMezzanine
-                  ? [
-                      {
-                        id: `pin-win-${Date.now()}`,
-                        wall: winWall,
-                        kind: 'french' as WindowKind,
-                        offsetCm: Math.round(getWallLengthM(winWall, prev.widthM, prev.depthM) * 32),
-                        widthCm: 150,
-                        heightCm: Math.min(Math.round(nextCeil * 100) - 35, 340),
-                        sillHeightCm: 25,
-                        frameColorHex: '#232325',
-                        hasSill: true,
-                        curtainStyle: 'sheer_and_drape' as const,
-                        curtainColorHex: style.curtainColorHex || '#e5dfd3',
-                        curtainOpenRatio: 0.62,
-                      },
-                    ]
+                replaceExisting && style
+                  ? style.hasVisibleWindow === false
+                    ? []
+                    : [
+                        {
+                          id: `pin-win-${Date.now()}`,
+                          wall: winWall,
+                          kind: (style.hasMezzanine ? 'french' : 'triple') as WindowKind,
+                          offsetCm: Math.round(
+                            getWallLengthM(winWall, prev.widthM, prev.depthM) * (style.hasMezzanine ? 32 : 50)
+                          ),
+                          widthCm: style.hasMezzanine ? 150 : 210,
+                          heightCm: Math.min(Math.round(nextCeil * 100) - 35, style.hasMezzanine ? 340 : 220),
+                          sillHeightCm: style.hasMezzanine ? 25 : 40,
+                          frameColorHex: '#232325',
+                          hasSill: true,
+                          curtainStyle: 'sheer_and_drape' as const,
+                          curtainColorHex: style.curtainColorHex || '#e5dfd3',
+                          curtainOpenRatio: 0.62,
+                        },
+                      ]
                   : prev.windows.map((w) => ({
                       ...w,
                       curtainColorHex: style?.curtainColorHex || w.curtainColorHex,
                     }));
 
+              const nextCoves =
+                replaceExisting && style
+                  ? style.hasVisibleWindow === false
+                    ? []
+                    : [
+                        {
+                          id: `pin-cove-${winWall}-${Date.now()}`,
+                          wall: winWall,
+                          depthCm: 20,
+                          dropCm: 16,
+                          ledEnabled: true,
+                          ledColorHex: '#ffddb0',
+                          ledIntensity: 1.0,
+                          colorHex: prev.ceilingColorHex,
+                        },
+                      ]
+                  : prev.curtainCoves;
+
               return {
                 ...prev,
                 ceilingM: nextCeil,
                 mezzanine: nextMez,
-                ...(replaceExisting ? { wallZones: [] } : {}),
+                ...(replaceExisting ? { wallZones: [], curtainCoves: nextCoves } : {}),
                 ...(style
                   ? {
                       floorMaterial: style.floorMaterial || prev.floorMaterial,

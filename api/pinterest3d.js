@@ -162,7 +162,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : 16000, true).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : /3\.8-flash|3\.5-flash/.test(m) ? 26000 : 16000, true).catch((e) => {
               recordErr(m, e);
               throw e;
             })
@@ -472,6 +472,7 @@ Return ONLY valid JSON with this exact schema:
     "curtainColorHex": "#RRGGBB",
     "suggestedSunHour": number (between 9 and 18),
     "suggestedCeilingCm": number (285 for normal 1-story room, 410 for 2-story mezzanine/loft),
+    "hasVisibleWindow": boolean (true ONLY if an actual exterior window with glass/daylight is clearly visible in the photo; false if the photographed walls are solid interior walls!),
     "primaryWindowWall": "north" | "west" | "east" | "south",
     "hasMezzanine": boolean,
     "mezzanine": {
@@ -509,9 +510,15 @@ Return ONLY valid JSON with this exact schema:
 }
 
 RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
-- Detect 10 to 16 distinct visible items across BOTH floors (if 2-story): hero furniture (bed, sofa, fireplace, TV, desk, dining table, cabinets/sideboards, stairs), seating/tables (armchair, office chair, coffee table, nightstands, vanity, ottoman/stool), rugs (both round & rectangular!), lamps/chandelier, plants/trees, mirrors, framed wall art.
-- If the room is a 2-story loft/mezzanine: set hasMezzanine=true, suggestedCeilingCm=410, carefully tag EVERY upstairs object (bed, nightstands, upstairs rug, vanity, upstairs mirror, upstairs framed art) with floorLevel=1 and EVERY downstairs object (armchair, coffee table, downstairs rugs, desk, office chair, under-loft cabinets, stairs, olive tree, bookcase) with floorLevel=0!
-- Place EVERY item at its TRUE spatial (relativeX, relativeZ, suggestedWall, facingDeg) matching the photo's exact corner and wall — do NOT dump everything in the center!
+- Detect 8 to 15 distinct REAL visible items in the room (NEVER invent items that aren't there, and DO NOT confuse objects seen ONLY inside a mirror reflection as being on the same wall as the mirror — either skip faint reflection-only clutter or place clearly reflected opposite-wall items on the OPPOSITE wall like "south" or "west"!).
+- SAME-WALL ADJACENCY (CRITICAL!): If multiple items appear side-by-side on the SAME primary photographed wall (for example: full-length mirror on left + framed board directly above mirror + hanging ivy/art on right + bed pushed against that wall), they MUST ALL share the EXACT SAME suggestedWall ("north") with matching left-to-right relativeX (-0.75 left -> +0.75 right)!
+- VERTICAL STACKING:
+  * Tall full-length floor-standing mirror ("Boy Aynası", heightCm 150..190): mountMode="wall", elevationCm=0!
+  * Framed art/board hanging DIRECTLY ABOVE a mirror or bed: SAME suggestedWall AND SAME relativeX as the item below it, with elevationCm=180 (above tall mirror) or elevationCm=110..135 (above bed/sofa)!
+  * Hanging ivy/wall tapestry behind a bed: parametricKind="wall_art", mountMode="wall", SAME suggestedWall and relativeX as the bed, elevationCm=85!
+- WALL-ANCHORED FURNITURE: For bed_frame, sofa, desk, bookshelf, wardrobe, sideboard, console_table, vanity_table, nightstand that sit against a wall, ALWAYS set suggestedWall ("north"|"east"|"west"|"south") and facingDeg pointing INTO the room away from that wall (north->0, south->180, west->90, east->-90).
+- TRUE BED COLORS: For bed_frame, primaryColorHex MUST be the MAIN DUVET/BEDDING color (e.g. white duvet -> #f4f2ed, olive duvet -> #4c5942), and accentColorHex MUST be the WOOD/BEDFRAME color (e.g. natural wood pallet -> #b88f64). NEVER use a tiny accent throw pillow's color as the entire bed's primaryColorHex!
+- If the room is a 2-story loft/mezzanine: set hasMezzanine=true, suggestedCeilingCm=410, tag EVERY upstairs object with floorLevel=1 and EVERY downstairs object with floorLevel=0!
 - box2d: integers 0..1000 [ymin, xmin, ymax, xmax] tightly enclosing the item.`;
 
       const { model: modelUsed, parsed } = await runMultiProviderVision({
