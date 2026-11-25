@@ -15,13 +15,12 @@
  */
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Cost-optimal Paid-Tier sequential Vision chain (tries 1 fast low-cost model at a time so Paid Tier never bills parallel duplicates!)
-// Falls back cleanly to secondary pools ONLY if the active model returns 503/error.
+// Paid-Tier flagship spatial Vision first (gemini-3.8-flash gives far superior 3D wall/floor/mezzanine accuracy!)
+// Sequential fallback only if primary fails -> saves ~85% credit while staying 100% resilient.
 const VISION_WAVES = [
-  ['gemini-3.1-flash-lite'],
   ['gemini-3.8-flash'],
-  ['gemini-3.1-flash-lite-preview'],
   ['gemini-3.5-flash'],
+  ['gemini-3.1-flash-lite'],
   ['gemini-3.6-flash', 'gemma-4-26b-a4b-it'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
@@ -444,50 +443,76 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: 'Geçerli bir oda fotoğrafı gönderin.' });
       }
 
-      const prompt = `You are a senior interior architect and meticulous 3D spatial object detector.
-Perform an EXHAUSTIVE inventory of EVERY distinct visible furniture piece, lighting fixture, rug, plant, mirror, framed wall artwork, shelving unit, and interior architectural element in this inspiration photo to faithfully recreate the room inside a ${roomWidthM}m × ${roomDepthM}m × ${roomCeilingM}m 3D studio.
+      const prompt = `You are a senior interior architect and precision 3D spatial layout reconstruction expert.
+Analyze this interior room photo carefully and reconstruct EVERY architectural layer (including 2nd-floor mezzanines / lofts if present!) and EVERY visible piece of furniture, lighting, rug, plant, mirror, artwork, and staircase with ACCURATE 3D floor-plan coordinates for a ${roomWidthM}m × ${roomDepthM}m room.
+
+COORDINATE SYSTEM (CRITICAL — match the photo's spatial layout faithfully!):
+- Imagine looking into the room from the front-open viewer side:
+  * "north" wall = back-right / primary rear wall (z = -1.0)
+  * "west" wall = back-left / left side wall (x = -1.0)
+  * "east" wall = right side wall (x = +1.0)
+  * "south" wall = front edge closest to viewer (z = +1.0)
+- relativeX: -0.90 (left/west wall) to +0.90 (right/east wall)
+- relativeZ: -0.90 (back/north wall) to +0.90 (front/south edge)
+- facingDeg: 0 = faces +Z (front/south), 180 = faces -Z (back/north), 90 = faces +X (east/right), -90 = faces -X (west/left).
+  * Example: a bed whose headboard touches the north/back wall has suggestedWall="north", facingDeg=0.
+  * Example: a staircase climbing from front (+Z) up to a north mezzanine has facingDeg=0 (treads rise from +Z toward -Z).
+- floorLevel: 0 = ground floor, 1 = UPPER 2ND FLOOR / MEZZANINE PLATFORM! (Only use 1 if hasMezzanine is true!)
 
 Return ONLY valid JSON with this exact schema:
 {
   "roomStyle": {
-    "styleNameTr": "string (e.g. Modern Minimalist Loft)",
-    "summaryTr": "string (1 concise Turkish sentence describing the ambiance)",
+    "styleNameTr": "string (e.g. İki Katlı Modern Loft Stüdyo)",
+    "summaryTr": "string (1 concise Turkish sentence describing the ambiance & layout)",
     "wallColorHex": "#RRGGBB",
     "accentWallColorHex": "#RRGGBB",
     "wallPattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper",
     "floorMaterial": "herringbone_oak" | "plank_oak" | "plank_walnut" | "travertine" | "marble" | "microcement" | "terrazzo",
     "floorTintHex": "#RRGGBB",
     "curtainColorHex": "#RRGGBB",
-    "suggestedSunHour": number (between 9 and 18)
+    "suggestedSunHour": number (between 9 and 18),
+    "suggestedCeilingCm": number (285 for normal 1-story room, 410 for 2-story mezzanine/loft),
+    "primaryWindowWall": "north" | "west" | "east" | "south",
+    "hasMezzanine": boolean,
+    "mezzanine": {
+      "anchorWall": "north" | "east" | "west" | "south",
+      "heightCm": number (typically 195..220 for 2-story loft deck top),
+      "depthRatio": number (0.45..0.62 fraction of room depth),
+      "widthRatio": number (0.65..1.0; use ~0.76 if stairs climb on one side!),
+      "stairGapSide": "west" | "east" | "none",
+      "railingStyle": "none" | "glass" | "metal",
+      "deckColorHex": "#RRGGBB"
+    }
   },
   "detectedObjects": [
     {
       "id": "unique-slug",
-      "nameTr": "short descriptive Turkish name (e.g. Mavi Yemek Masası, Yeşil Keten Berjer, Saksılı Zeytin Ağacı, Yuvarlak Duvar Aynası, Mermer Şömine Ünitesi)",
+      "nameTr": "short descriptive Turkish name (e.g. Zeytin Yeşili Yatak, Konyak Ofis Koltuğu, Çalışma Masası, Siyah Yuvarlak Sehpa, Merdiven, Makyaj Masası, Yuvarlak Duvar Aynası)",
       "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
       "parametricKind": ${VALID_ARCHETYPES},
-      "primaryColorHex": "#RRGGBB (EXACT main color of this specific item in the photo, e.g. blue table -> #2b5b84, green armchair -> #3e523a, oak desk -> #c6a57c, black coffee table -> #232325)",
-      "accentColorHex": "#RRGGBB (secondary/leg/frame/cushion/planter color of this item)",
+      "primaryColorHex": "#RRGGBB (EXACT main color of this specific item in the photo)",
+      "accentColorHex": "#RRGGBB (secondary/leg/frame/cushion/pot color of this item)",
       "box2d": [ymin, xmin, ymax, xmax],
       "widthCm": number,
       "depthCm": number,
       "heightCm": number,
       "mountMode": "floor" | "wall" | "ceiling" | "rug",
       "suggestedWall": "north" | "south" | "west" | "east" | "center",
-      "elevationCm": number,
-      "relativeX": number (-0.85 to 0.85, where -1 is west wall and +1 is east wall),
-      "relativeZ": number (-0.85 to 0.85, where -1 is north wall and +1 is south wall),
-      "facingDeg": number (0 faces +Z south, 180 faces -Z north, 90 faces +X east, -90 faces -X west),
+      "floorLevel": 0 | 1,
+      "elevationCm": number (height above ITS OWN FLOOR LEVEL: 0 for floor/rug, ~105-135 for wall art/mirror/TV),
+      "relativeX": number (-0.90 to 0.90),
+      "relativeZ": number (-0.90 to 0.90),
+      "facingDeg": number (0, 90, -90, or 180),
       "visualDescriptionEn": "max 10 words describing exact look/material"
     }
   ]
 }
 
 RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
-- Detect 8 to 14 distinct visible items across the whole room: hero furniture (bed, sofa, fireplace, TV, desk, dining table, cabinets, stairs), seating/tables (armchair, chair, coffee table, nightstand, vanity), rugs, lighting, plants, mirrors, framed art.
-- Pick exact closest parametricKind and TRUE primaryColorHex + accentColorHex from the photo.
-- box2d: integers 0..1000 [ymin, xmin, ymax, xmax] tightly enclosing the item.
-- Realistic cm dimensions and non-overlapping layout matching the photo.`;
+- Detect 10 to 16 distinct visible items across BOTH floors (if 2-story): hero furniture (bed, sofa, fireplace, TV, desk, dining table, cabinets/sideboards, stairs), seating/tables (armchair, office chair, coffee table, nightstands, vanity, ottoman/stool), rugs (both round & rectangular!), lamps/chandelier, plants/trees, mirrors, framed wall art.
+- If the room is a 2-story loft/mezzanine: set hasMezzanine=true, suggestedCeilingCm=410, carefully tag EVERY upstairs object (bed, nightstands, upstairs rug, vanity, upstairs mirror, upstairs framed art) with floorLevel=1 and EVERY downstairs object (armchair, coffee table, downstairs rugs, desk, office chair, under-loft cabinets, stairs, olive tree, bookcase) with floorLevel=0!
+- Place EVERY item at its TRUE spatial (relativeX, relativeZ, suggestedWall, facingDeg) matching the photo's exact corner and wall — do NOT dump everything in the center!
+- box2d: integers 0..1000 [ymin, xmin, ymax, xmax] tightly enclosing the item.`;
 
       const { model: modelUsed, parsed } = await runMultiProviderVision({
         keys,

@@ -522,16 +522,28 @@ export function buildParametricObject3D(
       leafMat2.dispose();
     });
 
-    const potR = Math.min(0.24, Math.min(W, D) * 0.3);
-    const potH = Math.min(0.42, H * 0.24);
-    const potGeo = new THREE.CylinderGeometry(potR, potR * 0.76, potH, 24);
+    const potR = Math.min(0.24, Math.min(W, D) * 0.28);
+    const potH = Math.min(0.42, H * 0.23);
+    const potGeo = new THREE.CylinderGeometry(potR, potR * 0.78, potH, 28);
+    const potRimGeo = new THREE.TorusGeometry(potR * 0.98, 0.016, 10, 28);
+    potRimGeo.rotateX(Math.PI / 2);
     const soilGeo = new THREE.CylinderGeometry(potR * 0.92, potR * 0.92, 0.02, 20);
-    const trunkH = Math.max(0.2, H * 0.46);
-    const trunkGeo = new THREE.CylinderGeometry(0.018, 0.032, trunkH, 10);
+    const trunkH = Math.max(0.24, H * 0.44);
+    const trunkGeo = new THREE.CylinderGeometry(0.015, 0.028, trunkH, 10);
+    const branchGeo = new THREE.CylinderGeometry(0.007, 0.014, H * 0.3, 8);
+    const leafMat3 = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(leafColor).multiplyScalar(1.16),
+      roughness: 0.8,
+    });
+    const leafGeo = new THREE.IcosahedronGeometry(1, 1);
     disposables.push(() => {
       potGeo.dispose();
+      potRimGeo.dispose();
       soilGeo.dispose();
       trunkGeo.dispose();
+      branchGeo.dispose();
+      leafMat3.dispose();
+      leafGeo.dispose();
     });
 
     const pot = new THREE.Mesh(potGeo, potMat);
@@ -540,38 +552,55 @@ export function buildParametricObject3D(
     pot.receiveShadow = true;
     grp.add(pot);
 
+    const potRim = new THREE.Mesh(potRimGeo, potMat);
+    potRim.position.y = potH - 0.01;
+    grp.add(potRim);
+
     const soil = new THREE.Mesh(soilGeo, soilMat);
     soil.position.y = potH - 0.01;
     grp.add(soil);
 
     const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-    trunk.position.y = potH + trunkH * 0.45;
+    trunk.position.y = potH + trunkH * 0.44;
+    trunk.rotation.z = 0.04;
     trunk.castShadow = true;
     grp.add(trunk);
 
-    // Organic multi-cluster canopy (looks like realistic olive / ficus tree!)
-    const canopyR = Math.min(W, D) * 0.46;
-    const crownBaseY = potH + trunkH * 0.72;
-    const crownTopY = H - canopyR * 0.38;
-    const clusters: Array<[number, number, number, number, boolean]> = [
-      [0, crownTopY, 0, canopyR * 0.58, true],
-      [-canopyR * 0.42, (crownBaseY + crownTopY) * 0.52, canopyR * 0.24, canopyR * 0.48, false],
-      [canopyR * 0.4, (crownBaseY + crownTopY) * 0.55, -canopyR * 0.2, canopyR * 0.46, true],
-      [canopyR * 0.16, crownBaseY + (crownTopY - crownBaseY) * 0.25, canopyR * 0.4, canopyR * 0.42, false],
-      [-canopyR * 0.24, crownBaseY + (crownTopY - crownBaseY) * 0.22, -canopyR * 0.36, canopyR * 0.44, true],
-      [0, crownBaseY + (crownTopY - crownBaseY) * 0.65, -canopyR * 0.14, canopyR * 0.5, false],
+    // 4 architectural wooden branches fanning out organically
+    const forkY = potH + trunkH * 0.78;
+    const branchAngles: Array<[number, number]> = [
+      [0.38, 0.4],
+      [-0.42, 2.0],
+      [0.35, 3.6],
+      [-0.36, 5.1],
     ];
-    const leafGeo = new THREE.DodecahedronGeometry(1, 1);
-    disposables.push(() => leafGeo.dispose());
-    clusters.forEach(([cx, cy, cz, cr, bright], idx) => {
-      const m = new THREE.Mesh(leafGeo, bright ? leafMat1 : leafMat2);
-      m.position.set(cx, Math.max(potH + 0.12, cy), cz);
-      m.scale.set(cr, cr * 0.88, cr);
-      m.rotation.set(idx * 0.5, idx * 0.9, idx * 0.3);
+    branchAngles.forEach(([tilt, yaw]) => {
+      const b = new THREE.Mesh(branchGeo, trunkMat);
+      b.position.set(Math.sin(yaw) * 0.07, forkY + H * 0.1, Math.cos(yaw) * 0.07);
+      b.rotation.set(tilt * Math.cos(yaw), 0, -tilt * Math.sin(yaw));
+      b.castShadow = true;
+      grp.add(b);
+    });
+
+    // Airy natural layered olive-tree foliage (18 varied small organic leaf tufts instead of 6 chunky spheres!)
+    const canopyR = Math.min(W, D) * 0.48;
+    const crownBaseY = forkY + 0.05;
+    const crownSpan = Math.max(0.32, H - crownBaseY - 0.08);
+    const leafMats = [leafMat1, leafMat2, leafMat3];
+    for (let i = 0; i < 18; i++) {
+      const frac = i / 18;
+      const theta = i * 2.39996; // golden angle natural distribution
+      const layerY = crownBaseY + crownSpan * (0.12 + 0.84 * Math.pow(frac, 0.75));
+      const radSpread = canopyR * (0.18 + 0.82 * Math.sin(Math.PI * (0.15 + 0.8 * frac)));
+      const tuftR = canopyR * (0.19 + (i % 4) * 0.032);
+      const m = new THREE.Mesh(leafGeo, leafMats[i % 3]);
+      m.position.set(Math.cos(theta) * radSpread * 0.72, layerY, Math.sin(theta) * radSpread * 0.72);
+      m.scale.set(tuftR * 1.15, tuftR * 0.72, tuftR * 0.95);
+      m.rotation.set(i * 0.6, theta, i * 0.4);
       m.castShadow = true;
       m.receiveShadow = true;
       grp.add(m);
-    });
+    }
   } else if (obj.parametricKind === 'table_lamp') {
     const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.65 });
     const shadeMat = new THREE.MeshStandardMaterial({
@@ -597,28 +626,29 @@ export function buildParametricObject3D(
     dome.position.y = H - r * 0.62;
     grp.add(dome);
   } else if (obj.parametricKind === 'stairs') {
-    const treadMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.58 });
-    const steelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.35, metalness: 0.72 });
+    const treadMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.56 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.34, metalness: 0.72 });
     disposables.push(() => {
       treadMat.dispose();
       steelMat.dispose();
     });
-    const steps = Math.max(5, Math.min(12, Math.round(H / 0.21)));
+    const steps = Math.max(6, Math.min(13, Math.round(H / 0.21)));
+    const treadD = (D / steps) * 1.18;
     for (let i = 0; i < steps; i++) {
       const t = (i + 0.5) / steps;
       const sy = H * t;
-      const sz = -D * 0.5 + D * t;
-      addBox(W, 0.048, (D / steps) * 1.15, 0, sy, sz, treadMat);
+      // Climbs from +Z (front bottom entry) up toward -Z (back mezzanine landing)!
+      const sz = D * 0.5 - D * t;
+      addBox(W, 0.046, treadD, 0, sy, sz, treadMat);
     }
-    // Side steel stringers
     const diagLen = Math.hypot(D, H);
     const angle = Math.atan2(H, D);
-    for (const sx of [-W * 0.44, W * 0.44]) {
-      const stGeo = new THREE.BoxGeometry(0.05, 0.14, diagLen);
+    for (const sx of [-W * 0.42, W * 0.42]) {
+      const stGeo = new THREE.BoxGeometry(0.048, 0.13, diagLen);
       disposables.push(() => stGeo.dispose());
       const st = new THREE.Mesh(stGeo, steelMat);
       st.position.set(sx, H * 0.5 - 0.06, 0);
-      st.rotation.x = -angle;
+      st.rotation.x = angle;
       st.castShadow = true;
       grp.add(st);
     }
@@ -644,26 +674,57 @@ export function buildParametricObject3D(
       }
     }
   } else if (obj.parametricKind === 'bed_frame') {
-    const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.85 });
-    const sheetMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.88 });
-    const blanketMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex).multiplyScalar(0.82), roughness: 0.9 });
-    disposables.push(() => {
-      frameMat.dispose();
-      sheetMat.dispose();
-      blanketMat.dispose();
+    const duvetMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.86 });
+    const sheetMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#eee9df'), roughness: 0.88 });
+    const headboardMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accentHex || '#e5ded2').multiplyScalar(0.92),
+      roughness: 0.85,
     });
-    // Headboard at -Z
-    addBox(W + 0.08, H, 0.12, 0, H * 0.5, -D * 0.5 + 0.06, frameMat);
-    // Base frame
-    addBox(W, 0.3, D - 0.08, 0, 0.15, 0.04, frameMat);
-    // Mattress
-    addBox(W - 0.06, 0.24, D - 0.16, 0, 0.42, 0.04, sheetMat);
-    // Folded duvet on lower 60%
-    addBox(W - 0.02, 0.26, (D - 0.16) * 0.58, 0, 0.43, D * 0.21, blanketMat);
-    // 2 Pillows
+    const darkBaseMat = new THREE.MeshStandardMaterial({ color: 0x3b3833, roughness: 0.78 });
+    disposables.push(() => {
+      duvetMat.dispose();
+      sheetMat.dispose();
+      headboardMat.dispose();
+      darkBaseMat.dispose();
+    });
+    const hbH = Math.max(0.88, H);
+    // Upholstered twin-panel headboard at -Z
+    addBox(W + 0.1, hbH, 0.1, 0, hbH * 0.5, -D * 0.5 + 0.05, headboardMat);
+    addBox(W * 0.46, hbH * 0.54, 0.05, -W * 0.24, hbH * 0.64, -D * 0.5 + 0.12, headboardMat);
+    addBox(W * 0.46, hbH * 0.54, 0.05, W * 0.24, hbH * 0.64, -D * 0.5 + 0.12, headboardMat);
+    // Recessed plinth base & mattress
+    addBox(W - 0.04, 0.22, D - 0.1, 0, 0.11, 0.05, darkBaseMat);
+    addBox(W - 0.02, 0.22, D - 0.14, 0, 0.33, 0.05, sheetMat);
+    // Quilted plush duvet grid (3x3 soft puff segments so it reads like real designer bedding!)
+    const duvZ0 = -D * 0.06;
+    const duvD = D * 0.56;
+    const cols = 3;
+    const rows = 3;
+    const cellW = (W + 0.02) / cols;
+    const cellD = duvD / rows;
+    for (let cx = 0; cx < cols; cx++) {
+      for (let cz = 0; cz < rows; cz++) {
+        addBox(
+          cellW - 0.025,
+          0.14,
+          cellD - 0.025,
+          -W * 0.5 + cellW * (cx + 0.5),
+          0.46,
+          duvZ0 + cellD * (cz + 0.5),
+          duvetMat
+        );
+      }
+    }
+    // Folded linen sheet collar above duvet
+    addBox(W + 0.01, 0.1, 0.22, 0, 0.46, duvZ0 - 0.11, sheetMat);
+    // 2 back sleeping pillows + 2 front accent cushions
     const pw = Math.min(0.68, W * 0.42);
-    addBox(pw, 0.15, 0.42, -W * 0.24, 0.59, -D * 0.5 + 0.38, sheetMat);
-    if (W > 1.3) addBox(pw, 0.15, 0.42, W * 0.24, 0.59, -D * 0.5 + 0.38, sheetMat);
+    addBox(pw, 0.16, 0.36, -W * 0.24, 0.52, -D * 0.5 + 0.34, sheetMat);
+    if (W > 1.25) {
+      addBox(pw, 0.16, 0.36, W * 0.24, 0.52, -D * 0.5 + 0.34, sheetMat);
+      addBox(pw * 0.72, 0.15, 0.22, -W * 0.2, 0.54, -D * 0.5 + 0.54, duvetMat);
+      addBox(pw * 0.72, 0.15, 0.22, W * 0.2, 0.54, -D * 0.5 + 0.54, duvetMat);
+    }
   } else if (obj.parametricKind === 'ac_unit') {
     const shellMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.08 });
     const ventMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.5 });

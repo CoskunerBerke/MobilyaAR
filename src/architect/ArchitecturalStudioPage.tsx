@@ -825,7 +825,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     <NumericInput
                       ariaLabel="Tavan (m)"
                       min={2.1}
-                      max={5.0}
+                      max={6.0}
                       step={0.05}
                       decimals={2}
                       value={project.ceilingM}
@@ -1014,11 +1014,148 @@ export const ArchitecturalStudioPage: React.FC = () => {
               onClick={() => toggleSection('structure')}
               className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
             >
-              <span>03 · Kolon, Kiriş &amp; Perde Havuzu</span>
+              <span>03 · Asma Kat, Kolon, Kiriş &amp; Perde Havuzu</span>
               {openSections.structure ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
             {openSections.structure && (
               <div className="p-3.5 space-y-3.5">
+                {/* 2. Kat / Asma Kat (Loft Mezzanine) Controls */}
+                <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono uppercase font-bold text-stone-900">
+                      2. Kat / Asma Kat (Loft)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProject((prev) => {
+                          const enabling = !prev.mezzanine?.enabled;
+                          const nextCeil = enabling ? Math.max(4.0, prev.ceilingM) : prev.ceilingM;
+                          return {
+                            ...prev,
+                            ceilingM: nextCeil,
+                            mezzanine: enabling
+                              ? {
+                                  enabled: true,
+                                  anchorWall: prev.mezzanine?.anchorWall || 'north',
+                                  heightM: prev.mezzanine?.heightM || 2.05,
+                                  depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
+                                  widthRatio: prev.mezzanine?.widthRatio || 0.78,
+                                  stairGapSide: prev.mezzanine?.stairGapSide || 'west',
+                                  thicknessM: 0.16,
+                                  deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
+                                  railingStyle: prev.mezzanine?.railingStyle || 'none',
+                                  underLed: prev.mezzanine?.underLed ?? true,
+                                }
+                              : { ...(prev.mezzanine as any), enabled: false },
+                          };
+                        });
+                      }}
+                      className={`px-2 py-1 border text-[10px] font-semibold ${
+                        project.mezzanine?.enabled
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-400 bg-white text-stone-800 hover:border-stone-950'
+                      }`}
+                    >
+                      {project.mezzanine?.enabled ? '✓ 2. Kat Aktif' : '+ 2. Kat Ekle'}
+                    </button>
+                  </div>
+
+                  {project.mezzanine?.enabled && (
+                    <div className="space-y-2 pt-1 border-t border-stone-200">
+                      <div className="grid grid-cols-2 gap-1.5 text-[10px] text-stone-600">
+                        <label>
+                          Kat Yüksekliği {Math.round(project.mezzanine.heightM * 100)} cm
+                          <input
+                            type="range"
+                            min={170}
+                            max={Math.max(220, Math.round((project.ceilingM - 1.25) * 100))}
+                            step={5}
+                            value={Math.round(project.mezzanine.heightM * 100)}
+                            onChange={(e) =>
+                              setProject((p) =>
+                                p.mezzanine
+                                  ? { ...p, mezzanine: { ...p.mezzanine, heightM: Number(e.target.value) / 100 } }
+                                  : p
+                              )
+                            }
+                            className="w-full accent-stone-950"
+                          />
+                        </label>
+                        <label>
+                          Derinlik {Math.round(project.mezzanine.depthM * 100)} cm
+                          <input
+                            type="range"
+                            min={130}
+                            max={Math.round(project.depthM * 70)}
+                            step={10}
+                            value={Math.round(project.mezzanine.depthM * 100)}
+                            onChange={(e) =>
+                              setProject((p) =>
+                                p.mezzanine
+                                  ? { ...p, mezzanine: { ...p.mezzanine, depthM: Number(e.target.value) / 100 } }
+                                  : p
+                              )
+                            }
+                            className="w-full accent-stone-950"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1">
+                        {(['west', 'none', 'east'] as const).map((side) => (
+                          <button
+                            key={side}
+                            type="button"
+                            onClick={() =>
+                              setProject((p) =>
+                                p.mezzanine
+                                  ? {
+                                      ...p,
+                                      mezzanine: {
+                                        ...p.mezzanine,
+                                        stairGapSide: side,
+                                        widthRatio: side === 'none' ? 1.0 : 0.78,
+                                      },
+                                    }
+                                  : p
+                              )
+                            }
+                            className={`py-1 border text-[10px] font-semibold ${
+                              project.mezzanine?.stairGapSide === side
+                                ? 'border-stone-950 bg-stone-950 text-white'
+                                : 'border-stone-200 bg-white'
+                            }`}
+                          >
+                            {side === 'west' ? 'Sol Merdiven' : side === 'east' ? 'Sağ Merdiven' : 'Tam Genişlik'}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1">
+                        {(['none', 'glass', 'metal'] as const).map((rs) => (
+                          <button
+                            key={rs}
+                            type="button"
+                            onClick={() =>
+                              setProject((p) =>
+                                p.mezzanine ? { ...p, mezzanine: { ...p.mezzanine, railingStyle: rs } } : p
+                              )
+                            }
+                            className={`py-1 border text-[10px] font-semibold ${
+                              project.mezzanine?.railingStyle === rs
+                                ? 'border-stone-950 bg-stone-950 text-white'
+                                : 'border-stone-200 bg-white'
+                            }`}
+                          >
+                            {rs === 'none' ? 'Korkuluksuz' : rs === 'glass' ? 'Cam Korkuluk' : 'Metal Korkuluk'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-mono uppercase text-stone-500">Perde Havuzu &amp; Gizli LED</span>
@@ -1447,27 +1584,84 @@ export const ArchitecturalStudioPage: React.FC = () => {
             }));
           }}
           onApplyPinterestScene={(objects, style, replaceExisting) => {
-            setProject((prev) => ({
-              ...prev,
-              ...(style
+            setProject((prev) => {
+              const nextCeil = style?.hasMezzanine
+                ? Math.max(3.85, Math.min(4.8, (style.suggestedCeilingCm || 410) / 100))
+                : style?.suggestedCeilingCm
+                ? Math.max(2.5, Math.min(4.5, style.suggestedCeilingCm / 100))
+                : prev.ceilingM;
+              const nextMez = style?.hasMezzanine
                 ? {
-                    floorMaterial: style.floorMaterial || prev.floorMaterial,
-                    floorTintHex: style.floorTintHex || prev.floorTintHex,
-                    walls: {
-                      north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
-                      south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: style.wallPattern || 'smooth' },
-                      west: { colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex, pattern: style.wallPattern || 'smooth' },
-                      east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
-                    },
-                    windows: prev.windows.map((w) => ({ ...w, curtainColorHex: style.curtainColorHex || w.curtainColorHex })),
-                    sun: {
-                      ...prev.sun,
-                      hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
-                    },
+                    enabled: true,
+                    anchorWall: style.mezzanine?.anchorWall || ('north' as WallId),
+                    heightM: Math.max(1.85, Math.min(nextCeil - 1.5, (style.mezzanine?.heightCm || 205) / 100)),
+                    depthM: Math.max(1.6, Math.min(prev.depthM * 0.65, (style.mezzanine?.depthRatio || 0.52) * prev.depthM)),
+                    widthRatio: Math.max(0.55, Math.min(1.0, style.mezzanine?.widthRatio || 0.78)),
+                    stairGapSide: style.mezzanine?.stairGapSide || ('west' as const),
+                    thicknessM: 0.16,
+                    deckColorHex: style.mezzanine?.deckColorHex || style.floorTintHex || '#c9b092',
+                    railingStyle: style.mezzanine?.railingStyle || ('none' as const),
+                    underLed: true,
                   }
-                : {}),
-              objects: replaceExisting ? objects : [...prev.objects, ...objects],
-            }));
+                : replaceExisting
+                ? undefined
+                : prev.mezzanine;
+
+              const winWall = style?.primaryWindowWall || 'west';
+              const nextWindows =
+                replaceExisting && style?.hasMezzanine
+                  ? [
+                      {
+                        id: `pin-win-${Date.now()}`,
+                        wall: winWall,
+                        kind: 'french' as WindowKind,
+                        offsetCm: Math.round(getWallLengthM(winWall, prev.widthM, prev.depthM) * 32),
+                        widthCm: 150,
+                        heightCm: Math.min(Math.round(nextCeil * 100) - 35, 340),
+                        sillHeightCm: 25,
+                        frameColorHex: '#232325',
+                        hasSill: true,
+                        curtainStyle: 'sheer_and_drape' as const,
+                        curtainColorHex: style.curtainColorHex || '#e5dfd3',
+                        curtainOpenRatio: 0.62,
+                      },
+                    ]
+                  : prev.windows.map((w) => ({
+                      ...w,
+                      curtainColorHex: style?.curtainColorHex || w.curtainColorHex,
+                    }));
+
+              return {
+                ...prev,
+                ceilingM: nextCeil,
+                mezzanine: nextMez,
+                ...(replaceExisting ? { wallZones: [] } : {}),
+                ...(style
+                  ? {
+                      floorMaterial: style.floorMaterial || prev.floorMaterial,
+                      floorTintHex: style.floorTintHex || prev.floorTintHex,
+                      walls: {
+                        north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
+                        south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: 'smooth' },
+                        west: {
+                          colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex,
+                          pattern: style.hasMezzanine ? 'smooth' : style.wallPattern || 'smooth',
+                        },
+                        east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
+                      },
+                      windows: nextWindows,
+                      sun: {
+                        ...prev.sun,
+                        hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
+                      },
+                    }
+                  : {}),
+                objects: replaceExisting ? objects : [...prev.objects, ...objects],
+              };
+            });
+            if (replaceExisting) {
+              setTimeout(() => viewportRef.current?.resetCamera('free'), 120);
+            }
             if (objects[0]) {
               setSelection({ type: 'object', id: objects[0].id });
             } else {

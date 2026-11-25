@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   WALL_LABELS,
+  getMezzanineBounds,
   type ArchCurtainCove,
   type ArchDoor,
   type ArchRoomProject,
@@ -915,6 +916,125 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       bm.position.set(px, H - drop * 0.5, pz);
       roomRoot.add(bm);
     }
+  }
+
+  // 4.5) 2nd Floor / Architectural Mezzanine Loft Platform (Asma Kat)
+  const mezBounds = getMezzanineBounds(project);
+  if (mezBounds && project.mezzanine?.enabled) {
+    const mez = project.mezzanine;
+    const mezGroup = new THREE.Group();
+    const cx = (mezBounds.minX + mezBounds.maxX) * 0.5;
+    const cz = (mezBounds.minZ + mezBounds.maxZ) * 0.5;
+    const mw = mezBounds.widthM;
+    const md = mezBounds.depthM;
+    const th = mezBounds.thickM;
+
+    const deckTex = createFloorTexture(project.floorMaterial, mez.deckColorHex || project.floorTintHex, mw, md);
+    const deckTopMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.62, metalness: 0.04 });
+    const fasciaMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(mez.deckColorHex || '#bfa486').multiplyScalar(0.84),
+      roughness: 0.72,
+    });
+    const underMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(project.ceilingColorHex || '#ece9e1').multiplyScalar(0.92),
+      roughness: 0.9,
+    });
+    const steelMat = new THREE.MeshStandardMaterial({ color: 0x262524, roughness: 0.38, metalness: 0.72 });
+
+    const slabGeo = new THREE.BoxGeometry(mw, th, md);
+    const topGeo = new THREE.PlaneGeometry(mw, md);
+    disposables.push(() => {
+      deckTopMat.dispose();
+      fasciaMat.dispose();
+      underMat.dispose();
+      steelMat.dispose();
+      slabGeo.dispose();
+      topGeo.dispose();
+    });
+
+    // Main mezzanine structural deck body
+    const slabMesh = new THREE.Mesh(slabGeo, [fasciaMat, fasciaMat, deckTopMat, underMat, fasciaMat, fasciaMat]);
+    slabMesh.position.set(cx, mezBounds.bottomY + th * 0.5, cz);
+    slabMesh.castShadow = true;
+    slabMesh.receiveShadow = true;
+    mezGroup.add(slabMesh);
+
+    // Crisp top floor surface slightly proud for sharp shadow & grain
+    const topMesh = new THREE.Mesh(topGeo, deckTopMat);
+    topMesh.rotation.x = -Math.PI / 2;
+    topMesh.position.set(cx, mezBounds.topY + 0.002, cz);
+    topMesh.receiveShadow = true;
+    mezGroup.add(topMesh);
+
+    // Subtle recessed warm LED strip & under-loft cozy glow
+    if (mez.underLed) {
+      const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe0ad });
+      const stripLen = mez.anchorWall === 'north' || mez.anchorWall === 'south' ? mw - 0.16 : md - 0.16;
+      const stripGeo =
+        mez.anchorWall === 'north' || mez.anchorWall === 'south'
+          ? new THREE.BoxGeometry(stripLen, 0.014, 0.025)
+          : new THREE.BoxGeometry(0.025, 0.014, stripLen);
+      const underLight = new THREE.PointLight(0xffdfb0, 0.75, Math.max(mw, md) * 1.9, 1.6);
+      underLight.position.set(cx, mezBounds.bottomY - 0.16, cz);
+      disposables.push(() => {
+        ledMat.dispose();
+        stripGeo.dispose();
+      });
+      const strip = new THREE.Mesh(stripGeo, ledMat);
+      if (mez.anchorWall === 'north') strip.position.set(cx, mezBounds.bottomY - 0.004, mezBounds.maxZ - 0.14);
+      else if (mez.anchorWall === 'south') strip.position.set(cx, mezBounds.bottomY - 0.004, mezBounds.minZ + 0.14);
+      else if (mez.anchorWall === 'west') strip.position.set(mezBounds.maxX - 0.14, mezBounds.bottomY - 0.004, cz);
+      else strip.position.set(mezBounds.minX + 0.14, mezBounds.bottomY - 0.004, cz);
+      mezGroup.add(strip);
+      mezGroup.add(underLight);
+    }
+
+    // Optional architectural safety railing along the open front edge
+    if (mez.railingStyle !== 'none') {
+      const railH = 0.92;
+      const isHoriz = mez.anchorWall === 'north' || mez.anchorWall === 'south';
+      const railLen = isHoriz ? mw : md;
+      const edgeX = mez.anchorWall === 'west' ? mezBounds.maxX - 0.03 : mez.anchorWall === 'east' ? mezBounds.minX + 0.03 : cx;
+      const edgeZ = mez.anchorWall === 'north' ? mezBounds.maxZ - 0.03 : mez.anchorWall === 'south' ? mezBounds.minZ + 0.03 : cz;
+
+      // Top sleek matte-black handrail
+      const topBarGeo = isHoriz
+        ? new THREE.BoxGeometry(railLen, 0.036, 0.044)
+        : new THREE.BoxGeometry(0.044, 0.036, railLen);
+      disposables.push(() => topBarGeo.dispose());
+      const topBar = new THREE.Mesh(topBarGeo, steelMat);
+      topBar.position.set(edgeX, mezBounds.topY + railH, edgeZ);
+      topBar.castShadow = true;
+      mezGroup.add(topBar);
+
+      if (mez.railingStyle === 'glass') {
+        const panelGeo = isHoriz
+          ? new THREE.BoxGeometry(railLen - 0.04, railH - 0.06, 0.014)
+          : new THREE.BoxGeometry(0.014, railH - 0.06, railLen - 0.04);
+        disposables.push(() => panelGeo.dispose());
+        const panel = new THREE.Mesh(panelGeo, glassMat);
+        panel.position.set(edgeX, mezBounds.topY + railH * 0.5, edgeZ);
+        mezGroup.add(panel);
+      } else {
+        // Minimalist vertical black steel balusters
+        const postGeo = new THREE.BoxGeometry(0.022, railH, 0.022);
+        disposables.push(() => postGeo.dispose());
+        const count = Math.max(4, Math.round(railLen / 0.16));
+        for (let i = 0; i <= count; i++) {
+          const frac = i / count - 0.5;
+          const post = new THREE.Mesh(postGeo, steelMat);
+          post.position.set(
+            isHoriz ? edgeX + frac * (railLen - 0.08) : edgeX,
+            mezBounds.topY + railH * 0.5,
+            isHoriz ? edgeZ : edgeZ + frac * (railLen - 0.08)
+          );
+          post.castShadow = true;
+          mezGroup.add(post);
+        }
+      }
+    }
+
+    roomRoot.add(mezGroup);
   }
 
   // 5) Ceiling + Shadow Roof Blocker + Single Balanced Interior Fill Light (60 FPS friendly!)

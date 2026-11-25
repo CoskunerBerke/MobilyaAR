@@ -10,6 +10,16 @@ export interface PinterestServerConfig {
   imageModel: string;
 }
 
+export interface PinterestMezzanineSpec {
+  anchorWall?: WallId;
+  heightCm?: number;
+  depthRatio?: number;
+  widthRatio?: number;
+  stairGapSide?: 'west' | 'east' | 'none';
+  railingStyle?: 'none' | 'glass' | 'metal';
+  deckColorHex?: string;
+}
+
 export interface PinterestRoomStyle {
   styleNameTr: string;
   summaryTr: string;
@@ -20,6 +30,10 @@ export interface PinterestRoomStyle {
   floorTintHex: string;
   curtainColorHex: string;
   suggestedSunHour: number;
+  suggestedCeilingCm?: number;
+  primaryWindowWall?: WallId;
+  hasMezzanine?: boolean;
+  mezzanine?: PinterestMezzanineSpec;
 }
 
 export interface PinterestDetectedObject {
@@ -36,6 +50,7 @@ export interface PinterestDetectedObject {
   heightCm: number;
   mountMode: 'floor' | 'wall' | 'ceiling' | 'rug';
   suggestedWall: WallId | 'center';
+  floorLevel?: 0 | 1;
   elevationCm: number;
   relativeX: number;
   relativeZ: number;

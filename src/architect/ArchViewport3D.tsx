@@ -737,6 +737,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       columns: project.columns,
       beams: project.beams,
       coves: project.curtainCoves,
+      mez: project.mezzanine,
     });
 
     useEffect(() => {

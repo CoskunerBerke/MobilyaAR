@@ -1120,6 +1120,37 @@ export const SelectionInspector: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* Floor Level quick-switcher when 2-story mezzanine is active */}
+        {project.mezzanine?.enabled && (
+          <div className="space-y-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Kat Seçimi (2 Katlı Loft)</span>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => patchObj({ y: 0, floorLevel: 0 })}
+                className={`py-1.5 border text-[10px] font-semibold transition ${
+                  obj.y < (project.mezzanine.heightM || 2.0) * 0.65
+                    ? 'border-stone-950 bg-stone-950 text-white'
+                    : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                }`}
+              >
+                1. Kat (Zemin · 0 cm)
+              </button>
+              <button
+                type="button"
+                onClick={() => patchObj({ y: project.mezzanine?.heightM || 2.05, floorLevel: 1 })}
+                className={`py-1.5 border text-[10px] font-semibold transition ${
+                  obj.y >= (project.mezzanine.heightM || 2.0) * 0.65
+                    ? 'border-stone-950 bg-stone-950 text-white'
+                    : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                }`}
+              >
+                2. Kat ({Math.round((project.mezzanine?.heightM || 2.05) * 100)} cm)
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Snap to Wall */}
         <div className="space-y-1.5">
           <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Duvara Sıfır Yasla</span>

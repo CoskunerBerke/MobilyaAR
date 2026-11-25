@@ -147,6 +147,111 @@ export interface ArchCurtainCove {
   colorHex: string;
 }
 
+/** Architectural 2nd Floor / Loft Mezzanine Platform (Asma Kat) */
+export interface ArchMezzanine {
+  enabled: boolean;
+  /** Wall the mezzanine slab anchors against */
+  anchorWall: WallId;
+  /** Deck top surface height from ground floor (meters, e.g. 2.05m) */
+  heightM: number;
+  /** Slab depth protruding from anchorWall (meters, e.g. 2.45m) */
+  depthM: number;
+  /** Coverage ratio along anchorWall (0.45..1.0; <1 leaves an open stairwell gap) */
+  widthRatio: number;
+  /** Side of the open stairwell gap when widthRatio < 1 */
+  stairGapSide: 'west' | 'east' | 'none';
+  /** Structural slab thickness (meters, default 0.16m) */
+  thicknessM: number;
+  /** Upper floor deck wood/material tint */
+  deckColorHex: string;
+  /** Front edge balustrade style */
+  railingStyle: 'none' | 'glass' | 'metal';
+  /** Warm recessed LED strip under the mezzanine slab */
+  underLed: boolean;
+}
+
+export interface MezzanineBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  widthM: number;
+  depthM: number;
+  topY: number;
+  bottomY: number;
+  thickM: number;
+}
+
+export function getMezzanineBounds(project: {
+  widthM: number;
+  depthM: number;
+  ceilingM: number;
+  mezzanine?: ArchMezzanine;
+}): MezzanineBounds | null {
+  const mez = project.mezzanine;
+  if (!mez || !mez.enabled) return null;
+  const W = project.widthM;
+  const D = project.depthM;
+  const H = project.ceilingM;
+  const thickM = Math.max(0.1, Math.min(0.32, mez.thicknessM || 0.16));
+  const topY = Math.max(1.55, Math.min(Math.max(1.7, H - 1.15), mez.heightM || 2.05));
+  const bottomY = topY - thickM;
+  const ratio = Math.max(0.45, Math.min(1.0, mez.widthRatio || 0.8));
+
+  let minX = -W * 0.5;
+  let maxX = W * 0.5;
+  let minZ = -D * 0.5;
+  let maxZ = D * 0.5;
+
+  if (mez.anchorWall === 'north' || mez.anchorWall === 'south') {
+    const spanD = Math.max(1.2, Math.min(D * 0.72, mez.depthM || D * 0.52));
+    const slabW = W * (mez.stairGapSide === 'none' ? 1.0 : ratio);
+    if (mez.anchorWall === 'north') {
+      minZ = -D * 0.5;
+      maxZ = -D * 0.5 + spanD;
+    } else {
+      maxZ = D * 0.5;
+      minZ = D * 0.5 - spanD;
+    }
+    if (mez.stairGapSide === 'west') {
+      maxX = W * 0.5;
+      minX = W * 0.5 - slabW;
+    } else if (mez.stairGapSide === 'east') {
+      minX = -W * 0.5;
+      maxX = -W * 0.5 + slabW;
+    }
+  } else {
+    const spanW = Math.max(1.2, Math.min(W * 0.72, mez.depthM || W * 0.52));
+    const slabD = D * (mez.stairGapSide === 'none' ? 1.0 : ratio);
+    if (mez.anchorWall === 'west') {
+      minX = -W * 0.5;
+      maxX = -W * 0.5 + spanW;
+    } else {
+      maxX = W * 0.5;
+      minX = W * 0.5 - spanW;
+    }
+    if (mez.stairGapSide === 'west') {
+      maxZ = D * 0.5;
+      minZ = D * 0.5 - slabD;
+    } else if (mez.stairGapSide === 'east') {
+      minZ = -D * 0.5;
+      maxZ = -D * 0.5 + slabD;
+    }
+  }
+
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    widthM: Math.max(0.5, maxX - minX),
+    depthM: Math.max(0.5, maxZ - minZ),
+    topY,
+    bottomY,
+    thickM,
+  };
+}
+
 export type SolarSeason = 'summer' | 'equinox' | 'winter';
 
 export interface SunConfig {
@@ -169,6 +274,8 @@ export interface ArchPlacedObject {
   tintHex?: string;
   /** Tracks originating Pinterest item ID so RunPod 2K PBR upgrade replaces it in-place */
   pinterestItemId?: string;
+  /** 0 = Ground floor, 1 = Upper 2nd floor / mezzanine */
+  floorLevel?: 0 | 1;
   x: number;
   y: number;
   z: number;
@@ -216,6 +323,7 @@ export interface ArchRoomProject {
   columns: ArchColumn[];
   beams: ArchBeam[];
   curtainCoves: ArchCurtainCove[];
+  mezzanine?: ArchMezzanine;
   sun: SunConfig;
   objects: ArchPlacedObject[];
 }

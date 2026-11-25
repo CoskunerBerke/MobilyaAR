@@ -41,8 +41,11 @@ import {
 } from './pinterestClient';
 import {
   WALL_LABELS,
+  getMezzanineBounds,
+  type ArchMezzanine,
   type ArchPlacedObject,
   type ArchRoomProject,
+  type MezzanineBounds,
   type ParametricFurnitureKind,
   type WallId,
 } from './types';
@@ -229,13 +232,18 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   /**
    * Builds a clean, collision-free, editable 3D ArchPlacedObject from ANY Pinterest item
-   * in < 5ms, preserving exact Pinterest color, silhouette, dimensions, and room placement!
+   * in < 5ms, preserving exact Pinterest color, silhouette, dimensions, and 1st/2nd-floor placement!
    */
   const buildInstant3DObject = async (
     item: PinterestDetectedObject,
     imgUrl: string,
-    occupiedFloor: OBB2D[],
-    wallCursors: Record<WallId, number[]>
+    occupiedGround: OBB2D[],
+    wallCursorsGround: Record<WallId, number[]>,
+    occupiedUpper: OBB2D[] = [],
+    wallCursorsUpper: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] },
+    effectiveCeilingM: number = project.ceilingM,
+    mezBounds: MezzanineBounds | null = getMezzanineBounds(project),
+    mezSpec: ArchMezzanine | null = project.mezzanine?.enabled ? project.mezzanine : null
   ): Promise<{ obj: ArchPlacedObject; cropPreview?: string; rawCrop?: string }> => {
     const archetype = resolvePinterestArchetype(item);
     const defaults = DEFAULT_COLORS_BY_ARCHETYPE[archetype] || { c1: '#b8aea0', c2: '#2c2b29' };
@@ -251,21 +259,38 @@ export const PinterestAIPanel: React.FC<Props> = ({
     if (!primaryHex) primaryHex = defaults.c1;
     const accentHex = isValidHexColor(item.accentColorHex) ? item.accentColorHex : defaults.c2;
 
+    const isUpper = Boolean(mezBounds && item.floorLevel === 1 && archetype !== 'stairs');
+    const baseFloorY = isUpper && mezBounds ? mezBounds.topY : 0;
+    const headroomM = isUpper && mezBounds ? Math.max(1.2, effectiveCeilingM - mezBounds.topY) : effectiveCeilingM;
+    const activeOccupied = isUpper ? occupiedUpper : occupiedGround;
+    const activeWallCursors = isUpper ? wallCursorsUpper : wallCursorsGround;
+
     // Realistic clamped dimensions (protects against outlier AI estimates)
     let wM = Math.max(0.25, Math.min(project.widthM * 0.78, (Number(item.widthCm) || 90) / 100));
     let dM = Math.max(0.04, Math.min(project.depthM * 0.78, (Number(item.depthCm) || 60) / 100));
-    let hM = Math.max(0.015, Math.min(project.ceilingM - 0.1, (Number(item.heightCm) || 85) / 100));
+    let hM = Math.max(0.015, Math.min(headroomM - 0.1, (Number(item.heightCm) || 85) / 100));
 
     if (archetype === 'rug_custom') {
       hM = 0.016;
-      wM = Math.max(0.9, Math.min(project.widthM * 0.82, wM));
-      dM = Math.max(0.9, Math.min(project.depthM * 0.82, dM));
+      const maxRW = isUpper && mezBounds ? mezBounds.widthM * 0.88 : project.widthM * 0.82;
+      const maxRD = isUpper && mezBounds ? mezBounds.depthM * 0.88 : project.depthM * 0.82;
+      wM = Math.max(0.85, Math.min(maxRW, wM));
+      dM = Math.max(0.85, Math.min(maxRD, dM));
     } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
       dM = Math.min(0.08, Math.max(0.035, dM));
     } else if (archetype === 'potted_plant') {
       wM = Math.max(0.45, Math.min(1.2, wM));
       dM = Math.max(0.45, Math.min(1.2, dM));
-      hM = Math.max(0.7, Math.min(project.ceilingM - 0.2, hM));
+      hM = Math.max(0.7, Math.min(headroomM - 0.15, hM));
+    } else if (archetype === 'stairs' && mezBounds) {
+      // Snap stairs height flush to the 2nd floor mezzanine deck!
+      hM = mezBounds.topY;
+      wM = Math.max(0.75, Math.min(1.15, wM));
+      dM = Math.max(1.35, Math.min(2.2, dM));
+    } else if (isUpper && mezBounds) {
+      // Keep upstairs furniture comfortably within the mezzanine slab depth/width
+      wM = Math.min(wM, mezBounds.widthM * 0.78);
+      dM = Math.min(dM, mezBounds.depthM * 0.85);
     }
 
     const isRug = archetype === 'rug_custom';
@@ -281,19 +306,51 @@ export const PinterestAIPanel: React.FC<Props> = ({
       ? 'wall'
       : 'floor';
 
-    let x = Math.max(-project.widthM * 0.42, Math.min(project.widthM * 0.42, (item.relativeX || 0) * (project.widthM * 0.42)));
-    let z = Math.max(-project.depthM * 0.42, Math.min(project.depthM * 0.42, (item.relativeZ || 0) * (project.depthM * 0.42)));
+    let x = Math.max(-project.widthM * 0.44, Math.min(project.widthM * 0.44, (item.relativeX || 0) * (project.widthM * 0.45)));
+    let z = Math.max(-project.depthM * 0.44, Math.min(project.depthM * 0.44, (item.relativeZ || 0) * (project.depthM * 0.45)));
     let rot = ((item.facingDeg || 0) * Math.PI) / 180;
-    let y = 0;
+    let y = baseFloorY;
     let attachedWall: WallId | undefined;
 
-    if (isCeiling) {
-      y = Math.max(1.65, project.ceilingM - hM);
+    // Clamp upstairs coordinates onto the mezzanine deck bounds
+    const clampToMez = (cx: number, cz: number, hw: number, hd: number) => {
+      if (!isUpper || !mezBounds) return { cx, cz };
+      const pad = 0.06;
+      const nx = Math.max(mezBounds.minX + hw + pad, Math.min(mezBounds.maxX - hw - pad, cx));
+      const nz = Math.max(mezBounds.minZ + hd + pad, Math.min(mezBounds.maxZ - hd - pad, cz));
+      return { cx: nx, cz: nz };
+    };
+
+    if (archetype === 'stairs' && mezBounds && mezSpec) {
+      // Anchor staircase cleanly right at the mezzanine stairwell gap / landing edge!
+      y = 0;
+      if (mezSpec.anchorWall === 'north') {
+        rot = 0; // climbs from +Z up toward -Z
+        if (mezSpec.stairGapSide === 'west') {
+          x = Math.max(-project.widthM * 0.5 + wM * 0.5 + 0.08, mezBounds.minX - wM * 0.5 - 0.04);
+          z = mezBounds.maxZ - dM * 0.15;
+        } else if (mezSpec.stairGapSide === 'east') {
+          x = Math.min(project.widthM * 0.5 - wM * 0.5 - 0.08, mezBounds.maxX + wM * 0.5 + 0.04);
+          z = mezBounds.maxZ - dM * 0.15;
+        } else {
+          x = -project.widthM * 0.5 + wM * 0.5 + 0.12;
+          z = mezBounds.maxZ + dM * 0.5;
+        }
+      } else {
+        x = Math.max(-project.widthM * 0.42, Math.min(project.widthM * 0.42, x));
+        z = Math.max(-project.depthM * 0.42, Math.min(project.depthM * 0.42, z));
+      }
+      occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+    } else if (isCeiling) {
+      y = Math.max(baseFloorY + 1.65, effectiveCeilingM - hM);
       x = Math.max(-project.widthM * 0.25, Math.min(project.widthM * 0.25, x));
       z = Math.max(-project.depthM * 0.25, Math.min(project.depthM * 0.25, z));
     } else if (isRug) {
-      y = 0;
+      y = baseFloorY + 0.004;
       rot = 0;
+      const cl = clampToMez(x, z, wM * 0.5, dM * 0.5);
+      x = cl.cx;
+      z = cl.cz;
     } else if (isWallBacked) {
       const targetWall: WallId =
         item.suggestedWall && item.suggestedWall !== 'center'
@@ -308,16 +365,21 @@ export const PinterestAIPanel: React.FC<Props> = ({
       attachedWall = targetWall;
 
       const isHoriz = targetWall === 'north' || targetWall === 'south';
-      const wallLen = isHoriz ? project.widthM : project.depthM;
-      const maxAlong = Math.max(0, wallLen * 0.5 - wM * 0.5 - 0.14);
-      let along = Math.max(-maxAlong, Math.min(maxAlong, isHoriz ? x : z));
+      const spanMin = isUpper && mezBounds
+        ? (isHoriz ? mezBounds.minX : mezBounds.minZ) + wM * 0.5 + 0.12
+        : -(isHoriz ? project.widthM : project.depthM) * 0.5 + wM * 0.5 + 0.12;
+      const spanMax = isUpper && mezBounds
+        ? (isHoriz ? mezBounds.maxX : mezBounds.maxZ) - wM * 0.5 - 0.12
+        : (isHoriz ? project.widthM : project.depthM) * 0.5 - wM * 0.5 - 0.12;
+      let along = Math.max(spanMin, Math.min(spanMax, isHoriz ? x : z));
 
-      // Spread overlapping items cleanly along the same wall!
-      const used = wallCursors[targetWall];
-      const collidesAlong = (pos: number) => used.some((u) => Math.abs(u - pos) < Math.max(0.55, wM * 0.72));
-      if (collidesAlong(along) && maxAlong > 0.2) {
-        const candidates = [0, -maxAlong * 0.65, maxAlong * 0.65, -maxAlong * 0.95, maxAlong * 0.95, -maxAlong * 0.3, maxAlong * 0.3];
-        const free = candidates.find((c) => Math.abs(c) <= maxAlong + 0.01 && !collidesAlong(c));
+      const used = activeWallCursors[targetWall];
+      const collidesAlong = (pos: number) => used.some((u) => Math.abs(u - pos) < Math.max(0.45, wM * 0.72));
+      if (collidesAlong(along) && spanMax > spanMin + 0.2) {
+        const mid = (spanMin + spanMax) * 0.5;
+        const half = (spanMax - spanMin) * 0.5;
+        const candidates = [mid, mid - half * 0.65, mid + half * 0.65, spanMin, spanMax, mid - half * 0.3, mid + half * 0.3];
+        const free = candidates.find((c) => c >= spanMin - 0.01 && c <= spanMax + 0.01 && !collidesAlong(c));
         if (free !== undefined) along = free;
       }
       used.push(along);
@@ -341,21 +403,48 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
 
       if (isHighWall) {
-        y =
-          archetype === 'ac_unit'
-            ? Math.max(1.9, project.ceilingM - hM - 0.15)
-            : Math.max(0.95, Math.min(project.ceilingM - hM - 0.15, (item.elevationCm || 128) / 100));
+        const relElev = archetype === 'ac_unit'
+          ? Math.max(1.75, headroomM - hM - 0.15)
+          : Math.max(0.85, Math.min(headroomM - hM - 0.12, (item.elevationCm || 115) / 100));
+        y = baseFloorY + relElev;
       } else {
-        y = 0;
-        occupiedFloor.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+        y = baseFloorY;
+        activeOccupied.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
       }
-    } else {
-      // Floor furniture: anchor near Pinterest relative (x,z) without colliding into walls or other items!
+    } else if (isUpper && mezBounds) {
+      // Upper-floor free furniture (bed, nightstands, stool, table lamps) placed cleanly ON the mezzanine deck!
+      const localW = mezBounds.widthM;
+      const localD = mezBounds.depthM;
+      const mezCx = (mezBounds.minX + mezBounds.maxX) * 0.5;
+      const mezCz = (mezBounds.minZ + mezBounds.maxZ) * 0.5;
+      const cl = clampToMez(x, z, wM * 0.5, dM * 0.5);
+      const localOccupied: OBB2D[] = occupiedUpper.map((o) => ({ ...o, x: o.x - mezCx, z: o.z - mezCz }));
       const pos = findOpenSpawnPosition(
         wM * 0.5,
         dM * 0.5,
         rot,
-        occupiedFloor,
+        localOccupied,
+        localW,
+        localD,
+        [cl.cx - mezCx, cl.cz - mezCz]
+      );
+      if (pos) {
+        x = pos.x + mezCx;
+        z = pos.z + mezCz;
+        rot = pos.rot;
+      } else {
+        x = cl.cx;
+        z = cl.cz;
+      }
+      y = baseFloorY;
+      occupiedUpper.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+    } else {
+      // Ground-floor furniture: anchor near Pinterest relative (x,z) without colliding into walls or other items!
+      const pos = findOpenSpawnPosition(
+        wM * 0.5,
+        dM * 0.5,
+        rot,
+        occupiedGround,
         project.widthM,
         project.depthM,
         [x, z]
@@ -365,7 +454,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
         z = pos.z;
         rot = pos.rot;
       }
-      occupiedFloor.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+      y = 0;
+      occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     }
 
     const obj: ArchPlacedObject = {
@@ -377,6 +467,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       parametricKind: archetype,
       parametricColorHex: primaryHex,
       parametricAccentHex: accentHex,
+      floorLevel: isUpper ? 1 : 0,
       x,
       y,
       z,
@@ -395,7 +486,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   /**
    * 1-CLICK FULL PINTEREST ROOM ASSEMBLY (< 0.3 seconds!):
-   * Places ALL selected detected Pinterest items into the 3D room with their exact colors & archetypes.
+   * Places ALL selected detected Pinterest items into the 3D room (1st & 2nd floor!) with exact colors & archetypes.
    */
   const assembleAllInstantIn3D = async (
     itemsToPlace: PinterestDetectedObject[],
@@ -405,35 +496,82 @@ export const PinterestAIPanel: React.FC<Props> = ({
   ) => {
     if (itemsToPlace.length === 0) return;
 
-    // Sort so rugs & wall-backed furniture anchor first, then seating/tables/plants fit cleanly around them
+    // Resolve target ceiling & 2nd-floor mezzanine geometry BEFORE laying out objects!
+    const effectiveCeilingM =
+      styleToApply?.hasMezzanine
+        ? Math.max(3.85, Math.min(4.8, (styleToApply.suggestedCeilingCm || 410) / 100))
+        : styleToApply?.suggestedCeilingCm
+        ? Math.max(2.5, Math.min(4.5, styleToApply.suggestedCeilingCm / 100))
+        : project.ceilingM;
+
+    const mezSpec: ArchMezzanine | null = styleToApply?.hasMezzanine
+      ? {
+          enabled: true,
+          anchorWall: styleToApply.mezzanine?.anchorWall || 'north',
+          heightM: Math.max(1.85, Math.min(effectiveCeilingM - 1.5, (styleToApply.mezzanine?.heightCm || 205) / 100)),
+          depthM: Math.max(1.6, Math.min(project.depthM * 0.65, (styleToApply.mezzanine?.depthRatio || 0.52) * project.depthM)),
+          widthRatio: Math.max(0.55, Math.min(1.0, styleToApply.mezzanine?.widthRatio || 0.78)),
+          stairGapSide: styleToApply.mezzanine?.stairGapSide || 'west',
+          thicknessM: 0.16,
+          deckColorHex: styleToApply.mezzanine?.deckColorHex || styleToApply.floorTintHex || '#c9b092',
+          railingStyle: styleToApply.mezzanine?.railingStyle || 'none',
+          underLed: true,
+        }
+      : project.mezzanine?.enabled && !replaceExisting
+      ? project.mezzanine
+      : null;
+
+    const mezBounds = mezSpec
+      ? getMezzanineBounds({
+          widthM: project.widthM,
+          depthM: project.depthM,
+          ceilingM: effectiveCeilingM,
+          mezzanine: mezSpec,
+        })
+      : null;
+
+    // Sort so stairs, rugs & wall-backed furniture anchor first, then beds/sofas/desks, then accent items
     const priority = (it: PinterestDetectedObject) => {
       const k = resolvePinterestArchetype(it);
-      if (k === 'rug_custom') return 0;
-      if (WALL_BACKED_KINDS.has(k)) return 1;
-      if (k === 'bed_frame' || k === 'sofa' || k === 'dining_table' || k === 'desk') return 2;
-      return 3;
+      if (k === 'stairs') return 0;
+      if (k === 'rug_custom') return 1;
+      if (WALL_BACKED_KINDS.has(k)) return 2;
+      if (k === 'bed_frame' || k === 'sofa' || k === 'dining_table' || k === 'desk') return 3;
+      return 4;
     };
     const ordered = [...itemsToPlace].sort((a, b) => priority(a) - priority(b));
 
-    const occupiedFloor: OBB2D[] = replaceExisting
+    const occupiedGround: OBB2D[] = replaceExisting
       ? []
       : project.objects
           .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8)
           .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+    const occupiedUpper: OBB2D[] = [];
 
-    const wallCursors: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
+    const wallCursorsGround: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
+    const wallCursorsUpper: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
     const builtObjects: ArchPlacedObject[] = [];
     const jobPatches: Record<string, Partial<ItemJobState>> = {};
 
     for (const item of ordered) {
-      const res = await buildInstant3DObject(item, imgUrl, occupiedFloor, wallCursors);
+      const res = await buildInstant3DObject(
+        item,
+        imgUrl,
+        occupiedGround,
+        wallCursorsGround,
+        occupiedUpper,
+        wallCursorsUpper,
+        effectiveCeilingM,
+        mezBounds,
+        mezSpec
+      );
       builtObjects.push(res.obj);
       jobPatches[item.id] = {
         selected: true,
         status: 'done',
         cropPreviewUrl: res.cropPreview,
         rawCropUrl: res.rawCrop,
-        progressText: '3B odada — tıklayıp rengini/yerini değiştir',
+        progressText: res.obj.floorLevel === 1 ? '2. Kat (Asma Kat) — tıklayıp düzenle' : '3B odada — tıklayıp rengini/yerini değiştir',
       };
     }
 
@@ -446,7 +584,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return next;
     });
     setStatusBanner(
-      `${builtObjects.length} Pinterest parçası gerçek renk ve ölçüleriyle 3B odaya yerleştirildi! İstediğine tıklayıp rengini (örn. mavi → sarı) değiştirebilir veya tek tıkla silebilirsin.`
+      `${builtObjects.length} Pinterest parçası${mezSpec ? ' (2 katlı asma kat dahil!)' : ''} gerçek renk ve konumlarıyla 3B odaya kuruldu! İstediğine tıklayıp rengini değiştirebilir veya tek tıkla silebilirsin.`
     );
     onToast(`Pinterest odası ${builtObjects.length} parçayla 3B olarak kuruldu!`);
   };
