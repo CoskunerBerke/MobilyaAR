@@ -908,15 +908,34 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
         const maxAniso = Math.min(2, cur.renderer.capabilities.getMaxAnisotropy());
         const isFabric = obj.category === 'Kanepe' || obj.category === 'Berjer' || obj.category === 'Yatak';
+        const tintColor = obj.tintHex ? new THREE.Color(obj.tintHex) : null;
         clone.traverse((node) => {
           const m = node as THREE.Mesh;
           if (m.isMesh) {
             m.castShadow = obj.mountMode !== 'rug';
             m.receiveShadow = true;
             m.userData.objectId = obj.id;
+            // Clone materials when tinting so cached template materials are never mutated
+            if (tintColor) {
+              m.material = Array.isArray(m.material)
+                ? m.material.map((mt) => (mt ? mt.clone() : mt))
+                : m.material
+                ? m.material.clone()
+                : m.material;
+            }
             const mats = Array.isArray(m.material) ? m.material : [m.material];
             mats.forEach((mt) => {
-              if (mt) preparePhotorealMaterial(mt, maxAniso, isFabric);
+              if (!mt) return;
+              preparePhotorealMaterial(mt, maxAniso, isFabric);
+              if (tintColor && 'color' in mt && (mt as THREE.MeshStandardMaterial).color) {
+                const std = mt as THREE.MeshStandardMaterial;
+                // Blend cleanly toward user's target color so even dark/blue GLB furniture turns bright yellow!
+                std.color.copy(tintColor);
+                if (std.map) {
+                  std.color.lerp(new THREE.Color(0xffffff), 0.12);
+                }
+                std.needsUpdate = true;
+              }
             });
           }
         });
@@ -943,7 +962,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       for (const obj of project.objects) {
         const sig = obj.parametricKind
           ? `param:${obj.parametricKind}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.parametricColorHex}:${obj.parametricAccentHex}:${obj.thumbUrl ? obj.thumbUrl.slice(-24) : ''}:${obj.name}`
-          : `glb:${obj.glbUrl}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}`;
+          : `glb:${obj.glbUrl}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.tintHex || ''}`;
 
         const existing = eng.mountedObjects.get(obj.id);
         if (existing && existing.sig === sig) {

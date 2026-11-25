@@ -1446,9 +1446,71 @@ export const ArchitecturalStudioPage: React.FC = () => {
               sun: { ...prev.sun, hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour },
             }));
           }}
+          onApplyPinterestScene={(objects, style, replaceExisting) => {
+            setProject((prev) => ({
+              ...prev,
+              ...(style
+                ? {
+                    floorMaterial: style.floorMaterial || prev.floorMaterial,
+                    floorTintHex: style.floorTintHex || prev.floorTintHex,
+                    walls: {
+                      north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
+                      south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: style.wallPattern || 'smooth' },
+                      west: { colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex, pattern: style.wallPattern || 'smooth' },
+                      east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
+                    },
+                    windows: prev.windows.map((w) => ({ ...w, curtainColorHex: style.curtainColorHex || w.curtainColorHex })),
+                    sun: {
+                      ...prev.sun,
+                      hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
+                    },
+                  }
+                : {}),
+              objects: replaceExisting ? objects : [...prev.objects, ...objects],
+            }));
+            if (objects[0]) {
+              setSelection({ type: 'object', id: objects[0].id });
+            } else {
+              setSelection(null);
+            }
+          }}
           onAddGeneratedObject={(obj) => {
-            setProject((prev) => ({ ...prev, objects: [...prev.objects, obj] }));
-            setSelection({ type: 'object', id: obj.id });
+            setProject((prev) => {
+              // If upgrading/replacing an existing instant Pinterest object in-place, preserve its exact position & rotation!
+              const existingIdx = obj.pinterestItemId
+                ? prev.objects.findIndex((o) => o.pinterestItemId === obj.pinterestItemId)
+                : -1;
+              if (existingIdx >= 0) {
+                const cur = prev.objects[existingIdx];
+                const replaced: ArchPlacedObject = {
+                  ...obj,
+                  id: cur.id,
+                  x: cur.x,
+                  y: cur.y,
+                  z: cur.z,
+                  rot: cur.rot,
+                  widthM: cur.widthM,
+                  depthM: cur.depthM,
+                  heightM: cur.heightM,
+                  tintHex: cur.tintHex,
+                };
+                const next = [...prev.objects];
+                next[existingIdx] = replaced;
+                return { ...prev, objects: next };
+              }
+              return { ...prev, objects: [...prev.objects, obj] };
+            });
+            setSelection((curSel) => {
+              const matched = obj.pinterestItemId
+                ? project.objects.find((o) => o.pinterestItemId === obj.pinterestItemId)
+                : undefined;
+              return { type: 'object', id: matched?.id || obj.id };
+            });
+          }}
+          onSelectObjectInRoom={(objId) => setSelection({ type: 'object', id: objId })}
+          onRemoveObjectInRoom={(objId) => {
+            setProject((prev) => ({ ...prev, objects: prev.objects.filter((o) => o.id !== objId) }));
+            setSelection((cur) => (cur?.type === 'object' && cur.id === objId ? null : cur));
           }}
           onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
           onToast={showToast}

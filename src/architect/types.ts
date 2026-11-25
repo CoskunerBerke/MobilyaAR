@@ -44,8 +44,22 @@ export type ParametricFurnitureKind =
   | 'chandelier'
   | 'wardrobe'
   | 'dining_table'
+  | 'dining_chair'
   | 'bookshelf'
   | 'bed_frame'
+  | 'nightstand'
+  | 'sofa'
+  | 'armchair'
+  | 'coffee_table_round'
+  | 'coffee_table_rect'
+  | 'desk'
+  | 'office_chair'
+  | 'vanity_table'
+  | 'sideboard'
+  | 'ottoman'
+  | 'potted_plant'
+  | 'table_lamp'
+  | 'stairs'
   | 'ac_unit'
   | 'wall_mirror'
   | 'floor_lamp'
@@ -151,6 +165,10 @@ export interface ArchPlacedObject {
   parametricKind?: ParametricFurnitureKind;
   parametricColorHex?: string;
   parametricAccentHex?: string;
+  /** Live color tint applied to imported/RunPod .GLB meshes when user changes color */
+  tintHex?: string;
+  /** Tracks originating Pinterest item ID so RunPod 2K PBR upgrade replaces it in-place */
+  pinterestItemId?: string;
   x: number;
   y: number;
   z: number;

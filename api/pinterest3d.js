@@ -183,6 +183,43 @@ function parseJsonResponse(rawText) {
   }
 }
 
+const VALID_ARCHETYPES =
+  '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_wall_unit" | "wall_tv" | "fireplace_marble" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
+
+async function callOpenAIVisionBackup(prompt, imageDataUrls) {
+  const openAiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!openAiKey) return null;
+  const content = [{ type: 'text', text: prompt }];
+  for (const url of imageDataUrls) {
+    if (url) content.push({ type: 'image_url', image_url: { url } });
+  }
+  for (const model of ['gpt-4.1-mini', 'gpt-4o-mini']) {
+    try {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openAiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          response_format: { type: 'json_object' },
+          messages: [{ role: 'user', content }],
+        }),
+        signal: AbortSignal.timeout(24000),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const txt = j?.choices?.[0]?.message?.content;
+      if (txt) return { model: `openai:${model}`, text: txt };
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -257,8 +294,11 @@ Return ONLY valid JSON with this exact schema:
   "detectedObjects": [
     {
       "id": "unique-slug",
-      "nameTr": "short descriptive Turkish name (e.g. Mermer Şömine Ünitesi, Metal Çerçeveli Kitaplık, Saksılı Zeytin Ağacı, Yuvarlak Duvar Aynası, Siyah Mantar Abajur)",
+      "nameTr": "short descriptive Turkish name (e.g. Mavi Yemek Masası, Yeşil Keten Berjer, Saksılı Zeytin Ağacı, Yuvarlak Duvar Aynası, Mermer Şömine Ünitesi)",
       "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+      "parametricKind": ${VALID_ARCHETYPES},
+      "primaryColorHex": "#RRGGBB (EXACT main color of this specific item in the photo, e.g. blue table -> #2b5b84, green armchair -> #3e523a, oak desk -> #c6a57c, black coffee table -> #232325)",
+      "accentColorHex": "#RRGGBB (secondary/leg/frame/cushion/planter color of this item)",
       "box2d": [ymin, xmin, ymax, xmax],
       "widthCm": number,
       "depthCm": number,
@@ -275,43 +315,51 @@ Return ONLY valid JSON with this exact schema:
 }
 
 CRITICAL COMPLETENESS & PRECISION RULES:
-- DO NOT stop at 8 items! Detect EVERY distinct visible item (aim for 10 to 20 items in detailed rooms). Scan all 4 quadrants AND upper/lower levels systematically:
+- DO NOT stop at 8 items! Detect EVERY distinct visible item (aim for 10 to 18 items in detailed rooms). Scan all 4 quadrants systematically:
   1. Hero furniture: beds, sofas, fireplaces, TV/media walls, desks, dining tables, wardrobes, built-in cabinets, staircases.
-  2. Secondary seating & tables: armchairs, office chairs, poufs/ottomans, coffee tables, nightstands/bedside tables, vanity/dressing tables.
+  2. Secondary seating & tables: armchairs, office chairs, dining chairs, poufs/ottomans, coffee tables (round vs rect!), nightstands, vanity tables.
   3. Storage & tech: open bookshelves, sideboards, monitors/TVs.
   4. EVERY separate rug (list rectangular and round rugs separately!).
   5. Lighting: chandeliers, floor lamps, globe/table lamps, bedside lamps.
   6. Plants & wall decor: potted indoor trees/plants, wall mirrors, framed paintings/posters.
-- box2d MUST be integers in 0..1000 scale [ymin, xmin, ymax, xmax] TIGHTLY enclosing ONLY that single item without excessive background bleed.
+- Choose the EXACT closest parametricKind from the list for every object and sample its TRUE primaryColorHex and accentColorHex directly from the photo.
+- box2d MUST be integers in 0..1000 scale [ymin, xmin, ymax, xmax] TIGHTLY enclosing ONLY that single item.
 - Dimensions in cm MUST be realistic real-world furniture dimensions.
-- If a fireplace and a wall-mounted TV are visually separate, list them as separate items (fireplace elevationCm=0, wall TV elevationCm=115..140).
-- Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping layout matching the photo.`;
+- Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping room layout matching the photo.`;
 
-      const { model, json } = await callGeminiWithFallback(
-        apiKey,
-        VISION_MODELS,
-        {
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
+      let modelUsed = '';
+      let parsed = null;
+      try {
+        const { model, json } = await callGeminiWithFallback(
+          apiKey,
+          VISION_MODELS,
+          {
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 8192,
+              responseMimeType: 'application/json',
             },
-          ],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 8192,
-            responseMimeType: 'application/json',
           },
-        },
-        'vision'
-      );
-
-      const rawText = extractText(json);
-      const parsed = parseJsonResponse(rawText);
+          'vision'
+        );
+        modelUsed = model;
+        parsed = parseJsonResponse(extractText(json));
+      } catch (gemErr) {
+        const oa = await callOpenAIVisionBackup(prompt, [imageDataUrl]);
+        if (!oa) throw gemErr;
+        modelUsed = oa.model;
+        parsed = parseJsonResponse(oa.text);
+      }
 
       return res.status(200).json({
         ok: true,
-        model,
+        model: modelUsed,
         roomStyle: parsed.roomStyle || null,
         detectedObjects: Array.isArray(parsed.detectedObjects) ? parsed.detectedObjects : [],
       });
@@ -324,40 +372,52 @@ CRITICAL COMPLETENESS & PRECISION RULES:
       if (!cropImg) {
         return res.status(400).json({ ok: false, error: 'Kırpılmış alan görseli eksik.' });
       }
-      const parts = [
-        {
-          text: `You are an interior architect. Identify the SINGLE primary furniture or decor object shown in Image 1 (cropped from the room in Image 2).
+      const cropPrompt = `You are an interior architect. Identify the SINGLE primary furniture or decor object shown in Image 1 (cropped from the room in Image 2).
 Return ONLY valid JSON:
 {
   "nameTr": "short descriptive Turkish name (e.g. Saksılı Zeytin Ağacı, Metal Çerçeveli Kitaplık, Yuvarlak Duvar Aynası)",
   "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+  "parametricKind": "sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_wall_unit" | "wall_tv" | "fireplace_marble" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit",
+  "primaryColorHex": "#RRGGBB (exact dominant color of this item)",
+  "accentColorHex": "#RRGGBB (secondary/leg/frame/pot color)",
   "widthCm": number,
   "depthCm": number,
   "heightCm": number,
   "mountMode": "floor" | "wall" | "ceiling" | "rug",
   "elevationCm": number,
   "visualDescriptionEn": "concise accurate English visual description of this exact object"
-}`,
-        },
+}`;
+      const parts = [
+        { text: cropPrompt },
         { inlineData: { mimeType: cropImg.mimeType, data: cropImg.data } },
       ];
       if (fullImg) parts.push({ inlineData: { mimeType: fullImg.mimeType, data: fullImg.data } });
 
-      const { model, json } = await callGeminiWithFallback(
-        apiKey,
-        VISION_MODELS,
-        {
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            temperature: 0.15,
-            maxOutputTokens: 1024,
-            responseMimeType: 'application/json',
+      let modelUsed = '';
+      let parsed = null;
+      try {
+        const { model, json } = await callGeminiWithFallback(
+          apiKey,
+          VISION_MODELS,
+          {
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              temperature: 0.15,
+              maxOutputTokens: 1024,
+              responseMimeType: 'application/json',
+            },
           },
-        },
-        'vision'
-      );
-      const parsed = parseJsonResponse(extractText(json));
-      return res.status(200).json({ ok: true, model, item: parsed });
+          'vision'
+        );
+        modelUsed = model;
+        parsed = parseJsonResponse(extractText(json));
+      } catch (gemErr) {
+        const oa = await callOpenAIVisionBackup(cropPrompt, [croppedImageDataUrl, fullRoomImageDataUrl]);
+        if (!oa) throw gemErr;
+        modelUsed = oa.model;
+        parsed = parseJsonResponse(oa.text);
+      }
+      return res.status(200).json({ ok: true, model: modelUsed, item: parsed });
     }
 
     if (action === 'isolate') {

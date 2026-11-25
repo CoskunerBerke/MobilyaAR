@@ -178,21 +178,449 @@ export function buildParametricObject3D(
     // Kick plinth
     addBox(W - 0.04, 0.07, D - 0.05, 0, 0.035, -0.015, seamMat, false);
   } else if (obj.parametricKind === 'dining_table') {
-    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.52 });
-    const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.38, metalness: 0.45 });
+    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.48 });
+    const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.42 });
     disposables.push(() => {
       topMat.dispose();
       legMat.dispose();
     });
     const topT = 0.045;
-    addBox(W, topT, D, 0, H - topT * 0.5, 0, topMat);
-    const legH = H - topT;
-    const ix = W * 0.5 - 0.1;
-    const iz = D * 0.5 - 0.1;
+    const legH = Math.max(0.3, H - topT);
+    const isRound = /yuvarlak|round|oval|daire/i.test(obj.name);
+    if (isRound) {
+      const r = Math.max(W, D) * 0.5;
+      const topGeo = new THREE.CylinderGeometry(r, r, topT, 40);
+      const colGeo = new THREE.CylinderGeometry(r * 0.22, r * 0.28, legH, 28);
+      const baseGeo = new THREE.CylinderGeometry(r * 0.48, r * 0.5, 0.035, 32);
+      disposables.push(() => {
+        topGeo.dispose();
+        colGeo.dispose();
+        baseGeo.dispose();
+      });
+      const top = new THREE.Mesh(topGeo, topMat);
+      top.position.set(0, H - topT * 0.5, 0);
+      top.scale.set(W / (r * 2), 1, D / (r * 2));
+      top.castShadow = true;
+      top.receiveShadow = true;
+      grp.add(top);
+      const col = new THREE.Mesh(colGeo, legMat);
+      col.position.set(0, legH * 0.5, 0);
+      col.castShadow = true;
+      grp.add(col);
+      const base = new THREE.Mesh(baseGeo, legMat);
+      base.position.set(0, 0.018, 0);
+      grp.add(base);
+    } else {
+      addBox(W, topT, D, 0, H - topT * 0.5, 0, topMat);
+      // Apron frame beneath tabletop for realistic carpentry look
+      addBox(W - 0.14, 0.05, D - 0.14, 0, H - topT - 0.025, 0, topMat, false);
+      const ix = Math.max(0.12, W * 0.5 - 0.09);
+      const iz = Math.max(0.12, D * 0.5 - 0.09);
+      for (const sx of [-ix, ix]) {
+        for (const sz of [-iz, iz]) {
+          addBox(0.055, legH, 0.055, sx, legH * 0.5, sz, legMat);
+        }
+      }
+    }
+  } else if (obj.parametricKind === 'dining_chair') {
+    const seatMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.78 });
+    const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.45 });
+    disposables.push(() => {
+      seatMat.dispose();
+      legMat.dispose();
+    });
+    const seatY = Math.min(0.47, H * 0.54);
+    addBox(W * 0.9, 0.065, D * 0.84, 0, seatY, 0.02, seatMat);
+    addBox(W * 0.88, H - seatY, 0.065, 0, seatY + (H - seatY) * 0.5, -D * 0.38, seatMat);
+    const ix = W * 0.38;
+    const iz = D * 0.35;
     for (const sx of [-ix, ix]) {
       for (const sz of [-iz, iz]) {
-        addBox(0.06, legH, 0.06, sx, legH * 0.5, sz, legMat);
+        addBox(0.032, seatY, 0.032, sx, seatY * 0.5, sz, legMat);
       }
+    }
+  } else if (obj.parametricKind === 'sofa') {
+    const fabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.9 });
+    const cushionMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex).lerp(new THREE.Color('#ffffff'), 0.06),
+      roughness: 0.92,
+    });
+    const pillowMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.86 });
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x262422, roughness: 0.38, metalness: 0.55 });
+    disposables.push(() => {
+      fabMat.dispose();
+      cushionMat.dispose();
+      pillowMat.dispose();
+      legMat.dispose();
+    });
+    const legH = 0.12;
+    const armW = Math.min(0.18, W * 0.11);
+    const seatH = Math.min(0.32, Math.max(0.22, H * 0.34));
+    const backD = Math.min(0.22, D * 0.24);
+    const innerW = Math.max(0.4, W - armW * 2);
+    // Base deck
+    addBox(W, 0.14, D - 0.04, 0, legH + 0.07, 0, fabMat);
+    // Backrest
+    addBox(W, H - legH - 0.08, backD, 0, legH + 0.08 + (H - legH - 0.08) * 0.5, -D * 0.5 + backD * 0.5, fabMat);
+    // Left & Right Armrests
+    const armH = Math.min(H * 0.72, legH + seatH + 0.2);
+    addBox(armW, armH - legH, D, -W * 0.5 + armW * 0.5, legH + (armH - legH) * 0.5, 0, fabMat);
+    addBox(armW, armH - legH, D, W * 0.5 - armW * 0.5, legH + (armH - legH) * 0.5, 0, fabMat);
+    // Seat cushions (2 or 3 distinct tufted sections)
+    const seats = W >= 2.0 ? 3 : W >= 1.25 ? 2 : 1;
+    const cw = (innerW - 0.02 * (seats - 1)) / seats;
+    for (let i = 0; i < seats; i++) {
+      const cx = -innerW * 0.5 + cw * (i + 0.5) + i * 0.02;
+      addBox(cw, seatH * 0.58, D - backD - 0.03, cx, legH + 0.14 + seatH * 0.29, backD * 0.5 + 0.01, cushionMat);
+      addBox(cw - 0.02, H - legH - 0.14 - seatH * 0.55, 0.14, cx, legH + 0.14 + seatH * 0.55 + (H - legH - 0.14 - seatH * 0.55) * 0.48, -D * 0.5 + backD + 0.07, cushionMat);
+    }
+    // Throw accent pillows on corners
+    if (W >= 1.2) {
+      addBox(0.32, 0.3, 0.11, -innerW * 0.38, legH + 0.14 + seatH * 0.6 + 0.14, -D * 0.5 + backD + 0.18, pillowMat);
+      addBox(0.32, 0.3, 0.11, innerW * 0.38, legH + 0.14 + seatH * 0.6 + 0.14, -D * 0.5 + backD + 0.18, pillowMat);
+    }
+    // Tapered legs
+    const lx = W * 0.5 - 0.12;
+    const lz = D * 0.5 - 0.1;
+    for (const sx of [-lx, lx]) {
+      for (const sz of [-lz, lz]) {
+        addBox(0.04, legH, 0.04, sx, legH * 0.5, sz, legMat);
+      }
+    }
+  } else if (obj.parametricKind === 'armchair') {
+    const fabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.9 });
+    const cushionMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex).lerp(new THREE.Color('#ffffff'), 0.05),
+      roughness: 0.92,
+    });
+    const pillowMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.86 });
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x262422, roughness: 0.4, metalness: 0.4 });
+    disposables.push(() => {
+      fabMat.dispose();
+      cushionMat.dispose();
+      pillowMat.dispose();
+      legMat.dispose();
+    });
+    const legH = 0.1;
+    const armW = Math.min(0.15, W * 0.18);
+    const innerW = Math.max(0.36, W - armW * 2);
+    const backD = Math.min(0.18, D * 0.24);
+    addBox(W, 0.16, D - 0.03, 0, legH + 0.08, 0, fabMat);
+    addBox(W, H - legH - 0.08, backD, 0, legH + 0.08 + (H - legH - 0.08) * 0.5, -D * 0.5 + backD * 0.5, fabMat);
+    const armH = H * 0.72;
+    addBox(armW, armH - legH, D, -W * 0.5 + armW * 0.5, legH + (armH - legH) * 0.5, 0, fabMat);
+    addBox(armW, armH - legH, D, W * 0.5 - armW * 0.5, legH + (armH - legH) * 0.5, 0, fabMat);
+    addBox(innerW, 0.17, D - backD - 0.03, 0, legH + 0.24, backD * 0.5 + 0.01, cushionMat);
+    // Decorative accent pillow
+    addBox(Math.min(0.34, innerW * 0.58), 0.28, 0.1, 0, legH + 0.46, -D * 0.5 + backD + 0.12, pillowMat);
+    for (const sx of [-W * 0.38, W * 0.38]) {
+      for (const sz of [-D * 0.36, D * 0.36]) {
+        addBox(0.038, legH, 0.038, sx, legH * 0.5, sz, legMat);
+      }
+    }
+  } else if (obj.parametricKind === 'coffee_table_round') {
+    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.42, metalness: 0.08 });
+    const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.5, metalness: 0.2 });
+    const bookMat = new THREE.MeshStandardMaterial({ color: 0xeae5db, roughness: 0.8 });
+    disposables.push(() => {
+      topMat.dispose();
+      baseMat.dispose();
+      bookMat.dispose();
+    });
+    const r = Math.max(W, D) * 0.5;
+    const topT = 0.04;
+    const topGeo = new THREE.CylinderGeometry(r, r, topT, 40);
+    const pedGeo = new THREE.CylinderGeometry(r * 0.42, r * 0.46, Math.max(0.15, H - topT), 32);
+    disposables.push(() => {
+      topGeo.dispose();
+      pedGeo.dispose();
+    });
+    const top = new THREE.Mesh(topGeo, topMat);
+    top.position.set(0, H - topT * 0.5, 0);
+    top.scale.set(W / (r * 2), 1, D / (r * 2));
+    top.castShadow = true;
+    top.receiveShadow = true;
+    grp.add(top);
+    const ped = new THREE.Mesh(pedGeo, baseMat);
+    ped.position.set(0, (H - topT) * 0.5, 0);
+    ped.castShadow = true;
+    grp.add(ped);
+    // Subtle decorative coffee-table book
+    addBox(Math.min(0.26, W * 0.35), 0.028, Math.min(0.2, D * 0.28), -W * 0.1, H + 0.014, 0.02, bookMat, false);
+  } else if (obj.parametricKind === 'coffee_table_rect') {
+    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.45 });
+    const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.35, metalness: 0.5 });
+    disposables.push(() => {
+      topMat.dispose();
+      legMat.dispose();
+    });
+    const topT = 0.042;
+    addBox(W, topT, D, 0, H - topT * 0.5, 0, topMat);
+    if (H > 0.28) {
+      addBox(W - 0.14, 0.022, D - 0.14, 0, H * 0.36, 0, topMat, false);
+    }
+    const legH = Math.max(0.15, H - topT);
+    for (const sx of [-W * 0.44, W * 0.44]) {
+      for (const sz of [-D * 0.42, D * 0.42]) {
+        addBox(0.036, legH, 0.036, sx, legH * 0.5, sz, legMat);
+      }
+    }
+  } else if (obj.parametricKind === 'desk' || obj.parametricKind === 'vanity_table') {
+    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.5 });
+    const cabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.58 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: 0x252527, roughness: 0.35, metalness: 0.7 });
+    const screenMat = new THREE.MeshStandardMaterial({ color: 0x121316, roughness: 0.14, metalness: 0.35 });
+    disposables.push(() => {
+      topMat.dispose();
+      cabMat.dispose();
+      metalMat.dispose();
+      screenMat.dispose();
+    });
+    const topT = 0.04;
+    const legH = Math.max(0.45, H - topT);
+    addBox(W, topT, D, 0, H - topT * 0.5, 0, topMat);
+    if (obj.parametricKind === 'desk' && W >= 1.0) {
+      // Right pedestal drawer unit + left slim steel frame legs
+      const pedW = Math.min(0.45, W * 0.3);
+      addBox(pedW, legH, D - 0.06, W * 0.5 - pedW * 0.5 - 0.03, legH * 0.5, 0, cabMat);
+      for (let d = 0; d < 3; d++) {
+        const dy = legH * (0.2 + d * 0.3);
+        addBox(pedW * 0.35, 0.012, 0.02, W * 0.5 - pedW * 0.5 - 0.03, dy, (D - 0.06) * 0.5 + 0.01, metalMat, false);
+      }
+      // Left leg pair
+      addBox(0.036, legH, 0.036, -W * 0.5 + 0.06, legH * 0.5, -D * 0.5 + 0.06, metalMat);
+      addBox(0.036, legH, 0.036, -W * 0.5 + 0.06, legH * 0.5, D * 0.5 - 0.06, metalMat);
+      // Slim desktop monitor
+      addBox(0.56, 0.34, 0.024, -W * 0.08, H + 0.25, -D * 0.26, screenMat);
+      addBox(0.04, 0.12, 0.04, -W * 0.08, H + 0.06, -D * 0.28, metalMat, false);
+      addBox(0.18, 0.012, 0.14, -W * 0.08, H + 0.006, -D * 0.26, metalMat, false);
+    } else {
+      // Vanity / console desk with slim apron drawers & 4 legs
+      addBox(W - 0.08, 0.13, D - 0.06, 0, H - topT - 0.065, 0, topMat);
+      addBox(0.02, 0.015, 0.02, -W * 0.22, H - topT - 0.065, D * 0.5 - 0.01, metalMat, false);
+      addBox(0.02, 0.015, 0.02, W * 0.22, H - topT - 0.065, D * 0.5 - 0.01, metalMat, false);
+      for (const sx of [-W * 0.45, W * 0.45]) {
+        for (const sz of [-D * 0.42, D * 0.42]) {
+          addBox(0.036, legH, 0.036, sx, legH * 0.5, sz, cabMat);
+        }
+      }
+    }
+  } else if (obj.parametricKind === 'office_chair') {
+    const seatMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.62 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.32, metalness: 0.72 });
+    disposables.push(() => {
+      seatMat.dispose();
+      metalMat.dispose();
+    });
+    const seatY = Math.min(0.48, H * 0.52);
+    // 5-star caster base + gas lift cylinder
+    const stemGeo = new THREE.CylinderGeometry(0.025, 0.028, seatY - 0.08, 16);
+    disposables.push(() => stemGeo.dispose());
+    const stem = new THREE.Mesh(stemGeo, metalMat);
+    stem.position.y = 0.08 + (seatY - 0.08) * 0.5;
+    grp.add(stem);
+    for (let i = 0; i < 5; i++) {
+      const ang = (i / 5) * Math.PI * 2;
+      const armGeo = new THREE.BoxGeometry(0.03, 0.026, Math.min(0.28, W * 0.45));
+      disposables.push(() => armGeo.dispose());
+      const arm = new THREE.Mesh(armGeo, metalMat);
+      arm.rotation.y = ang;
+      arm.position.set(Math.sin(ang) * 0.13, 0.06, Math.cos(ang) * 0.13);
+      grp.add(arm);
+    }
+    // Contoured upholstered seat + backrest + armrests
+    addBox(W * 0.82, 0.08, D * 0.78, 0, seatY, 0.02, seatMat);
+    addBox(W * 0.78, H - seatY - 0.04, 0.08, 0, seatY + (H - seatY) * 0.5, -D * 0.34, seatMat);
+    addBox(0.04, 0.2, D * 0.52, -W * 0.42, seatY + 0.12, 0, metalMat, false);
+    addBox(0.04, 0.2, D * 0.52, W * 0.42, seatY + 0.12, 0, metalMat, false);
+  } else if (obj.parametricKind === 'nightstand') {
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.56 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.65 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      accentMat.dispose();
+    });
+    const legH = Math.min(0.1, H * 0.18);
+    const boxH = Math.max(0.2, H - legH);
+    addBox(W, boxH, D, 0, legH + boxH * 0.5, 0, bodyMat);
+    addBox(W * 0.34, 0.014, 0.02, 0, legH + boxH * 0.72, D * 0.5 + 0.01, accentMat, false);
+    addBox(W * 0.34, 0.014, 0.02, 0, legH + boxH * 0.32, D * 0.5 + 0.01, accentMat, false);
+    for (const sx of [-W * 0.42, W * 0.42]) {
+      for (const sz of [-D * 0.4, D * 0.4]) {
+        addBox(0.028, legH, 0.028, sx, legH * 0.5, sz, accentMat);
+      }
+    }
+  } else if (obj.parametricKind === 'sideboard') {
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.58 });
+    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex).multiplyScalar(0.82), roughness: 0.65 });
+    const handleMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.34, metalness: 0.68 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      seamMat.dispose();
+      handleMat.dispose();
+    });
+    const legH = Math.min(0.14, H * 0.18);
+    const cabH = Math.max(0.25, H - legH);
+    addBox(W, cabH, D - 0.02, 0, legH + cabH * 0.5, -0.01, bodyMat);
+    const doors = Math.max(2, Math.min(5, Math.round(W / 0.48)));
+    const dw = (W - 0.02) / doors;
+    for (let i = 0; i < doors; i++) {
+      const dx = -W * 0.5 + 0.01 + dw * (i + 0.5);
+      addBox(dw - 0.012, cabH - 0.04, 0.02, dx, legH + cabH * 0.5, D * 0.5 - 0.01, bodyMat);
+      if (i > 0) addBox(0.008, cabH - 0.04, 0.01, dx - dw * 0.5, legH + cabH * 0.5, D * 0.5 - 0.014, seamMat, false);
+      addBox(0.02, 0.02, 0.02, dx + (i % 2 === 0 ? dw * 0.34 : -dw * 0.34), legH + cabH * 0.72, D * 0.5 + 0.008, handleMat, false);
+    }
+    for (const sx of [-W * 0.45, W * 0.45]) {
+      for (const sz of [-D * 0.38, D * 0.38]) {
+        addBox(0.032, legH, 0.032, sx, legH * 0.5, sz, handleMat);
+      }
+    }
+  } else if (obj.parametricKind === 'ottoman') {
+    const fabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.92 });
+    const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.5 });
+    disposables.push(() => {
+      fabMat.dispose();
+      baseMat.dispose();
+    });
+    const r = Math.max(W, D) * 0.5;
+    const bodyGeo = new THREE.CylinderGeometry(r, r * 0.96, Math.max(0.18, H - 0.03), 32);
+    const rimGeo = new THREE.CylinderGeometry(r * 0.92, r * 0.92, 0.03, 28);
+    disposables.push(() => {
+      bodyGeo.dispose();
+      rimGeo.dispose();
+    });
+    const body = new THREE.Mesh(bodyGeo, fabMat);
+    body.position.set(0, 0.03 + (H - 0.03) * 0.5, 0);
+    body.scale.set(W / (r * 2), 1, D / (r * 2));
+    body.castShadow = true;
+    body.receiveShadow = true;
+    grp.add(body);
+    const rim = new THREE.Mesh(rimGeo, baseMat);
+    rim.position.set(0, 0.015, 0);
+    grp.add(rim);
+  } else if (obj.parametricKind === 'potted_plant') {
+    // Primary color = foliage / pot tint so user can even recolor the pot or foliage!
+    const isGreenish = (() => {
+      const c = new THREE.Color(primaryHex);
+      return c.g > c.r * 1.06 && c.g > c.b * 1.02;
+    })();
+    const potColor = isGreenish ? accentHex || '#3a3835' : primaryHex;
+    const leafColor = isGreenish ? primaryHex : '#4c6444';
+    const potMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(potColor), roughness: 0.72 });
+    const soilMat = new THREE.MeshStandardMaterial({ color: 0x3b2f26, roughness: 0.96 });
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x624936, roughness: 0.88 });
+    const leafMat1 = new THREE.MeshStandardMaterial({ color: new THREE.Color(leafColor), roughness: 0.82 });
+    const leafMat2 = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(leafColor).multiplyScalar(0.78),
+      roughness: 0.85,
+    });
+    disposables.push(() => {
+      potMat.dispose();
+      soilMat.dispose();
+      trunkMat.dispose();
+      leafMat1.dispose();
+      leafMat2.dispose();
+    });
+
+    const potR = Math.min(0.24, Math.min(W, D) * 0.3);
+    const potH = Math.min(0.42, H * 0.24);
+    const potGeo = new THREE.CylinderGeometry(potR, potR * 0.76, potH, 24);
+    const soilGeo = new THREE.CylinderGeometry(potR * 0.92, potR * 0.92, 0.02, 20);
+    const trunkH = Math.max(0.2, H * 0.46);
+    const trunkGeo = new THREE.CylinderGeometry(0.018, 0.032, trunkH, 10);
+    disposables.push(() => {
+      potGeo.dispose();
+      soilGeo.dispose();
+      trunkGeo.dispose();
+    });
+
+    const pot = new THREE.Mesh(potGeo, potMat);
+    pot.position.y = potH * 0.5;
+    pot.castShadow = true;
+    pot.receiveShadow = true;
+    grp.add(pot);
+
+    const soil = new THREE.Mesh(soilGeo, soilMat);
+    soil.position.y = potH - 0.01;
+    grp.add(soil);
+
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+    trunk.position.y = potH + trunkH * 0.45;
+    trunk.castShadow = true;
+    grp.add(trunk);
+
+    // Organic multi-cluster canopy (looks like realistic olive / ficus tree!)
+    const canopyR = Math.min(W, D) * 0.46;
+    const crownBaseY = potH + trunkH * 0.72;
+    const crownTopY = H - canopyR * 0.38;
+    const clusters: Array<[number, number, number, number, boolean]> = [
+      [0, crownTopY, 0, canopyR * 0.58, true],
+      [-canopyR * 0.42, (crownBaseY + crownTopY) * 0.52, canopyR * 0.24, canopyR * 0.48, false],
+      [canopyR * 0.4, (crownBaseY + crownTopY) * 0.55, -canopyR * 0.2, canopyR * 0.46, true],
+      [canopyR * 0.16, crownBaseY + (crownTopY - crownBaseY) * 0.25, canopyR * 0.4, canopyR * 0.42, false],
+      [-canopyR * 0.24, crownBaseY + (crownTopY - crownBaseY) * 0.22, -canopyR * 0.36, canopyR * 0.44, true],
+      [0, crownBaseY + (crownTopY - crownBaseY) * 0.65, -canopyR * 0.14, canopyR * 0.5, false],
+    ];
+    const leafGeo = new THREE.DodecahedronGeometry(1, 1);
+    disposables.push(() => leafGeo.dispose());
+    clusters.forEach(([cx, cy, cz, cr, bright], idx) => {
+      const m = new THREE.Mesh(leafGeo, bright ? leafMat1 : leafMat2);
+      m.position.set(cx, Math.max(potH + 0.12, cy), cz);
+      m.scale.set(cr, cr * 0.88, cr);
+      m.rotation.set(idx * 0.5, idx * 0.9, idx * 0.3);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      grp.add(m);
+    });
+  } else if (obj.parametricKind === 'table_lamp') {
+    const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.65 });
+    const shadeMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accentHex || '#fff4dc'),
+      emissive: new THREE.Color(0xffdfa6),
+      emissiveIntensity: 0.65,
+      roughness: 0.45,
+    });
+    const r = Math.min(W, D) * 0.46;
+    const baseGeo = new THREE.CylinderGeometry(r * 0.42, r * 0.52, H * 0.45, 24);
+    const domeGeo = new THREE.SphereGeometry(r, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    disposables.push(() => {
+      baseMat.dispose();
+      shadeMat.dispose();
+      baseGeo.dispose();
+      domeGeo.dispose();
+    });
+    const base = new THREE.Mesh(baseGeo, baseMat);
+    base.position.y = H * 0.225;
+    base.castShadow = true;
+    grp.add(base);
+    const dome = new THREE.Mesh(domeGeo, shadeMat);
+    dome.position.y = H - r * 0.62;
+    grp.add(dome);
+  } else if (obj.parametricKind === 'stairs') {
+    const treadMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.58 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.35, metalness: 0.72 });
+    disposables.push(() => {
+      treadMat.dispose();
+      steelMat.dispose();
+    });
+    const steps = Math.max(5, Math.min(12, Math.round(H / 0.21)));
+    for (let i = 0; i < steps; i++) {
+      const t = (i + 0.5) / steps;
+      const sy = H * t;
+      const sz = -D * 0.5 + D * t;
+      addBox(W, 0.048, (D / steps) * 1.15, 0, sy, sz, treadMat);
+    }
+    // Side steel stringers
+    const diagLen = Math.hypot(D, H);
+    const angle = Math.atan2(H, D);
+    for (const sx of [-W * 0.44, W * 0.44]) {
+      const stGeo = new THREE.BoxGeometry(0.05, 0.14, diagLen);
+      disposables.push(() => stGeo.dispose());
+      const st = new THREE.Mesh(stGeo, steelMat);
+      st.position.set(sx, H * 0.5 - 0.06, 0);
+      st.rotation.x = -angle;
+      st.castShadow = true;
+      grp.add(st);
     }
   } else if (obj.parametricKind === 'bookshelf') {
     const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.6 });

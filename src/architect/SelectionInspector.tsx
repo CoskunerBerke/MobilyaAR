@@ -57,6 +57,25 @@ interface Props {
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
 const WALL_SHORT: Record<WallId, string> = { north: 'Üst A', east: 'Sağ B', south: 'Alt C', west: 'Sol D' };
 
+const OBJECT_COLOR_SWATCHES: Array<{ name: string; hex: string }> = [
+  { name: 'Beyaz', hex: '#f2f0ea' },
+  { name: 'Krem', hex: '#e4dccb' },
+  { name: 'Taş Bej', hex: '#bfb4a2' },
+  { name: 'Açık Meşe', hex: '#c8a376' },
+  { name: 'Ceviz', hex: '#6f4e37' },
+  { name: 'Hardal Sarı', hex: '#d8a625' },
+  { name: 'Güneş Sarısı', hex: '#eab308' },
+  { name: 'Taba / Konyak', hex: '#a86032' },
+  { name: 'Kiremit', hex: '#a84f3d' },
+  { name: 'Adaçayı Yeşil', hex: '#5f7359' },
+  { name: 'Zümrüt Yeşil', hex: '#2e513c' },
+  { name: 'Mavi', hex: '#2f6699' },
+  { name: 'Lacivert', hex: '#1e3557' },
+  { name: 'Gri', hex: '#7c7d80' },
+  { name: 'Antrasit', hex: '#2c2e33' },
+  { name: 'Siyah', hex: '#161618' },
+];
+
 export const SelectionInspector: React.FC<Props> = ({
   project,
   selection,
@@ -1118,22 +1137,63 @@ export const SelectionInspector: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Colors for parametric modules */}
-        {obj.parametricKind && (
-          <div className="border-t border-stone-200 pt-3 space-y-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Malzeme Rengi</span>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6]">
-                <span className="text-[10px] text-stone-600">Ana Renk</span>
-                <input
-                  type="color"
-                  value={obj.parametricColorHex || '#ece9e2'}
-                  onChange={(e) => patchObj({ parametricColorHex: e.target.value })}
-                  className="w-6 h-5 border border-stone-300 cursor-pointer"
+        {/* Live Material / Color Editor for EVERY 3D object (Instant Pinterest, Parametric, Catalog GLB, RunPod GLB!) */}
+        <div className="border-t border-stone-200 pt-3 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              Ürün Rengini Değiştir
+            </span>
+            {!obj.parametricKind && obj.tintHex && (
+              <button
+                type="button"
+                onClick={() => patchObj({ tintHex: undefined })}
+                className="text-[10px] font-semibold underline text-stone-600 hover:text-stone-950"
+              >
+                Orijinal Renk
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-8 gap-1">
+            {OBJECT_COLOR_SWATCHES.map((sw) => {
+              const current = (obj.parametricKind ? obj.parametricColorHex || '' : obj.tintHex || '').toLowerCase();
+              const active = current === sw.hex.toLowerCase();
+              return (
+                <button
+                  key={sw.hex}
+                  type="button"
+                  title={sw.name}
+                  onClick={() =>
+                    obj.parametricKind
+                      ? patchObj({ parametricColorHex: sw.hex })
+                      : patchObj({ tintHex: sw.hex })
+                  }
+                  className={`h-6 border transition ${
+                    active ? 'border-stone-950 ring-1 ring-stone-950 scale-105' : 'border-stone-300 hover:border-stone-700'
+                  }`}
+                  style={{ backgroundColor: sw.hex }}
                 />
-              </label>
-              <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6]">
-                <span className="text-[10px] text-stone-600">Detay</span>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6] cursor-pointer">
+              <span className="text-[10px] text-stone-700 font-medium">Özel Ana Renk</span>
+              <input
+                type="color"
+                value={(obj.parametricKind ? obj.parametricColorHex : obj.tintHex) || '#d8a625'}
+                onChange={(e) =>
+                  obj.parametricKind
+                    ? patchObj({ parametricColorHex: e.target.value })
+                    : patchObj({ tintHex: e.target.value })
+                }
+                className="w-6 h-5 border border-stone-300 cursor-pointer"
+              />
+            </label>
+            {obj.parametricKind ? (
+              <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6] cursor-pointer">
+                <span className="text-[10px] text-stone-700 font-medium">Ayak / Detay</span>
                 <input
                   type="color"
                   value={obj.parametricAccentHex || '#272624'}
@@ -1141,9 +1201,27 @@ export const SelectionInspector: React.FC<Props> = ({
                   className="w-6 h-5 border border-stone-300 cursor-pointer"
                 />
               </label>
-            </div>
+            ) : (
+              <div className="flex items-center justify-center border border-stone-200 px-2 py-1.5 bg-[#faf9f6] text-[10px] text-stone-500">
+                3B Mesh Tonlama
+              </div>
+            )}
           </div>
-        )}
+        </div>
+
+        {/* Prominent 1-Click Remove Action (e.g. "Saksıyı kaldırın!") */}
+        <button
+          type="button"
+          onClick={() => {
+            onUpdateProject((p) => ({ ...p, objects: p.objects.filter((o) => o.id !== obj.id) }));
+            onToast(`"${obj.name}" odadan kaldırıldı.`);
+            onClose();
+          }}
+          className="w-full py-2 border border-red-200 hover:border-red-700 bg-red-50 hover:bg-red-700 text-red-700 hover:text-white text-[11px] font-semibold flex items-center justify-center gap-1.5 transition"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          <span>Bu Eşyayı Odadan Kaldır</span>
+        </button>
 
         {obj.glbUrl && (
           <a

@@ -1,4 +1,4 @@
-import type { FloorMaterialKind, WallId, WallPattern } from './types';
+import type { FloorMaterialKind, ParametricFurnitureKind, WallId, WallPattern } from './types';
 
 export interface PinterestServerConfig {
   geminiConfigured: boolean;
@@ -23,6 +23,9 @@ export interface PinterestDetectedObject {
   id: string;
   nameTr: string;
   category: string;
+  parametricKind?: ParametricFurnitureKind;
+  primaryColorHex?: string;
+  accentColorHex?: string;
   /** [ymin, xmin, ymax, xmax] in 0..1000 */
   box2d: [number, number, number, number];
   widthCm: number;
@@ -35,6 +38,142 @@ export interface PinterestDetectedObject {
   relativeZ: number;
   facingDeg: number;
   visualDescriptionEn: string;
+}
+
+const VALID_PARAMETRIC_SET = new Set<ParametricFurnitureKind>([
+  'fireplace_marble',
+  'tv_wall_unit',
+  'wall_tv',
+  'rug_custom',
+  'chandelier',
+  'wardrobe',
+  'dining_table',
+  'dining_chair',
+  'bookshelf',
+  'bed_frame',
+  'nightstand',
+  'sofa',
+  'armchair',
+  'coffee_table_round',
+  'coffee_table_rect',
+  'desk',
+  'office_chair',
+  'vanity_table',
+  'sideboard',
+  'ottoman',
+  'potted_plant',
+  'table_lamp',
+  'stairs',
+  'ac_unit',
+  'wall_mirror',
+  'floor_lamp',
+  'console_table',
+  'wall_art',
+]);
+
+function normTr(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/ı/g, 'i')
+    .replace(/İ/g, 'i')
+    .replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u')
+    .replace(/ş/g, 's')
+    .replace(/ö/g, 'o')
+    .replace(/ç/g, 'c');
+}
+
+/**
+ * Guarantees EVERY Pinterest item maps to its closest realistic editable 3D archetype
+ * so the entire Pinterest room can assemble instantaneously in 3D with zero failures.
+ */
+export function resolvePinterestArchetype(item: PinterestDetectedObject): ParametricFurnitureKind {
+  if (item.parametricKind && VALID_PARAMETRIC_SET.has(item.parametricKind)) {
+    return item.parametricKind;
+  }
+  const t = normTr(`${item.nameTr} ${item.category} ${item.visualDescriptionEn}`);
+  if (item.mountMode === 'rug' || /hali|kilim|rug|carpet/.test(t)) return 'rug_custom';
+  if (/ayna|mirror/.test(t)) return 'wall_mirror';
+  if (/tablo|poster|resim|cerceve|painting|artwork|wall art/.test(t)) return 'wall_art';
+  if (/somine|fireplace/.test(t)) return 'fireplace_marble';
+  if ((/tv|televizyon|media/.test(t)) && (/unite|dolap|unit|stand|wall/.test(t))) return 'tv_wall_unit';
+  if (/televizyon|\btv\b|oled|ekran|screen/.test(t)) return 'wall_tv';
+  if (/bitki|saksi|agac|zeytin|cicek|plant|tree|ficus|monstera/.test(t)) return 'potted_plant';
+  if (/merdiven|stair/.test(t)) return 'stairs';
+  if (/yatak|bed|mezanin/.test(t)) return 'bed_frame';
+  if (/komodin|nightstand|bedside table/.test(t)) return 'nightstand';
+  if (/makyaj|vanity|dressing table/.test(t)) return 'vanity_table';
+  if (/calisma masa|ofis masa|bilgisayar masa|desk/.test(t)) return 'desk';
+  if (/calisma kolt|ofis kolt|doner|office chair|desk chair/.test(t)) return 'office_chair';
+  if (/yemek masa|dining table|\bmasa\b|table/.test(t) && !/sehpa|coffee/.test(t)) return 'dining_table';
+  if (/yuvarlak.*sehpa|round.*table|coffee.*round/.test(t)) return 'coffee_table_round';
+  if (/sehpa|coffee table|side table/.test(t)) {
+    return Math.abs(item.widthCm - item.depthCm) <= 15 && item.widthCm <= 95 ? 'coffee_table_round' : 'coffee_table_rect';
+  }
+  if (/puf|pouf|ottoman|tabure|stool/.test(t)) return 'ottoman';
+  if (/berjer|tekli.*kolt|armchair|accent chair|lounge chair/.test(t)) return 'armchair';
+  if (/sandalye|chair/.test(t)) return 'dining_chair';
+  if (/kanepe|koltuk|sofa|couch|l-koltuk|oturma/.test(t)) return 'sofa';
+  if (/kitaplik|bookshelf|bookcase|raf|shelf/.test(t)) return 'bookshelf';
+  if (/gardirop|gardrop|wardrobe|closet/.test(t)) return 'wardrobe';
+  if (/konsol|console/.test(t)) return 'console_table';
+  if (/dolap|depolama|bufe|sideboard|cabinet|storage|credenza/.test(t)) return 'sideboard';
+  if (item.mountMode === 'ceiling' || /avize|sarkit|chandelier|pendant/.test(t)) return 'chandelier';
+  if (/lambader|ayakli lamba|floor lamp/.test(t)) return 'floor_lamp';
+  if (/abajur|lamba|lamp|lighting|aydinlatma/.test(t)) return 'table_lamp';
+  if (/klima|air conditioner/.test(t)) return 'ac_unit';
+  return 'sideboard';
+}
+
+export function isValidHexColor(s?: string): s is string {
+  return Boolean(s && /^#[0-9a-fA-F]{6}$/.test(s.trim()));
+}
+
+/**
+ * Samples the center-weighted dominant color from a cropped Pinterest image
+ * as an automatic fallback when AI omits a hex color or user draws a custom box.
+ */
+export function sampleDominantHexFromDataUrl(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = 32;
+        c.height = 32;
+        const ctx = c.getContext('2d');
+        if (!ctx) return resolve('#8d8476');
+        ctx.drawImage(img, 0, 0, 32, 32);
+        const { data } = ctx.getImageData(6, 6, 20, 20);
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const pr = data[i];
+          const pg = data[i + 1];
+          const pb = data[i + 2];
+          // Skip near-pure white studio margins
+          if (pr > 246 && pg > 246 && pb > 246) continue;
+          r += pr;
+          g += pg;
+          b += pb;
+          n++;
+        }
+        if (n === 0) return resolve('#8d8476');
+        const hex =
+          '#' +
+          [Math.round(r / n), Math.round(g / n), Math.round(b / n)]
+            .map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0'))
+            .join('');
+        resolve(hex);
+      } catch {
+        resolve('#8d8476');
+      }
+    };
+    img.onerror = () => resolve('#8d8476');
+    img.src = dataUrl;
+  });
 }
 
 const GEMINI_KEY_STORAGE = 'mekanar_arch_gemini_key_v1';
@@ -206,6 +345,9 @@ export async function identifyCroppedPinterestObject(params: {
 }): Promise<{
   nameTr: string;
   category: string;
+  parametricKind?: ParametricFurnitureKind;
+  primaryColorHex?: string;
+  accentColorHex?: string;
   widthCm: number;
   depthCm: number;
   heightCm: number;

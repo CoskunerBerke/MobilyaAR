@@ -49,8 +49,11 @@ const COLOR_KEYWORDS: Array<{ keys: string[]; hex: string }> = [
   { keys: ['krem', 'bej', 'kum'], hex: '#e2d9c8' },
   { keys: ['ceviz', 'kahve', 'ahsap', 'koyu ahsap'], hex: '#78563c' },
   { keys: ['mese', 'acik ahsap'], hex: '#c29e74' },
-  { keys: ['yesil', 'adacayi', 'zeytin'], hex: '#6c7c68' },
-  { keys: ['lacivert', 'mavi'], hex: '#2f455c' },
+  { keys: ['yesil', 'adacayi', 'zeytin'], hex: '#586d52' },
+  { keys: ['mavi', 'turkuaz', 'gok'], hex: '#2f6699' },
+  { keys: ['lacivert', 'koyu mavi'], hex: '#1e3557' },
+  { keys: ['sari', 'hardal', 'limon'], hex: '#e2ad24' },
+  { keys: ['turuncu', 'taba', 'konyak'], hex: '#b36230' },
   { keys: ['bordo', 'kirmizi', 'terracotta', 'kiremit'], hex: '#a45d4a' },
   { keys: ['altin', 'pirinc', 'gold', 'bronz'], hex: '#c8a86b' },
   { keys: ['mermer'], hex: '#ece9e2' },
@@ -367,15 +370,81 @@ export function parseQuickAddQuery(raw: string, catalog: Product[], ceilingM = 2
     };
   }
 
-  // 11) Yemek Masası / Çalışma Masası
-  if (norm.includes('masa')) {
+  // 10.5) Saksı Bitki / Ağaç
+  if (norm.includes('saksi') || norm.includes('bitki') || norm.includes('agac') || norm.includes('zeytin') || norm.includes('cicek')) {
     return {
       kind: 'parametric',
-      parametricKind: 'dining_table',
-      name: norm.includes('calisma') ? 'Çalışma Masası' : 'Yemek Masası',
+      parametricKind: 'potted_plant',
+      name: 'Saksılı İç Mekan Bitkisi',
+      category: 'Bitki',
+      widthCm: dims.w || 75,
+      depthCm: dims.d || 75,
+      heightCm: dims.h || 175,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#4c6444',
+      accentHex: '#373532',
+    };
+  }
+
+  // 10.6) Komodin / Puf / Ofis Koltuğu
+  if (norm.includes('komodin')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'nightstand',
+      name: 'Komodin',
+      category: 'Depolama',
+      widthCm: dims.w || 52,
+      depthCm: dims.d || 42,
+      heightCm: dims.h || 54,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#252527',
+      accentHex: '#b49263',
+    };
+  }
+  if (norm.includes('puf') || norm.includes('tabure')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'ottoman',
+      name: 'Yuvarlak Puf',
+      category: 'Oturma',
+      widthCm: dims.w || 50,
+      depthCm: dims.d || 50,
+      heightCm: dims.h || 44,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#e1d9cb',
+      accentHex: '#3c3834',
+    };
+  }
+  if (norm.includes('ofis kolt') || norm.includes('calisma kolt') || norm.includes('doner kolt')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'office_chair',
+      name: 'Çalışma Koltuğu',
+      category: 'Sandalye',
+      widthCm: dims.w || 64,
+      depthCm: dims.d || 64,
+      heightCm: dims.h || 92,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#a45d31',
+      accentHex: '#232325',
+    };
+  }
+
+  // 11) Yemek Masası / Çalışma Masası / Makyaj Masası
+  if (norm.includes('masa')) {
+    const isDesk = norm.includes('calisma') || norm.includes('ofis') || norm.includes('bilgisayar');
+    const isVanity = norm.includes('makyaj');
+    return {
+      kind: 'parametric',
+      parametricKind: isDesk ? 'desk' : isVanity ? 'vanity_table' : 'dining_table',
+      name: isDesk ? 'Çalışma Masası' : isVanity ? 'Makyaj Masası' : 'Yemek Masası',
       category: 'Masa',
-      widthCm: dims.w || (norm.includes('calisma') ? 140 : 180),
-      depthCm: dims.d || (norm.includes('calisma') ? 70 : 95),
+      widthCm: dims.w || (isDesk ? 150 : isVanity ? 105 : 180),
+      depthCm: dims.d || (isDesk ? 70 : isVanity ? 45 : 95),
       heightCm: 75,
       yCm: 0,
       mountMode: 'floor',

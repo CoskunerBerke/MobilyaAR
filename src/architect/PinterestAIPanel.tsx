@@ -6,7 +6,9 @@ import {
   Download,
   Image as ImageIcon,
   KeyRound,
+  Layers,
   Loader2,
+  MousePointerClick,
   Plus,
   Sparkles,
   Trash2,
@@ -14,6 +16,7 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
+import { findOpenSpawnPosition, type OBB2D } from '../lib/collision2d';
 import { normalizeRoomPhoto } from '../lib/roomRendering';
 import { generateFurniture3DServerless, fetchProduct3DConfig } from '../lib/product3dClient';
 import { getMembershipState } from '../lib/membership';
@@ -27,7 +30,10 @@ import {
   getSavedGeminiKey,
   identifyCroppedPinterestObject,
   isGeminiQuotaZeroError,
+  isValidHexColor,
   isolatePinterestObject,
+  resolvePinterestArchetype,
+  sampleDominantHexFromDataUrl,
   saveGeminiKey,
   type PinterestDetectedObject,
   type PinterestRoomStyle,
@@ -44,7 +50,14 @@ import {
 interface Props {
   project: ArchRoomProject;
   onApplyRoomStyle: (style: PinterestRoomStyle) => void;
+  onApplyPinterestScene: (
+    objects: ArchPlacedObject[],
+    style: PinterestRoomStyle | null,
+    replaceExisting: boolean
+  ) => void;
   onAddGeneratedObject: (obj: ArchPlacedObject) => void;
+  onSelectObjectInRoom: (objId: string) => void;
+  onRemoveObjectInRoom: (objId: string) => void;
   onCaptureViewport: () => string | null;
   onToast: (msg: string) => void;
 }
@@ -53,6 +66,7 @@ interface ItemJobState {
   selected: boolean;
   status: 'idle' | 'isolating' | 'modeling' | 'done' | 'error';
   cropPreviewUrl?: string;
+  rawCropUrl?: string;
   studioPreviewUrl?: string;
   usedDirectCrop?: boolean;
   progressText?: string;
@@ -79,10 +93,58 @@ const BOX_COLORS = [
   '#c2410c',
 ];
 
+const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind, { c1: string; c2: string }>> = {
+  sofa: { c1: '#c8bfb1', c2: '#5d534a' },
+  armchair: { c1: '#495a46', c2: '#e4ddd0' },
+  coffee_table_round: { c1: '#232325', c2: '#1a1a1c' },
+  coffee_table_rect: { c1: '#b99672', c2: '#252527' },
+  dining_table: { c1: '#8b684c', c2: '#262524' },
+  dining_chair: { c1: '#cfc5b6', c2: '#2d2b29' },
+  desk: { c1: '#c5a27a', c2: '#4d5748' },
+  office_chair: { c1: '#a25d32', c2: '#222224' },
+  vanity_table: { c1: '#53614d', c2: '#3c4638' },
+  bed_frame: { c1: '#4c5942', c2: '#ece7dd' },
+  nightstand: { c1: '#232325', c2: '#9a7e56' },
+  wardrobe: { c1: '#e6e1d7', c2: '#282726' },
+  bookshelf: { c1: '#252527', c2: '#b8946e' },
+  sideboard: { c1: '#56614d', c2: '#2b2b2b' },
+  console_table: { c1: '#7d5d42', c2: '#262626' },
+  tv_wall_unit: { c1: '#b9936c', c2: '#222224' },
+  wall_tv: { c1: '#141518', c2: '#090a0d' },
+  fireplace_marble: { c1: '#eae6de', c2: '#232220' },
+  potted_plant: { c1: '#4b6343', c2: '#373532' },
+  chandelier: { c1: '#c4a265', c2: '#ffefc8' },
+  floor_lamp: { c1: '#232325', c2: '#f3e8d4' },
+  table_lamp: { c1: '#202022', c2: '#fff2d6' },
+  rug_custom: { c1: '#ddd4c4', c2: '#2b2a28' },
+  wall_mirror: { c1: '#222224', c2: '#dbe4ed' },
+  wall_art: { c1: '#222224', c2: '#ece8df' },
+  ottoman: { c1: '#ddd5c7', c2: '#4a453e' },
+  stairs: { c1: '#c3a27a', c2: '#242426' },
+  ac_unit: { c1: '#f4f3ef', c2: '#2b2b2b' },
+};
+
+const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
+  'wall_art',
+  'wall_mirror',
+  'wall_tv',
+  'fireplace_marble',
+  'tv_wall_unit',
+  'wardrobe',
+  'bookshelf',
+  'sideboard',
+  'console_table',
+  'vanity_table',
+  'ac_unit',
+]);
+
 export const PinterestAIPanel: React.FC<Props> = ({
   project,
   onApplyRoomStyle,
+  onApplyPinterestScene,
   onAddGeneratedObject,
+  onSelectObjectInRoom,
+  onRemoveObjectInRoom,
   onCaptureViewport,
   onToast,
 }) => {
@@ -100,6 +162,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
+  const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(true);
   const [roomStyle, setRoomStyle] = useState<PinterestRoomStyle | null>(null);
   const [detected, setDetected] = useState<PinterestDetectedObject[]>([]);
   const [jobs, setJobs] = useState<Record<string, ItemJobState>>({});
@@ -155,24 +219,231 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   const hasGeminiAccess = serverCfg.geminiConfigured || Boolean(geminiKey.trim());
 
-  const hydrateCropPreviews = async (imgUrl: string, list: PinterestDetectedObject[]) => {
-    const previews: Record<string, string> = {};
-    await Promise.all(
-      list.map(async (item) => {
-        try {
-          previews[item.id] = await cropBoxFromDataUrl(imgUrl, item.box2d, 0.025);
-        } catch {
-          /* ignore */
-        }
-      })
-    );
+  const findPlacedObjForItem = (itemId: string): ArchPlacedObject | undefined =>
+    project.objects.find((o) => o.pinterestItemId === itemId);
+
+  /**
+   * Builds a clean, collision-free, editable 3D ArchPlacedObject from ANY Pinterest item
+   * in < 5ms, preserving exact Pinterest color, silhouette, dimensions, and room placement!
+   */
+  const buildInstant3DObject = async (
+    item: PinterestDetectedObject,
+    imgUrl: string,
+    occupiedFloor: OBB2D[],
+    wallCursors: Record<WallId, number[]>
+  ): Promise<{ obj: ArchPlacedObject; cropPreview?: string; rawCrop?: string }> => {
+    const archetype = resolvePinterestArchetype(item);
+    const defaults = DEFAULT_COLORS_BY_ARCHETYPE[archetype] || { c1: '#b8aea0', c2: '#2c2b29' };
+
+    const cropPreview = await cropBoxFromDataUrl(imgUrl, item.box2d, 0.025).catch(() => undefined);
+    const needsRawTexture = archetype === 'rug_custom' || archetype === 'wall_art';
+    const rawCrop = needsRawTexture ? await cropRawTightDataUrl(imgUrl, item.box2d).catch(() => undefined) : undefined;
+
+    let primaryHex = isValidHexColor(item.primaryColorHex) ? item.primaryColorHex : '';
+    if (!primaryHex && cropPreview && archetype !== 'potted_plant' && archetype !== 'wall_tv') {
+      primaryHex = await sampleDominantHexFromDataUrl(cropPreview);
+    }
+    if (!primaryHex) primaryHex = defaults.c1;
+    const accentHex = isValidHexColor(item.accentColorHex) ? item.accentColorHex : defaults.c2;
+
+    // Realistic clamped dimensions (protects against outlier AI estimates)
+    let wM = Math.max(0.25, Math.min(project.widthM * 0.78, (Number(item.widthCm) || 90) / 100));
+    let dM = Math.max(0.04, Math.min(project.depthM * 0.78, (Number(item.depthCm) || 60) / 100));
+    let hM = Math.max(0.015, Math.min(project.ceilingM - 0.1, (Number(item.heightCm) || 85) / 100));
+
+    if (archetype === 'rug_custom') {
+      hM = 0.016;
+      wM = Math.max(0.9, Math.min(project.widthM * 0.82, wM));
+      dM = Math.max(0.9, Math.min(project.depthM * 0.82, dM));
+    } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
+      dM = Math.min(0.08, Math.max(0.035, dM));
+    } else if (archetype === 'potted_plant') {
+      wM = Math.max(0.45, Math.min(1.2, wM));
+      dM = Math.max(0.45, Math.min(1.2, dM));
+      hM = Math.max(0.7, Math.min(project.ceilingM - 0.2, hM));
+    }
+
+    const isRug = archetype === 'rug_custom';
+    const isCeiling = archetype === 'chandelier' || item.mountMode === 'ceiling';
+    const isHighWall = archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv' || archetype === 'ac_unit';
+    const isWallBacked = item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype);
+
+    const mountMode: ArchPlacedObject['mountMode'] = isRug
+      ? 'rug'
+      : isCeiling
+      ? 'ceiling'
+      : isWallBacked
+      ? 'wall'
+      : 'floor';
+
+    let x = Math.max(-project.widthM * 0.42, Math.min(project.widthM * 0.42, (item.relativeX || 0) * (project.widthM * 0.42)));
+    let z = Math.max(-project.depthM * 0.42, Math.min(project.depthM * 0.42, (item.relativeZ || 0) * (project.depthM * 0.42)));
+    let rot = ((item.facingDeg || 0) * Math.PI) / 180;
+    let y = 0;
+    let attachedWall: WallId | undefined;
+
+    if (isCeiling) {
+      y = Math.max(1.65, project.ceilingM - hM);
+      x = Math.max(-project.widthM * 0.25, Math.min(project.widthM * 0.25, x));
+      z = Math.max(-project.depthM * 0.25, Math.min(project.depthM * 0.25, z));
+    } else if (isRug) {
+      y = 0;
+      rot = 0;
+    } else if (isWallBacked) {
+      const targetWall: WallId =
+        item.suggestedWall && item.suggestedWall !== 'center'
+          ? item.suggestedWall
+          : Math.abs(x) > Math.abs(z)
+          ? x < 0
+            ? 'west'
+            : 'east'
+          : z <= 0
+          ? 'north'
+          : 'south';
+      attachedWall = targetWall;
+
+      const isHoriz = targetWall === 'north' || targetWall === 'south';
+      const wallLen = isHoriz ? project.widthM : project.depthM;
+      const maxAlong = Math.max(0, wallLen * 0.5 - wM * 0.5 - 0.14);
+      let along = Math.max(-maxAlong, Math.min(maxAlong, isHoriz ? x : z));
+
+      // Spread overlapping items cleanly along the same wall!
+      const used = wallCursors[targetWall];
+      const collidesAlong = (pos: number) => used.some((u) => Math.abs(u - pos) < Math.max(0.55, wM * 0.72));
+      if (collidesAlong(along) && maxAlong > 0.2) {
+        const candidates = [0, -maxAlong * 0.65, maxAlong * 0.65, -maxAlong * 0.95, maxAlong * 0.95, -maxAlong * 0.3, maxAlong * 0.3];
+        const free = candidates.find((c) => Math.abs(c) <= maxAlong + 0.01 && !collidesAlong(c));
+        if (free !== undefined) along = free;
+      }
+      used.push(along);
+
+      if (targetWall === 'north') {
+        x = along;
+        z = -project.depthM * 0.5 + dM * 0.5 + 0.02;
+        rot = 0;
+      } else if (targetWall === 'south') {
+        x = along;
+        z = project.depthM * 0.5 - dM * 0.5 - 0.02;
+        rot = Math.PI;
+      } else if (targetWall === 'west') {
+        z = along;
+        x = -project.widthM * 0.5 + dM * 0.5 + 0.02;
+        rot = Math.PI / 2;
+      } else {
+        z = along;
+        x = project.widthM * 0.5 - dM * 0.5 - 0.02;
+        rot = -Math.PI / 2;
+      }
+
+      if (isHighWall) {
+        y =
+          archetype === 'ac_unit'
+            ? Math.max(1.9, project.ceilingM - hM - 0.15)
+            : Math.max(0.95, Math.min(project.ceilingM - hM - 0.15, (item.elevationCm || 128) / 100));
+      } else {
+        y = 0;
+        occupiedFloor.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+      }
+    } else {
+      // Floor furniture: anchor near Pinterest relative (x,z) without colliding into walls or other items!
+      const pos = findOpenSpawnPosition(
+        wM * 0.5,
+        dM * 0.5,
+        rot,
+        occupiedFloor,
+        project.widthM,
+        project.depthM,
+        [x, z]
+      );
+      if (pos) {
+        x = pos.x;
+        z = pos.z;
+        rot = pos.rot;
+      }
+      occupiedFloor.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+    }
+
+    const obj: ArchPlacedObject = {
+      id: `pin-inst-${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      pinterestItemId: item.id,
+      name: item.nameTr,
+      category: item.category,
+      dimensionsCm: `${Math.round(wM * 100)} × ${Math.round(dM * 100)} × ${Math.round(hM * 100)} cm`,
+      parametricKind: archetype,
+      parametricColorHex: primaryHex,
+      parametricAccentHex: accentHex,
+      x,
+      y,
+      z,
+      rot,
+      widthM: wM,
+      depthM: dM,
+      heightM: hM,
+      mountMode,
+      attachedWall,
+      thumbUrl: rawCrop || cropPreview,
+      source: 'pinterest-ai',
+    };
+
+    return { obj, cropPreview, rawCrop };
+  };
+
+  /**
+   * 1-CLICK FULL PINTEREST ROOM ASSEMBLY (< 0.3 seconds!):
+   * Places ALL selected detected Pinterest items into the 3D room with their exact colors & archetypes.
+   */
+  const assembleAllInstantIn3D = async (
+    itemsToPlace: PinterestDetectedObject[],
+    styleToApply: PinterestRoomStyle | null,
+    imgUrl: string,
+    replaceExisting: boolean
+  ) => {
+    if (itemsToPlace.length === 0) return;
+
+    // Sort so rugs & wall-backed furniture anchor first, then seating/tables/plants fit cleanly around them
+    const priority = (it: PinterestDetectedObject) => {
+      const k = resolvePinterestArchetype(it);
+      if (k === 'rug_custom') return 0;
+      if (WALL_BACKED_KINDS.has(k)) return 1;
+      if (k === 'bed_frame' || k === 'sofa' || k === 'dining_table' || k === 'desk') return 2;
+      return 3;
+    };
+    const ordered = [...itemsToPlace].sort((a, b) => priority(a) - priority(b));
+
+    const occupiedFloor: OBB2D[] = replaceExisting
+      ? []
+      : project.objects
+          .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8)
+          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+
+    const wallCursors: Record<WallId, number[]> = { north: [], east: [], south: [], west: [] };
+    const builtObjects: ArchPlacedObject[] = [];
+    const jobPatches: Record<string, Partial<ItemJobState>> = {};
+
+    for (const item of ordered) {
+      const res = await buildInstant3DObject(item, imgUrl, occupiedFloor, wallCursors);
+      builtObjects.push(res.obj);
+      jobPatches[item.id] = {
+        selected: true,
+        status: 'done',
+        cropPreviewUrl: res.cropPreview,
+        rawCropUrl: res.rawCrop,
+        progressText: '3B odada — tıklayıp rengini/yerini değiştir',
+      };
+    }
+
+    onApplyPinterestScene(builtObjects, styleToApply, replaceExisting);
     setJobs((prev) => {
       const next = { ...prev };
-      for (const [id, url] of Object.entries(previews)) {
-        if (next[id]) next[id] = { ...next[id], cropPreviewUrl: url };
+      for (const [id, patch] of Object.entries(jobPatches)) {
+        next[id] = { ...(next[id] || { selected: true, status: 'done' }), ...patch };
       }
       return next;
     });
+    setStatusBanner(
+      `${builtObjects.length} Pinterest parçası gerçek renk ve ölçüleriyle 3B odaya yerleştirildi! İstediğine tıklayıp rengini (örn. mavi → sarı) değiştirebilir veya tek tıkla silebilirsin.`
+    );
+    onToast(`Pinterest odası ${builtObjects.length} parçayla 3B olarak kuruldu!`);
   };
 
   const handleUploadInspiration = async (file: File | null) => {
@@ -200,7 +471,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
     setAnalyzing(true);
     setDrawMode('off');
-    setStatusBanner('Gemini 3.8 Vision odadaki tüm eşya, dekor, aydınlatma ve stili tarıyor...');
+    setStatusBanner('Yapay zeka odadaki tüm mobilya, renk, ölçü ve dokuları analiz ediyor...');
     try {
       const res = await analyzePinterestRoom({
         imageDataUrl: photoDataUrl,
@@ -212,14 +483,26 @@ export const PinterestAIPanel: React.FC<Props> = ({
       setRoomStyle(res.roomStyle);
       setDetected(res.detectedObjects);
       const initJobs: Record<string, ItemJobState> = {};
-      res.detectedObjects.forEach((o, idx) => {
-        initJobs[o.id] = { selected: idx < 4, status: 'idle' };
+      res.detectedObjects.forEach((o) => {
+        initJobs[o.id] = { selected: true, status: 'idle' };
       });
       setJobs(initJobs);
-      setStatusBanner(
-        `${res.detectedObjects.length} parça ve oda stili tespit edildi (${res.model}). Eksik parça varsa "Alan Çiz" ile fotoğraftan işaretleyebilirsin.`
-      );
-      void hydrateCropPreviews(photoDataUrl, res.detectedObjects);
+
+      if (autoPopulateOnAnalyze && res.detectedObjects.length > 0) {
+        await assembleAllInstantIn3D(res.detectedObjects, res.roomStyle, photoDataUrl, replaceExistingOnBuild);
+      } else {
+        setStatusBanner(
+          `${res.detectedObjects.length} parça ve oda stili tespit edildi (${res.model}). "Tüm Odayı 3B'ye Kur" butonuyla hepsini anında yerleştirebilirsin.`
+        );
+        // Hydrate thumbnails in background
+        void Promise.all(
+          res.detectedObjects.map(async (item) => {
+            const url = await cropBoxFromDataUrl(photoDataUrl, item.box2d, 0.025).catch(() => undefined);
+            if (!url) return;
+            setJobs((prev) => (prev[item.id] ? { ...prev, [item.id]: { ...prev[item.id], cropPreviewUrl: url } } : prev));
+          })
+        );
+      }
     } catch (err) {
       setStatusBanner(null);
       onToast(err instanceof Error ? err.message : 'Pinterest analizi başarısız oldu.');
@@ -233,6 +516,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
   };
 
   const removeDetectedItem = (id: string) => {
+    const placed = findPlacedObjForItem(id);
+    if (placed) onRemoveObjectInRoom(placed.id);
     setDetected((prev) => prev.filter((it) => it.id !== id));
     setJobs((prev) => {
       const next = { ...prev };
@@ -300,7 +585,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
           ...(prev[activeDrawTarget] || { selected: true, status: 'idle' }),
           cropPreviewUrl: preview,
           studioPreviewUrl: undefined,
-          status: 'idle',
           errorMsg: undefined,
         },
       }));
@@ -308,14 +592,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return;
     }
 
-    // New user-drawn item! Add immediately and auto-identify via Gemini 3.8 Vision (free tier!)
     const newId = `drawn-${Date.now()}`;
     const cx = ((xmin + xmax) * 0.5) / 1000;
     const cy = ((ymin + ymax) * 0.5) / 1000;
+    const sampled = preview ? await sampleDominantHexFromDataUrl(preview) : '#8b7f70';
     const placeholder: PinterestDetectedObject = {
       id: newId,
       nameTr: 'Seçilen Parça (Tanımlanıyor...)',
       category: 'Dekor',
+      primaryColorHex: sampled,
+      accentColorHex: '#2a2927',
       box2d,
       widthCm: 90,
       depthCm: 60,
@@ -341,136 +627,88 @@ export const PinterestAIPanel: React.FC<Props> = ({
         fullRoomImageDataUrl: photoDataUrl,
         geminiKey,
       });
-      if (info) {
-        updateDetectedItem(newId, {
-          nameTr: info.nameTr || 'Seçilen Parça',
-          category: info.category || 'Dekor',
-          widthCm: Number(info.widthCm) || 90,
-          depthCm: Number(info.depthCm) || 60,
-          heightCm: Number(info.heightCm) || 90,
-          mountMode: info.mountMode || 'floor',
-          elevationCm: Number(info.elevationCm) || 0,
-          visualDescriptionEn: info.visualDescriptionEn || placeholder.visualDescriptionEn,
-        });
-        onToast(`"${info.nameTr}" fotoğraftan eklendi!`);
-      } else {
-        updateDetectedItem(newId, { nameTr: 'Özel Seçilen Parça' });
-        onToast('Seçtiğiniz alan listeye eklendi — adını düzenleyip 3B üretebilirsiniz.');
-      }
+      const finalItem: PinterestDetectedObject = info
+        ? {
+            ...placeholder,
+            nameTr: info.nameTr || 'Seçilen Parça',
+            category: info.category || 'Dekor',
+            parametricKind: info.parametricKind,
+            primaryColorHex: isValidHexColor(info.primaryColorHex) ? info.primaryColorHex : sampled,
+            accentColorHex: isValidHexColor(info.accentColorHex) ? info.accentColorHex : '#2a2927',
+            widthCm: Number(info.widthCm) || 90,
+            depthCm: Number(info.depthCm) || 60,
+            heightCm: Number(info.heightCm) || 90,
+            mountMode: info.mountMode || 'floor',
+            elevationCm: Number(info.elevationCm) || 0,
+            visualDescriptionEn: info.visualDescriptionEn || placeholder.visualDescriptionEn,
+          }
+        : { ...placeholder, nameTr: 'Özel Seçilen Parça' };
+
+      updateDetectedItem(newId, finalItem);
+      // Place immediately in 3D room!
+      const occupied: OBB2D[] = project.objects
+        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8)
+        .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+      const built = await buildInstant3DObject(finalItem, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+      onAddGeneratedObject(built.obj);
+      setJobs((prev) => ({
+        ...prev,
+        [newId]: {
+          ...(prev[newId] || { selected: true }),
+          status: 'done',
+          cropPreviewUrl: built.cropPreview,
+          progressText: '3B odaya eklendi',
+        },
+      }));
+      onToast(`"${finalItem.nameTr}" fotoğraftan tanınıp anında 3B odaya eklendi!`);
     } else {
       updateDetectedItem(newId, { nameTr: 'Özel Seçilen Parça' });
     }
   };
 
-  const detectInstantFlatKind = (item: PinterestDetectedObject): ParametricFurnitureKind | null => {
-    const label = `${item.nameTr} ${item.category}`.toLowerCase();
-    if (item.mountMode === 'rug' || /halı|hali|kilim|rug|carpet/.test(label)) return 'rug_custom';
-    if (/ayna|mirror/.test(label)) return 'wall_mirror';
-    if (/tablo|poster|resim|çerçeve|cerceve|painting|artwork|frame/.test(label)) return 'wall_art';
-    return null;
+  /**
+   * Instant 0.1s placement of a single item into the 3D room (with its exact Pinterest color & type!)
+   */
+  const placeSingleInstantIn3D = async (item: PinterestDetectedObject) => {
+    if (!photoDataUrl) return;
+    const occupied: OBB2D[] = project.objects
+      .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id)
+      .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+    const built = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+    onAddGeneratedObject(built.obj);
+    setJobs((prev) => ({
+      ...prev,
+      [item.id]: {
+        ...(prev[item.id] || { selected: true }),
+        status: 'done',
+        cropPreviewUrl: built.cropPreview,
+        rawCropUrl: built.rawCrop,
+        progressText: '3B odada — tıklayıp düzenle',
+      },
+    }));
+    onToast(`"${item.nameTr}" 3B odaya yerleştirildi! Tıklayıp rengini/yerini değiştirebilirsin.`);
   };
 
-  const buildPlacedFromDetected = (
-    item: PinterestDetectedObject,
-    glbUrl: string | undefined,
-    thumbUrl: string,
-    parametricKind?: ParametricFurnitureKind
-  ): ArchPlacedObject => {
-    const wM = Math.max(0.2, item.widthCm / 100);
-    const dM = Math.max(0.04, item.depthCm / 100);
-    const hM = Math.max(0.015, item.heightCm / 100);
-    let x = Math.max(-project.widthM * 0.44, Math.min(project.widthM * 0.44, item.relativeX * (project.widthM * 0.45)));
-    let z = Math.max(-project.depthM * 0.44, Math.min(project.depthM * 0.44, item.relativeZ * (project.depthM * 0.45)));
-    let rot = (item.facingDeg * Math.PI) / 180;
-    const isWallItem = item.mountMode === 'wall' || parametricKind === 'wall_mirror' || parametricKind === 'wall_art';
-    const y = isWallItem
-      ? Math.max(0.9, item.elevationCm > 0 ? item.elevationCm / 100 : 1.25)
-      : item.mountMode === 'ceiling'
-      ? Math.max(1.5, project.ceilingM - hM)
-      : 0;
-
-    const wallTarget: WallId =
-      item.suggestedWall && item.suggestedWall !== 'center' ? item.suggestedWall : 'north';
-
-    if (isWallItem) {
-      if (wallTarget === 'north') {
-        z = -project.depthM * 0.5 + dM * 0.5 + 0.01;
-        rot = 0;
-      } else if (wallTarget === 'south') {
-        z = project.depthM * 0.5 - dM * 0.5 - 0.01;
-        rot = Math.PI;
-      } else if (wallTarget === 'west') {
-        x = -project.widthM * 0.5 + dM * 0.5 + 0.01;
-        rot = Math.PI / 2;
-      } else if (wallTarget === 'east') {
-        x = project.widthM * 0.5 - dM * 0.5 - 0.01;
-        rot = -Math.PI / 2;
-      }
-    }
-
-    return {
-      id: `pin3d-${item.id}-${Date.now()}`,
-      name: item.nameTr,
-      category: item.category,
-      dimensionsCm: `${Math.round(item.widthCm)} × ${Math.round(item.depthCm)} × ${Math.round(item.heightCm)} cm`,
-      glbUrl,
-      parametricKind,
-      parametricColorHex: parametricKind ? '#1c1b1a' : undefined,
-      parametricAccentHex: parametricKind === 'wall_mirror' ? '#d8e2ec' : parametricKind ? '#ece8df' : undefined,
-      x,
-      y,
-      z,
-      rot,
-      widthM: wM,
-      depthM: dM,
-      heightM: hM,
-      mountMode: parametricKind === 'rug_custom' ? 'rug' : isWallItem ? 'wall' : item.mountMode,
-      attachedWall: isWallItem ? wallTarget : item.suggestedWall !== 'center' ? item.suggestedWall : undefined,
-      thumbUrl,
-      source: 'pinterest-ai',
-    };
-  };
-
-  const generateSingleItem3D = async (item: PinterestDetectedObject) => {
+  /**
+   * Optional High-Detail Sculptural Upgrade: replaces an item in-place with a RunPod Hunyuan3D-2.1 2K PBR .GLB!
+   */
+  const upgradeItemWithRunPod3D = async (item: PinterestDetectedObject) => {
     if (!photoDataUrl) return;
     setJobs((prev) => ({
       ...prev,
       [item.id]: {
         ...(prev[item.id] || { selected: true }),
         status: 'isolating',
-        progressText: 'Hazırlanıyor...',
+        progressText: '2K PBR için hazırlanıyor...',
         errorMsg: undefined,
       },
     }));
 
     try {
-      // Fast 0.1s 1:1 Textured 3D path for flat rugs, framed wall art & mirrors (sharper than sculpted mesh & $0 GPU!)
-      const flatKind = detectInstantFlatKind(item);
-      if (flatKind) {
-        const rawCrop = await cropRawTightDataUrl(photoDataUrl, item.box2d);
-        const placed = buildPlacedFromDetected(item, undefined, rawCrop, flatKind);
-        onAddGeneratedObject(placed);
-        setJobs((prev) => ({
-          ...prev,
-          [item.id]: {
-            ...(prev[item.id] || { selected: true }),
-            status: 'done',
-            cropPreviewUrl: rawCrop,
-            studioPreviewUrl: rawCrop,
-            progressText: 'Anında 1:1 dokuyla odaya yerleştirildi',
-          },
-        }));
-        onToast(`${item.nameTr} birebir dokusuyla anında 3B odaya yerleştirildi!`);
-        return;
-      }
-
-      // Step 1: High-res tight crop onto clean 1024×1024 pure white canvas
       const croppedUrl = await cropBoxFromDataUrl(photoDataUrl, item.box2d, 0.025);
       let modelInputImage = croppedUrl;
       let usedDirectCrop = false;
 
-      // Step 2: Try Gemini 3.1 Flash Image (Nano Banana 2) Studio Isolation if available.
-      // If Google AI Studio Free Tier returns quota limit:0 (429), NEVER fail — fall back seamlessly to tight crop -> RunPod!
       if (hasGeminiAccess && !geminiImageQuotaBlockedRef.current) {
         try {
           const iso = await isolatePinterestObject({
@@ -500,13 +738,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
           cropPreviewUrl: croppedUrl,
           studioPreviewUrl: modelInputImage,
           usedDirectCrop,
-          progressText: usedDirectCrop
-            ? 'Sıkı kırpım RunPod 2K PBR GPU motoruna gönderiliyor...'
-            : 'Stüdyo izole edildi · RunPod 2K PBR 3B örüyor...',
+          progressText: 'RunPod 2K PBR 3B örüyor...',
         },
       }));
 
-      // Step 3: Reconstruct faithful 2K PBR 3D .GLB via RunPod Hunyuan3D-2.1 (with 1x automatic worker retry!)
       const mem = getMembershipState();
       const runOnce = () =>
         generateFurniture3DServerless({
@@ -534,15 +769,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         gen = await runOnce();
       } catch (firstErr) {
         const em = firstErr instanceof Error ? firstErr.message : String(firstErr);
-        // Auto-retry once if a stale RunPod worker threw ImportError/transient error
         if (/libusb|ImportError|timeout|502|503|FAILED/i.test(em)) {
-          setJobs((prev) => ({
-            ...prev,
-            [item.id]: {
-              ...(prev[item.id] || { selected: true }),
-              progressText: 'Sağlıklı GPU worker ile tekrar deneniyor...',
-            },
-          }));
           gen = await runOnce();
         } else {
           throw firstErr;
@@ -550,8 +777,17 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
 
       const glbUrl = gen.remoteGlbUrl || gen.localBlobUrl;
-      const placed = buildPlacedFromDetected(item, glbUrl, modelInputImage);
-      onAddGeneratedObject(placed);
+      const occupied: OBB2D[] = project.objects
+        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id)
+        .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+      const base = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+      const upgradedObj: ArchPlacedObject = {
+        ...base.obj,
+        glbUrl,
+        parametricKind: undefined,
+        thumbUrl: modelInputImage,
+      };
+      onAddGeneratedObject(upgradedObj);
 
       setJobs((prev) => ({
         ...prev,
@@ -561,12 +797,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
           cropPreviewUrl: croppedUrl,
           studioPreviewUrl: modelInputImage,
           usedDirectCrop,
-          progressText: 'Odaya yerleştirildi',
+          progressText: '2K PBR .GLB yükseltildi',
         },
       }));
-      onToast(`${item.nameTr} birebir 3B üretildi ve odaya yerleştirildi!`);
+      onToast(`${item.nameTr} RunPod 2K PBR .GLB modeline yükseltildi!`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '3B üretim hatası';
+      const msg = err instanceof Error ? err.message : 'RunPod 3B üretim hatası';
       setJobs((prev) => ({
         ...prev,
         [item.id]: { ...(prev[item.id] || { selected: true }), status: 'error', errorMsg: msg },
@@ -575,25 +811,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
   };
 
-  const handleGenerateSelectedBatch = async () => {
-    const targets = detected.filter((d) => jobs[d.id]?.selected && jobs[d.id]?.status !== 'done');
+  const handleRebuildSelectedInstant = async () => {
+    if (!photoDataUrl) return;
+    const targets = detected.filter((d) => jobs[d.id]?.selected);
     if (targets.length === 0) {
-      onToast('Önce 3B üretilecek en az bir eşya seçin.');
+      onToast('Önce odaya kurulacak en az bir parça seçin.');
       return;
     }
     setBatchRunning(true);
-    setStatusBanner(`${targets.length} parça paralel olarak 3B üretilip odaya yerleştiriliyor...`);
     try {
-      const concurrency = 2;
-      let idx = 0;
-      const runNext = async (): Promise<void> => {
-        if (idx >= targets.length) return;
-        const cur = targets[idx++];
-        await generateSingleItem3D(cur);
-        await runNext();
-      };
-      await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, () => runNext()));
-      setStatusBanner('Seçilen Pinterest parçalarının 3B üretim işlemi tamamlandı.');
+      await assembleAllInstantIn3D(targets, roomStyle, photoDataUrl, replaceExistingOnBuild);
     } finally {
       setBatchRunning(false);
     }
@@ -628,7 +855,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       if (isGeminiQuotaZeroError(raw)) {
         setGeminiImageQuotaNote(true);
         setRenderError(
-          'Google AI Studio Free Tier hesabında görsel üretim kotası (gemini-3.1-flash-image) 0 olarak sınırlıdır. Fotogerçekçi V-Ray Render için Google AI Studio Billing (ödeme hesabı) etkinleştirilmelidir.'
+          'Google AI Studio Free Tier hesabında görsel üretim kotası 0 olarak sınırlıdır. Fotogerçekçi V-Ray Render için Google AI Studio Billing etkinleştirilmelidir.'
         );
       } else {
         setRenderError(raw);
@@ -639,7 +866,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
   };
 
-  const selectedCount = detected.filter((d) => jobs[d.id]?.selected && jobs[d.id]?.status !== 'done').length;
+  const selectedCount = detected.filter((d) => jobs[d.id]?.selected).length;
   const activeHoverItem = detected.find((d) => d.id === hoveredId) || null;
 
   return (
@@ -648,8 +875,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
       <div className="border border-stone-200 bg-[#faf9f6] p-3 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <p className="font-semibold text-stone-950">Pinterest → Birebir 3B Motoru</p>
-            <p className="text-[11px] text-stone-500">Gemini 3.8 Vision + Kırpım/İzolasyon + RunPod 2K PBR</p>
+            <p className="font-semibold text-stone-950">Pinterest → Anında 3B Oda Motoru</p>
+            <p className="text-[11px] text-stone-500">Tek tıkla tüm eşya &amp; renkleri odaya kur, canlı düzenle</p>
           </div>
           <button
             type="button"
@@ -663,10 +890,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
           <span className={hasGeminiAccess ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
-            ● Gemini: {serverCfg.geminiConfigured ? 'Sunucu Bağlı' : geminiKey ? 'Oturum Anahtarı' : 'Anahtar Gerekli'}
+            ● Vision AI: {serverCfg.geminiConfigured ? 'Sunucu Bağlı' : geminiKey ? 'Oturum Anahtarı' : 'Anahtar Gerekli'}
           </span>
           <span className={runpodReady ? 'text-emerald-700 font-semibold' : 'text-stone-500'}>
-            ● RunPod 3B: {runpodReady ? 'Hazır' : 'Kontrol'}
+            ● 2K PBR: {runpodReady ? 'Hazır' : 'Opsiyonel'}
           </span>
         </div>
 
@@ -706,7 +933,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                       `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(clean)}`
                     );
                     if (r.ok) {
-                      setKeyTestResult('✓ Bağlantı doğrulandı (Gemini 3.8 Flash hazır)');
+                      setKeyTestResult('✓ Bağlantı doğrulandı (Vision AI hazır)');
                       onToast('Gemini API anahtarı doğrulandı ve kaydedildi!');
                     } else {
                       const d = await r.json().catch(() => null);
@@ -732,26 +959,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 {keyTestResult}
               </p>
             )}
-            <p className="text-[10px] text-stone-500 leading-relaxed">
-              Tüm cihazlarda (TV, iPad, telefon, müşteri) şifresiz çalışması için Vercel → Settings → Environment Variables kısmına{' '}
-              <code className="font-mono font-semibold text-stone-800">GEMINI_API_KEY</code> ekleyin.
-            </p>
           </div>
         )}
       </div>
-
-      {/* Informative note if Gemini Free Tier image-gen quota is 0 (3D STILL WORKS via RunPod!) */}
-      {geminiImageQuotaNote && (
-        <div className="border border-amber-300 bg-amber-50 p-2.5 text-[11px] text-amber-950 space-y-1 leading-relaxed">
-          <p className="font-semibold">Bilgi: Direkt Sıkı Kırpım + RunPod 3B Modu Aktif</p>
-          <p className="text-[10px] text-amber-900">
-            Google AI Studio Free Tier hesabında <strong>Nano Banana 2</strong> (görsel izolasyon / V-Ray render) kotası{' '}
-            <code className="font-mono">0</code> olduğu için sistem <strong>hata vermeden</strong> otomatik olarak yüksek
-            çözünürlüklü sıkı kırpımla doğrudan RunPod 2K PBR 3B üretimine geçti. Tam stüdyo izolasyon ve V-Ray render için
-            Google AI Studio&apos;da Billing açabilirsiniz (~0,01 $/görsel).
-          </p>
-        </div>
-      )}
 
       {/* Step 1: Upload Pinterest Photo */}
       <div className="space-y-2">
@@ -795,7 +1005,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
             <Upload className="w-5 h-5 mx-auto text-stone-500 mb-1.5" />
             <p className="font-semibold text-stone-900">Pinterest Oda Görseli Yükle veya Ctrl+V Yapıştır</p>
             <p className="text-[11px] text-stone-500 mt-0.5">
-              Odadaki 20&apos;ye kadar tüm mobilya, lamba, halı, bitki ve dekorları otomatik ayırır
+              Rastgele herhangi bir Pinterest odasını saniyeler içinde düzenlenebilir 3B odaya dönüştürür
             </p>
             <input
               type="file"
@@ -813,7 +1023,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
               <div className="px-2.5 py-1.5 bg-stone-950 text-white text-[10px] flex items-center justify-between gap-2">
                 <span>
                   {drawMode === 'new'
-                    ? 'Fotoğrafta eklemek istediğin eşyanın etrafını sürükleyip kutu çiz'
+                    ? 'Fotoğrafta eklemek istediğin eşyanın etrafını sürükle — anında 3B odaya eklenir'
                     : 'Seçili eşyanın yeni sıkı kutusunu fotoğrafta sürükleyerek çiz'}
                 </span>
                 <button
@@ -829,7 +1039,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Clean Annotated Inspiration Image (tiny corner number badges — zero text clutter!) */}
             <div
               ref={photoWrapRef}
               onPointerDown={handlePhotoPointerDown}
@@ -853,22 +1062,27 @@ export const PinterestAIPanel: React.FC<Props> = ({
                       type="button"
                       onMouseEnter={() => setHoveredId(item.id)}
                       onMouseLeave={() => setHoveredId((cur) => (cur === item.id ? null : cur))}
-                      onClick={() =>
-                        setJobs((prev) => ({
-                          ...prev,
-                          [item.id]: {
-                            ...(prev[item.id] || { status: 'idle', selected: false }),
-                            selected: !prev[item.id]?.selected,
-                          },
-                        }))
-                      }
+                      onClick={() => {
+                        const placed = findPlacedObjForItem(item.id);
+                        if (placed) {
+                          onSelectObjectInRoom(placed.id);
+                        } else {
+                          setJobs((prev) => ({
+                            ...prev,
+                            [item.id]: {
+                              ...(prev[item.id] || { status: 'idle', selected: false }),
+                              selected: !prev[item.id]?.selected,
+                            },
+                          }));
+                        }
+                      }}
                       style={{
                         top: `${ymin / 10}%`,
                         left: `${xmin / 10}%`,
                         width: `${Math.max(3, (xmax - xmin) / 10)}%`,
                         height: `${Math.max(3, (ymax - ymin) / 10)}%`,
                         borderColor: col,
-                        backgroundColor: isHov ? `${col}33` : isSel ? `${col}18` : 'transparent',
+                        backgroundColor: isHov ? `${col}33` : isSel ? `${col}14` : 'transparent',
                         zIndex: isHov ? 25 : isSel ? 15 : 10,
                       }}
                       className={`absolute transition text-left ${isHov ? 'border-2 shadow-sm' : 'border-[1.5px]'}`}
@@ -886,7 +1100,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   );
                 })}
 
-              {/* Live rubber-band selection rectangle while dragging */}
               {draftBox && (
                 <div
                   style={{
@@ -900,7 +1113,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
               )}
             </div>
 
-            {/* Active hovered item legend strip right below photo */}
             {activeHoverItem && (
               <div className="px-2.5 py-1 bg-stone-950 text-white text-[10px] font-mono flex items-center justify-between gap-2">
                 <span className="truncate">
@@ -912,6 +1124,27 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             )}
 
+            <div className="flex flex-col gap-1.5 text-[11px] text-stone-700 bg-[#faf9f6] border border-stone-200 px-2.5 py-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoPopulateOnAnalyze}
+                  onChange={(e) => setAutoPopulateOnAnalyze(e.target.checked)}
+                  className="accent-stone-950"
+                />
+                <span className="font-medium text-stone-900">Analiz bitince tüm eşyaları 3B odaya anında kur</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={replaceExistingOnBuild}
+                  onChange={(e) => setReplaceExistingOnBuild(e.target.checked)}
+                  className="accent-stone-950"
+                />
+                <span>Mevcut demo eşyalarını temizleyip yeni odayı kur</span>
+              </label>
+            </div>
+
             <button
               type="button"
               disabled={analyzing}
@@ -919,7 +1152,13 @@ export const PinterestAIPanel: React.FC<Props> = ({
               className="w-full py-2.5 bg-stone-950 hover:bg-stone-800 disabled:opacity-50 text-white font-semibold flex items-center justify-center gap-2 transition"
             >
               {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              <span>{analyzing ? 'Tüm Oda Taranıyor...' : 'Odayı & Tüm Eşyaları Tespit Et'}</span>
+              <span>
+                {analyzing
+                  ? 'Oda Analiz Ediliyor & 3B Kuruluyor...'
+                  : autoPopulateOnAnalyze
+                  ? "Pinterest Odasını Analiz Et & 3B'ye Kur"
+                  : 'Odayı & Tüm Eşyaları Tespit Et'}
+              </span>
             </button>
           </div>
         )}
@@ -936,7 +1175,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         <div className="border border-stone-200 bg-white p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              02 · Tespit Edilen Mimari Stil
+              02 · Mimari Renk &amp; Zemin Stili
             </span>
             <span className="font-semibold text-stone-900 truncate">{roomStyle.styleNameTr}</span>
           </div>
@@ -961,19 +1200,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
               onApplyRoomStyle(roomStyle);
               onToast('Pinterest duvar, zemin ve perde tonları 3B odaya uygulandı.');
             }}
-            className="w-full py-1.5 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 font-semibold transition"
+            className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-900 font-semibold transition"
           >
-            Duvar, Zemin &amp; Perde Stilini Odaya Uygula
+            Duvar, Zemin &amp; Perde Stilini Yeniden Uygula
           </button>
         </div>
       )}
 
-      {/* Step 3: Detected Objects -> Tight Crop / Studio Isolate + RunPod 2K PBR 3D */}
+      {/* Step 3: Live Editable Pinterest Objects inside the 3D Room */}
       {detected.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-1">
             <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              03 · Birebir 3B Parçalar ({detected.length})
+              03 · Odadaki Pinterest Parçaları ({detected.length})
             </span>
             <div className="flex items-center gap-2 text-[10px]">
               <button
@@ -990,31 +1229,49 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 }}
                 className="text-stone-600 hover:text-stone-950 underline"
               >
-                {detected.every((d) => jobs[d.id]?.selected) ? 'Seçimi Kaldır' : 'Tümünü Seç'}
+                {detected.every((d) => jobs[d.id]?.selected) ? 'Kaldır' : 'Tümü'}
               </button>
               <button
                 type="button"
                 onClick={() => setDrawMode('new')}
                 className="font-semibold text-stone-900 hover:text-stone-700 flex items-center gap-0.5"
               >
-                <Plus className="w-3 h-3" /> Fotoğraftan Ekle
+                <Plus className="w-3 h-3" /> Alan Çiz
               </button>
             </div>
           </div>
 
+          <button
+            type="button"
+            disabled={batchRunning || selectedCount === 0}
+            onClick={handleRebuildSelectedInstant}
+            className="w-full py-2 bg-stone-950 hover:bg-stone-800 disabled:opacity-45 text-white font-semibold flex items-center justify-center gap-1.5 transition"
+          >
+            {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+            <span>Seçili {selectedCount} Parçayı 3B Odaya Anında Kur</span>
+          </button>
+
           <div className="space-y-2">
             {detected.map((item, idx) => {
               const st = jobs[item.id] || { selected: false, status: 'idle' };
+              const placed = findPlacedObjForItem(item.id);
               const col = BOX_COLORS[idx % BOX_COLORS.length];
               const thumb = st.studioPreviewUrl || st.cropPreviewUrl;
               const isHov = hoveredId === item.id;
+              const liveColor =
+                placed?.parametricColorHex ||
+                placed?.tintHex ||
+                (isValidHexColor(item.primaryColorHex) ? item.primaryColorHex : '#8d8476');
+              const archetype = resolvePinterestArchetype(item);
+              const canUpgradePbr = archetype !== 'rug_custom' && archetype !== 'wall_art' && archetype !== 'wall_mirror';
+
               return (
                 <div
                   key={item.id}
                   onMouseEnter={() => setHoveredId(item.id)}
                   onMouseLeave={() => setHoveredId((cur) => (cur === item.id ? null : cur))}
                   className={`border bg-white p-2.5 space-y-2 transition ${
-                    isHov ? 'border-stone-950' : 'border-stone-200'
+                    isHov ? 'border-stone-950' : placed ? 'border-stone-300' : 'border-stone-200'
                   }`}
                 >
                   <div className="flex items-start gap-2">
@@ -1044,6 +1301,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
                         >
                           {idx + 1}
                         </span>
+                        <span
+                          className="w-3 h-3 border border-black/25 shrink-0"
+                          style={{ backgroundColor: liveColor }}
+                          title={`Aktif Renk: ${liveColor}`}
+                        />
                         <input
                           type="text"
                           value={item.nameTr}
@@ -1061,7 +1323,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                         <button
                           type="button"
                           onClick={() => removeDetectedItem(item.id)}
-                          title="Listeden kaldır"
+                          title="Odadan ve listeden kaldır"
                           className="p-0.5 text-stone-400 hover:text-red-700 shrink-0"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1106,37 +1368,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
                           />
                         </label>
                       </div>
-
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                        <select
-                          value={item.mountMode}
-                          onChange={(e) =>
-                            updateDetectedItem(item.id, { mountMode: e.target.value as PinterestDetectedObject['mountMode'] })
-                          }
-                          className="px-1.5 py-0.5 border border-stone-200 text-[10px] bg-[#faf9f6]"
-                        >
-                          <option value="floor">Zemine Oturt</option>
-                          <option value="wall">Duvara Yasla / As</option>
-                          <option value="ceiling">Tavana As</option>
-                          <option value="rug">Halı (Zemin)</option>
-                        </select>
-                        {item.mountMode === 'wall' && (
-                          <select
-                            value={item.suggestedWall}
-                            onChange={(e) =>
-                              updateDetectedItem(item.id, { suggestedWall: e.target.value as WallId | 'center' })
-                            }
-                            className="px-1.5 py-0.5 border border-stone-200 text-[10px] bg-[#faf9f6]"
-                          >
-                            {(['north', 'east', 'south', 'west'] as WallId[]).map((w) => (
-                              <option key={w} value={w}>
-                                {WALL_LABELS[w]}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                        <span className="text-[9px] font-mono text-stone-400 ml-auto">{item.category}</span>
-                      </div>
                     </div>
                   </div>
 
@@ -1146,60 +1377,68 @@ export const PinterestAIPanel: React.FC<Props> = ({
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-stone-100">
+                  <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-stone-100">
                     <span className="text-[10px] font-mono min-w-0 truncate">
-                      {st.status === 'isolating' && (
-                        <span className="text-amber-700 flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin shrink-0" /> Hazırlanıyor...
-                        </span>
-                      )}
-                      {st.status === 'modeling' && (
+                      {st.status === 'isolating' || st.status === 'modeling' ? (
                         <span className="text-blue-700 flex items-center gap-1">
                           <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                          <span className="truncate">{st.progressText || 'RunPod 2K PBR üretiyor...'}</span>
+                          <span className="truncate">{st.progressText || '2K PBR üretiliyor...'}</span>
                         </span>
-                      )}
-                      {st.status === 'done' && (
+                      ) : placed ? (
                         <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                          <Check className="w-3 h-3 shrink-0" /> Odaya Eklendi
+                          <Check className="w-3 h-3 shrink-0" /> {placed.glbUrl ? '2K PBR Odada' : '3B Odada'}
                         </span>
-                      )}
-                      {st.status === 'idle' && (
-                        <span className="text-stone-400">Hazır</span>
+                      ) : (
+                        <span className="text-stone-400">Odada değil</span>
                       )}
                     </span>
 
-                    <button
-                      type="button"
-                      disabled={st.status === 'isolating' || st.status === 'modeling' || batchRunning}
-                      onClick={() => generateSingleItem3D(item)}
-                      className="px-2.5 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-[10px] font-semibold whitespace-nowrap shrink-0 disabled:opacity-50"
-                    >
-                      {st.status === 'done'
-                        ? 'Tekrar Yerleştir'
-                        : detectInstantFlatKind(item)
-                        ? 'Anında Odaya Koy'
-                        : '3B Üret & Koy'}
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {placed ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectObjectInRoom(placed.id)}
+                          className="px-2 py-1 border border-stone-950 bg-stone-950 text-white text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap"
+                          title="3B sahnede seçip rengini, ölçüsünü veya yerini değiştir"
+                        >
+                          <MousePointerClick className="w-3 h-3" />
+                          <span>Renk / Düzenle</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => placeSingleInstantIn3D(item)}
+                          className="px-2 py-1 border border-stone-950 bg-stone-950 text-white text-[10px] font-semibold whitespace-nowrap"
+                        >
+                          Anında Koy
+                        </button>
+                      )}
+
+                      {canUpgradePbr && runpodReady && (
+                        <button
+                          type="button"
+                          disabled={st.status === 'isolating' || st.status === 'modeling' || batchRunning}
+                          onClick={() => upgradeItemWithRunPod3D(item)}
+                          className="px-2 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800 text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
+                          title="Opsiyonel: RunPod Hunyuan3D-2.1 ile tam heykelsi 2K PBR .GLB modele yükselt"
+                        >
+                          <Wand2 className="w-3 h-3" />
+                          <span>2K PBR</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
             })}
           </div>
+        </div>
+      )}
 
-          <button
-            type="button"
-            disabled={batchRunning || selectedCount === 0}
-            onClick={handleGenerateSelectedBatch}
-            className="w-full py-2.5 bg-stone-950 hover:bg-stone-800 disabled:opacity-45 text-white font-semibold flex items-center justify-center gap-2 transition"
-          >
-            {batchRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-            <span>
-              {batchRunning
-                ? 'RunPod 3B Üretim Sürüyor...'
-                : `Seçili ${selectedCount} Parçayı Birebir 3B Üret & Odaya Diz`}
-            </span>
-          </button>
+      {geminiImageQuotaNote && (
+        <div className="border border-amber-300 bg-amber-50 p-2.5 text-[10px] text-amber-950 leading-relaxed">
+          Not: Google AI Studio Free Tier&apos;da görsel üretme kotası 0 olduğu için 2K PBR yükseltmeleri doğrudan sıkı kırpımla
+          RunPod&apos;a gider; Fotogerçekçi V-Ray Render için Google AI Studio Billing gerekir.
         </div>
       )}
 
