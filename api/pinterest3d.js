@@ -15,37 +15,21 @@
  */
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Parallel racing waves across COMPLETELY DISTINCT serving pools (eliminates 503 high-demand stalls!)
-// Wave 1 races all 8 distinct Gemini Flash / Flash-Lite generations simultaneously at t=0s!
-// Wave 2 races Gemma 4 MoE + Gemini 3 Preview + Hydrogen + Omni + 2.5 Flash if Wave 1 spikes.
+// Cost-optimal Paid-Tier sequential Vision chain (tries 1 fast low-cost model at a time so Paid Tier never bills parallel duplicates!)
+// Falls back cleanly to secondary pools ONLY if the active model returns 503/error.
 const VISION_WAVES = [
-  [
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash',
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-    'gemini-3.1-flash-lite-preview',
-    'gemini-flash-latest',
-  ],
-  [
-    'gemma-4-26b-a4b-it',
-    'gemma-4-31b-it',
-    'gemini-3-flash-preview',
-    'gemini-flash-lite-latest',
-    'gemini-4-hydrogen',
-    'gemini-omni-flash-preview',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-  ],
+  ['gemini-3.1-flash-lite'],
+  ['gemini-3.8-flash'],
+  ['gemini-3.1-flash-lite-preview'],
+  ['gemini-3.5-flash'],
+  ['gemini-3.6-flash', 'gemma-4-26b-a4b-it'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
-  'gemini-nano-banana-2.1',
   'gemini-3.1-flash-lite-image',
   'gemini-3.1-flash-image',
   'gemini-3.1-flash-image-preview',
+  'gemini-nano-banana-2.1',
   'gemini-3-pro-image',
   'gemini-2.5-flash-image',
 ];
@@ -221,12 +205,12 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
     throw new Error(`Gemini Vision başarısız: ${summary || errors[0] || 'Bilinmeyen hata'}`);
   }
 
-  // Image generation mode: sequential fallback across image models
+  // Image generation mode: sequential fallback across image models (32s budget prevents double-billing timed-out renders)
   for (const model of models) {
     if (tried.has(model)) continue;
     tried.add(model);
     try {
-      return await callSingleGeminiModel(apiKey, model, body, 18000, false);
+      return await callSingleGeminiModel(apiKey, model, body, 32000, false);
     } catch (e) {
       errors.push(e.message || String(e));
       if (e.status === 401 || e.status === 403) throw e;
