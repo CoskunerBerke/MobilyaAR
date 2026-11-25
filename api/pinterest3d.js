@@ -16,18 +16,29 @@
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Parallel racing waves across COMPLETELY DISTINCT serving pools (eliminates 503 high-demand stalls!)
-// Wave 1 races flagship Flash + Flash-Lite + Gemini 3 Preview + Hydrogen + Gemma 4 MoE simultaneously from t=0s!
+// Wave 1 races all 8 distinct Gemini Flash / Flash-Lite generations simultaneously at t=0s!
+// Wave 2 races Gemma 4 MoE + Gemini 3 Preview + Hydrogen + Omni + 2.5 Flash if Wave 1 spikes.
 const VISION_WAVES = [
   [
     'gemini-3.8-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-3-flash-preview',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
     'gemini-3.5-flash-lite',
-    'gemini-4-hydrogen',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-flash-latest',
+  ],
+  [
     'gemma-4-26b-a4b-it',
     'gemma-4-31b-it',
+    'gemini-3-flash-preview',
+    'gemini-flash-lite-latest',
+    'gemini-4-hydrogen',
+    'gemini-omni-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
   ],
-  ['gemini-4-neon', 'gemini-3.1-pro-preview', 'gemini-3.7-flash'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
@@ -100,7 +111,7 @@ async function discoverFallbackModels(apiKey, mode, alreadyTried) {
 async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, expectJson = false) {
   const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   let payload = body;
-  if (/^gemma-/i.test(model)) {
+  if (/^gemma-/i.test(model) || /omni/i.test(model)) {
     const cfg = { ...(body.generationConfig || {}) };
     delete cfg.responseMimeType;
     delete cfg.thinkingConfig;
@@ -149,7 +160,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 48000 : 18000, true).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 38000 : 18000, true).catch((e) => {
               errors.push(e.message || String(e));
               throw e;
             })
@@ -409,9 +420,8 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
             ],
             generationConfig: {
               temperature: 0.15,
-              maxOutputTokens: 4096,
+              maxOutputTokens: 6144,
               responseMimeType: 'application/json',
-              thinkingConfig: { thinkingBudget: 0 },
             },
           },
           'vision'
@@ -496,9 +506,8 @@ Return ONLY valid JSON:
             contents: [{ role: 'user', parts }],
             generationConfig: {
               temperature: 0.15,
-              maxOutputTokens: 1024,
+              maxOutputTokens: 1536,
               responseMimeType: 'application/json',
-              thinkingConfig: { thinkingBudget: 0 },
             },
           },
           'vision'
