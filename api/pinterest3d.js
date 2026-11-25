@@ -16,10 +16,11 @@
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Parallel racing waves across COMPLETELY DISTINCT serving pools (eliminates 503 high-demand stalls!)
+// Wave 1 races flagship Flash + Flash-Lite + Gemma-4-26B-A4B MoE Vision simultaneously from t=0s!
 const VISION_WAVES = [
-  ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview'],
-  ['gemini-4-neon', 'gemini-3.1-pro-preview', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it'],
-  ['gemini-3.5-flash-lite', 'gemini-omni-1.2-flash', 'gemini-4-carbon'],
+  ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemma-4-26b-a4b-it'],
+  ['gemini-3-flash-preview', 'gemma-4-31b-it', 'gemini-3.5-flash-lite'],
+  ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-3.1-pro-preview'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
@@ -134,7 +135,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, 13000).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, 26000).catch((e) => {
               errors.push(e.message || String(e));
               throw e;
             })
@@ -282,37 +283,6 @@ export default async function handler(req, res) {
         availableModels = [];
       }
     }
-    let probeResults;
-    if (req.query?.probe === '1' && key) {
-      const probeModels = [
-        'gemini-3.8-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3.1-pro-preview',
-        'gemini-4-neon',
-        'gemini-4-argon',
-        'gemini-4-hydrogen',
-        'gemini-4-carbon',
-        'gemini-omni-1.2-flash',
-        'gemma-4-31b-it',
-        'gemma-4-26b-a4b-it',
-      ];
-      probeResults = await Promise.all(
-        probeModels.map(async (m) => {
-          try {
-            const r = await fetch(`${GEMINI_BASE}/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Return JSON {"ok":true}' }] }] }),
-              signal: AbortSignal.timeout(8000),
-            });
-            const txt = await r.text();
-            return { model: m, status: r.status, sample: r.ok ? 'OK' : txt.slice(0, 90) };
-          } catch (e) {
-            return { model: m, status: 'timeout', sample: String(e?.message || e).slice(0, 60) };
-          }
-        })
-      );
-    }
     return res.status(200).json({
       ok: true,
       geminiConfigured: envGemini,
@@ -321,7 +291,6 @@ export default async function handler(req, res) {
       visionModel: VISION_MODELS[0],
       imageModel: IMAGE_MODELS[0],
       ...(availableModels ? { availableModels } : {}),
-      ...(probeResults ? { probeResults } : {}),
     });
   }
 
