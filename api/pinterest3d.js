@@ -16,11 +16,18 @@
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Parallel racing waves across COMPLETELY DISTINCT serving pools (eliminates 503 high-demand stalls!)
-// Wave 1 races flagship Flash + Flash-Lite + Gemma-4-26B-A4B MoE Vision simultaneously from t=0s!
+// Wave 1 races flagship Flash + Flash-Lite + Gemini 3 Preview + Hydrogen + Gemma 4 MoE simultaneously from t=0s!
 const VISION_WAVES = [
-  ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemma-4-26b-a4b-it'],
-  ['gemini-3-flash-preview', 'gemma-4-31b-it', 'gemini-3.5-flash-lite'],
-  ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-3.1-pro-preview'],
+  [
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-3.5-flash-lite',
+    'gemini-4-hydrogen',
+    'gemma-4-26b-a4b-it',
+    'gemma-4-31b-it',
+  ],
+  ['gemini-4-neon', 'gemini-3.1-pro-preview', 'gemini-3.7-flash'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
@@ -90,13 +97,15 @@ async function discoverFallbackModels(apiKey, mode, alreadyTried) {
   }
 }
 
-async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 14000) {
+async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, expectJson = false) {
   const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  // Gemma models reject responseMimeType: 'application/json' — omit cleanly and let parseJsonResponse extract JSON
   let payload = body;
-  if (/^gemma-/i.test(model) && body?.generationConfig?.responseMimeType) {
-    const { responseMimeType: _omit, ...restCfg } = body.generationConfig;
-    payload = { ...body, generationConfig: restCfg };
+  if (/^gemma-/i.test(model)) {
+    const cfg = { ...(body.generationConfig || {}) };
+    delete cfg.responseMimeType;
+    delete cfg.thinkingConfig;
+    cfg.maxOutputTokens = Math.max(cfg.maxOutputTokens || 4096, 6144);
+    payload = { ...body, generationConfig: cfg };
   }
   const resp = await fetch(url, {
     method: 'POST',
@@ -112,9 +121,14 @@ async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 14000) {
     /* raw error */
   }
   if (resp.ok && json) {
-    // Ensure non-empty candidate parts before declaring winner
     const parts = json?.candidates?.[0]?.content?.parts || [];
-    if (parts.length > 0) return { model, json };
+    if (parts.length > 0) {
+      if (expectJson) {
+        const parsed = parseJsonResponse(extractText(json));
+        return { model, json, parsed };
+      }
+      return { model, json };
+    }
   }
   const errMsg = json?.error?.message || text.slice(0, 140) || `HTTP ${resp.status}`;
   const err = new Error(`${model} (${resp.status}): ${errMsg.slice(0, 120)}`);
@@ -126,7 +140,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
   const errors = [];
   const tried = new Set();
 
-  // For Vision: race COMPLETELY SEPARATE serving pools in parallel waves -> beats 503 spikes in 2-4 seconds!
+  // For Vision: race COMPLETELY SEPARATE serving pools in parallel waves -> beats 503 spikes!
   if (mode === 'vision') {
     for (const wave of VISION_WAVES) {
       const waveModels = wave.filter((m) => !tried.has(m));
@@ -135,7 +149,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, 26000).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 48000 : 18000, true).catch((e) => {
               errors.push(e.message || String(e));
               throw e;
             })
@@ -154,7 +168,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         return await Promise.any(
           discovered.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, 13000).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, 14000, true).catch((e) => {
               errors.push(e.message || String(e));
               throw e;
             })
@@ -172,7 +186,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
     if (tried.has(model)) continue;
     tried.add(model);
     try {
-      return await callSingleGeminiModel(apiKey, model, body, 18000);
+      return await callSingleGeminiModel(apiKey, model, body, 18000, false);
     } catch (e) {
       errors.push(e.message || String(e));
       if (e.status === 401 || e.status === 403) throw e;
@@ -215,7 +229,25 @@ function parseJsonResponse(rawText) {
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
     if (start !== -1 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1));
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1));
+      } catch {
+        // Salvage truncated detectedObjects array if output hit token limit mid-item
+        const slice = cleaned.slice(start);
+        const arrIdx = slice.indexOf('"detectedObjects"');
+        if (arrIdx !== -1) {
+          const lastObjEnd = slice.lastIndexOf('},');
+          const lastCompleteEnd = slice.lastIndexOf('}');
+          const cutPos = lastObjEnd > arrIdx ? lastObjEnd + 1 : lastCompleteEnd > arrIdx ? lastCompleteEnd + 1 : -1;
+          if (cutPos > arrIdx) {
+            try {
+              return JSON.parse(slice.slice(0, cutPos) + ']}');
+            } catch {
+              /* fall through */
+            }
+          }
+        }
+      }
     }
     throw new Error('Gemini JSON yanıtı ayrıştırılamadı.');
   }
@@ -298,8 +330,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Yalnızca POST desteklenir.' });
   }
 
+  const rawHeaderKey = String(req.headers['x-gemini-key'] || '').trim();
   const apiKey = getGeminiKey(req);
   const openAiKey = getOpenAIKey(req);
+  const preferOpenAI = rawHeaderKey.startsWith('sk-') || Boolean(String(req.headers['x-openai-key'] || '').trim());
   if (!apiKey && !openAiKey) {
     return res.status(400).json({
       ok: false,
@@ -349,59 +383,71 @@ Return ONLY valid JSON with this exact schema:
       "relativeX": number (-0.85 to 0.85, where -1 is west wall and +1 is east wall),
       "relativeZ": number (-0.85 to 0.85, where -1 is north wall and +1 is south wall),
       "facingDeg": number (0 faces +Z south, 180 faces -Z north, 90 faces +X east, -90 faces -X west),
-      "visualDescriptionEn": "extremely faithful visual specification of this EXACT item: silhouette, exact material, color, wood tone, cushions, legs, lamp shade, plant foliage, frame details"
+      "visualDescriptionEn": "max 10 words describing exact look/material"
     }
   ]
 }
 
-CRITICAL COMPLETENESS & PRECISION RULES:
-- DO NOT stop at 8 items! Detect EVERY distinct visible item (aim for 10 to 18 items in detailed rooms). Scan all 4 quadrants systematically:
-  1. Hero furniture: beds, sofas, fireplaces, TV/media walls, desks, dining tables, wardrobes, built-in cabinets, staircases.
-  2. Secondary seating & tables: armchairs, office chairs, dining chairs, poufs/ottomans, coffee tables (round vs rect!), nightstands, vanity tables.
-  3. Storage & tech: open bookshelves, sideboards, monitors/TVs.
-  4. EVERY separate rug (list rectangular and round rugs separately!).
-  5. Lighting: chandeliers, floor lamps, globe/table lamps, bedside lamps.
-  6. Plants & wall decor: potted indoor trees/plants, wall mirrors, framed paintings/posters.
-- Choose the EXACT closest parametricKind from the list for every object and sample its TRUE primaryColorHex and accentColorHex directly from the photo.
-- box2d MUST be integers in 0..1000 scale [ymin, xmin, ymax, xmax] TIGHTLY enclosing ONLY that single item.
-- Dimensions in cm MUST be realistic real-world furniture dimensions.
-- Ensure relativeX, relativeZ, and facingDeg form a sensible, non-overlapping room layout matching the photo.`;
+RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
+- Detect 8 to 14 distinct visible items across the whole room: hero furniture (bed, sofa, fireplace, TV, desk, dining table, cabinets, stairs), seating/tables (armchair, chair, coffee table, nightstand, vanity), rugs, lighting, plants, mirrors, framed art.
+- Pick exact closest parametricKind and TRUE primaryColorHex + accentColorHex from the photo.
+- box2d: integers 0..1000 [ymin, xmin, ymax, xmax] tightly enclosing the item.
+- Realistic cm dimensions and non-overlapping layout matching the photo.`;
 
       let modelUsed = '';
       let parsed = null;
-      if (apiKey) {
-        try {
-          const { model, json } = await callGeminiWithFallback(
-            apiKey,
-            VISION_MODELS,
-            {
-              contents: [
-                {
-                  role: 'user',
-                  parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
-                },
-              ],
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 8192,
-                responseMimeType: 'application/json',
+      const runGeminiAnalyze = async () => {
+        const win = await callGeminiWithFallback(
+          apiKey,
+          VISION_MODELS,
+          {
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
               },
+            ],
+            generationConfig: {
+              temperature: 0.15,
+              maxOutputTokens: 4096,
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingBudget: 0 },
             },
-            'vision'
-          );
-          modelUsed = model;
-          parsed = parseJsonResponse(extractText(json));
-        } catch (gemErr) {
-          const oa = await callOpenAIVisionBackup(prompt, [imageDataUrl], openAiKey);
-          if (!oa) throw gemErr;
-          modelUsed = oa.model;
-          parsed = parseJsonResponse(oa.text);
-        }
-      } else {
+          },
+          'vision'
+        );
+        return { model: win.model, parsed: win.parsed || parseJsonResponse(extractText(win.json)) };
+      };
+      const runOpenAIAnalyze = async () => {
         const oa = await callOpenAIVisionBackup(prompt, [imageDataUrl], openAiKey);
         if (!oa) throw new Error('OpenAI Vision yanıt vermedi.');
-        modelUsed = oa.model;
-        parsed = parseJsonResponse(oa.text);
+        return { model: oa.model, parsed: parseJsonResponse(oa.text) };
+      };
+
+      if (preferOpenAI && openAiKey) {
+        try {
+          const out = await runOpenAIAnalyze();
+          modelUsed = out.model;
+          parsed = out.parsed;
+        } catch (oaErr) {
+          if (!apiKey) throw oaErr;
+          const out = await runGeminiAnalyze();
+          modelUsed = out.model;
+          parsed = out.parsed;
+        }
+      } else if (apiKey && openAiKey) {
+        // Race Gemini pool AND OpenAI Vision simultaneously — guaranteed 2-4s response even during 503 peaks!
+        const out = await Promise.any([runGeminiAnalyze(), runOpenAIAnalyze()]);
+        modelUsed = out.model;
+        parsed = out.parsed;
+      } else if (apiKey) {
+        const out = await runGeminiAnalyze();
+        modelUsed = out.model;
+        parsed = out.parsed;
+      } else {
+        const out = await runOpenAIAnalyze();
+        modelUsed = out.model;
+        parsed = out.parsed;
       }
 
       return res.status(200).json({
@@ -442,34 +488,52 @@ Return ONLY valid JSON:
 
       let modelUsed = '';
       let parsed = null;
-      if (apiKey) {
-        try {
-          const { model, json } = await callGeminiWithFallback(
-            apiKey,
-            VISION_MODELS,
-            {
-              contents: [{ role: 'user', parts }],
-              generationConfig: {
-                temperature: 0.15,
-                maxOutputTokens: 1024,
-                responseMimeType: 'application/json',
-              },
+      const runGeminiCrop = async () => {
+        const win = await callGeminiWithFallback(
+          apiKey,
+          VISION_MODELS,
+          {
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              temperature: 0.15,
+              maxOutputTokens: 1024,
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingBudget: 0 },
             },
-            'vision'
-          );
-          modelUsed = model;
-          parsed = parseJsonResponse(extractText(json));
-        } catch (gemErr) {
-          const oa = await callOpenAIVisionBackup(cropPrompt, [croppedImageDataUrl, fullRoomImageDataUrl], openAiKey);
-          if (!oa) throw gemErr;
-          modelUsed = oa.model;
-          parsed = parseJsonResponse(oa.text);
-        }
-      } else {
+          },
+          'vision'
+        );
+        return { model: win.model, parsed: win.parsed || parseJsonResponse(extractText(win.json)) };
+      };
+      const runOpenAICrop = async () => {
         const oa = await callOpenAIVisionBackup(cropPrompt, [croppedImageDataUrl, fullRoomImageDataUrl], openAiKey);
         if (!oa) throw new Error('OpenAI Vision yanıt vermedi.');
-        modelUsed = oa.model;
-        parsed = parseJsonResponse(oa.text);
+        return { model: oa.model, parsed: parseJsonResponse(oa.text) };
+      };
+
+      if (preferOpenAI && openAiKey) {
+        try {
+          const out = await runOpenAICrop();
+          modelUsed = out.model;
+          parsed = out.parsed;
+        } catch (oaErr) {
+          if (!apiKey) throw oaErr;
+          const out = await runGeminiCrop();
+          modelUsed = out.model;
+          parsed = out.parsed;
+        }
+      } else if (apiKey && openAiKey) {
+        const out = await Promise.any([runGeminiCrop(), runOpenAICrop()]);
+        modelUsed = out.model;
+        parsed = out.parsed;
+      } else if (apiKey) {
+        const out = await runGeminiCrop();
+        modelUsed = out.model;
+        parsed = out.parsed;
+      } else {
+        const out = await runOpenAICrop();
+        modelUsed = out.model;
+        parsed = out.parsed;
       }
       return res.status(200).json({ ok: true, model: modelUsed, item: parsed });
     }
@@ -586,9 +650,15 @@ Additional architect styling note: ${styleNote || 'Doğal gün ışığı, sıca
 
     return res.status(400).json({ ok: false, error: `Bilinmeyen işlem: ${action}` });
   } catch (err) {
+    const msg =
+      err && typeof err === 'object' && Array.isArray(err.errors)
+        ? err.errors.map((e) => (e instanceof Error ? e.message : String(e))).join(' | ')
+        : err instanceof Error
+        ? err.message
+        : 'Pinterest AI işleminde sunucu hatası.';
     return res.status(500).json({
       ok: false,
-      error: err instanceof Error ? err.message : 'Pinterest AI işleminde sunucu hatası.',
+      error: msg.slice(0, 520),
     });
   }
 }

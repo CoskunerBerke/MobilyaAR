@@ -217,7 +217,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const hasGeminiAccess = serverCfg.geminiConfigured || Boolean(geminiKey.trim());
+  const hasGeminiAccess = serverCfg.geminiConfigured || Boolean(serverCfg.openaiConfigured) || Boolean(geminiKey.trim());
 
   const findPlacedObjForItem = (itemId: string): ArchPlacedObject | undefined =>
     project.objects.find((o) => o.pinterestItemId === itemId);
@@ -900,7 +900,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         {showKeyBox && (
           <div className="pt-2 border-t border-stone-200 space-y-2">
             <label className="block text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              Google AI Studio (Gemini API Key)
+              Gemini (AIza...) veya OpenAI (sk-...) API Key
             </label>
             <div className="flex items-center gap-1.5 min-w-0">
               <input
@@ -912,7 +912,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   geminiImageQuotaBlockedRef.current = false;
                   setGeminiImageQuotaNote(false);
                 }}
-                placeholder="AIzaSy..."
+                placeholder="AIzaSy... veya sk-..."
                 className="flex-1 min-w-0 w-full px-2 py-1.5 border border-stone-300 bg-white font-mono text-[11px]"
               />
               <button
@@ -929,15 +929,28 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   setTestingKey(true);
                   setKeyTestResult('Test ediliyor...');
                   try {
-                    const r = await fetch(
-                      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(clean)}`
-                    );
-                    if (r.ok) {
-                      setKeyTestResult('✓ Bağlantı doğrulandı (Vision AI hazır)');
-                      onToast('Gemini API anahtarı doğrulandı ve kaydedildi!');
+                    if (clean.startsWith('sk-')) {
+                      const r = await fetch('https://api.openai.com/v1/models', {
+                        headers: { Authorization: `Bearer ${clean}` },
+                      });
+                      if (r.ok) {
+                        setKeyTestResult('✓ OpenAI Vision doğrulandı (GPT-4.1/4o hazır)');
+                        onToast('OpenAI API anahtarı doğrulandı ve kaydedildi!');
+                      } else {
+                        const d = await r.json().catch(() => null);
+                        setKeyTestResult(`Hata: ${d?.error?.message || 'OpenAI anahtarı geçersiz'}`);
+                      }
                     } else {
-                      const d = await r.json().catch(() => null);
-                      setKeyTestResult(`Hata: ${d?.error?.message || 'Anahtar geçersiz'}`);
+                      const r = await fetch(
+                        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(clean)}`
+                      );
+                      if (r.ok) {
+                        setKeyTestResult('✓ Bağlantı doğrulandı (Vision AI hazır)');
+                        onToast('Gemini API anahtarı doğrulandı ve kaydedildi!');
+                      } else {
+                        const d = await r.json().catch(() => null);
+                        setKeyTestResult(`Hata: ${d?.error?.message || 'Anahtar geçersiz'}`);
+                      }
                     }
                   } catch {
                     setKeyTestResult('Kaydedildi (doğrulama için Pinterest analizi deneyin).');
