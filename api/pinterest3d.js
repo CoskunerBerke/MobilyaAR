@@ -162,7 +162,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : /3\.8-flash|3\.5-flash/.test(m) ? 26000 : 16000, true).catch((e) => {
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : /3\.8-flash|3\.5-flash/.test(m) ? 32000 : 18000, true).catch((e) => {
               recordErr(m, e);
               throw e;
             })
@@ -501,6 +501,8 @@ Return ONLY valid JSON with this exact schema:
       "suggestedWall": "north" | "south" | "west" | "east" | "center",
       "floorLevel": 0 | 1,
       "elevationCm": number (height above ITS OWN FLOOR LEVEL: 0 for floor/rug, ~105-135 for wall art/mirror/TV),
+      "anchorToId": "optional id of parent object (e.g. lamp on nightstand, memo board above mirror, art above bed, chair in front of desk) or empty string",
+      "relation": "none" | "above" | "on_top_of" | "left_of" | "right_of" | "in_front_of",
       "relativeX": number (-0.90 to 0.90),
       "relativeZ": number (-0.90 to 0.90),
       "facingDeg": number (0, 90, -90, or 180),
@@ -545,6 +547,145 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
         model: modelUsed,
         roomStyle: parsed.roomStyle || null,
         detectedObjects: Array.isArray(parsed.detectedObjects) ? parsed.detectedObjects : [],
+      });
+    }
+
+    if (action === 'verifyAndRefine') {
+      const {
+        originalPhotoDataUrl,
+        rendered3dDataUrl,
+        roomSummary = '',
+        roomWidthM = 5.4,
+        roomDepthM = 4.8,
+        roomCeilingM = 2.85,
+        placedObjects = [],
+      } = req.body || {};
+
+      const origImg = splitDataUrl(originalPhotoDataUrl);
+      const renImg = splitDataUrl(rendered3dDataUrl);
+      if (!origImg || !renImg) {
+        return res.status(400).json({ ok: false, error: 'Doğrulama için orijinal fotoğraf ve 3B sahne görüntüsü gerekli.' });
+      }
+
+      const compactList = Array.isArray(placedObjects)
+        ? placedObjects.slice(0, 24).map((o) => ({
+            id: o.id,
+            name: o.name,
+            kind: o.parametricKind || 'glb',
+            wall: o.attachedWall || 'center',
+            floorLevel: o.floorLevel || 0,
+            relativeX: Number(((o.x || 0) / Math.max(0.5, roomWidthM * 0.45)).toFixed(2)),
+            relativeZ: Number(((o.z || 0) / Math.max(0.5, roomDepthM * 0.45)).toFixed(2)),
+            elevationCm: Math.round((o.y || 0) * 100),
+            facingDeg: Math.round((((o.rot || 0) * 180) / Math.PI) % 360),
+            widthCm: Math.round((o.widthM || 1) * 100),
+            depthCm: Math.round((o.depthM || 1) * 100),
+            heightCm: Math.round((o.heightM || 1) * 100),
+            colorHex: o.parametricColorHex || o.tintHex || '',
+          }))
+        : [];
+
+      const refinePrompt = `You are a strict Senior Interior Architecture QA Inspector.
+Compare Image 1 (the TARGET Pinterest inspiration room photo) with Image 2 (our CURRENT 3D studio reconstruction).
+Current room metadata: ${roomSummary} (${roomWidthM}m × ${roomDepthM}m × ${roomCeilingM}m).
+Current placed 3D objects JSON:
+${JSON.stringify(compactList)}
+
+YOUR JOB — Audit Image 2 strictly against Image 1 and fix EVERY noticeable layout, wall, floor-level, rotation, proportion, window, or color mismatch:
+- Check if a stale window/curtain is blocking wall art or shouldn't exist -> set roomFixes.removeWindows = true.
+- Check if Image 1 is a 2-story loft/mezzanine but Image 2 missed the 2nd floor -> set roomFixes.enableMezzanine = true.
+- Check EVERY placed object in the JSON list:
+  * Is any object on the WRONG wall, floating off the floor when it should sit on the floor (e.g. full-length mirror -> elevationCm: 0), facing backwards, overlapping badly, wrong floorLevel (0 vs 1), wrong proportion, or wrong main color? Add an "update" entry in objectFixes with its EXACT existing "id"!
+  * Is any object a hallucination (e.g. mirror reflection artifact or nonexistent piece)? Add { "id": "...", "action": "remove", "reasonTr": "..." }!
+- Check if up to 3 MAJOR clearly visible hero items from Image 1 (like an armchair, coffee table, rug, lamp, plant, nightstand, bookcase, framed art) are completely missing from Image 2 -> add them to missingObjects!
+- If an object already looks accurate in Image 2, DO NOT touch it.
+
+Return ONLY valid JSON:
+{
+  "matchScore": number (0..100 honest visual similarity score of Image 2 BEFORE your fixes),
+  "critiqueTr": "1-2 concise Turkish sentences stating what already matches well and exactly what your fixes corrected",
+  "roomFixes": {
+    "removeWindows": boolean,
+    "wallColorHex": "#RRGGBB" | null,
+    "floorTintHex": "#RRGGBB" | null,
+    "enableMezzanine": boolean | null,
+    "mezzanineHeightCm": number | null
+  },
+  "objectFixes": [
+    {
+      "id": "EXACT id from Current placed 3D objects JSON",
+      "action": "update" | "remove",
+      "wall": "north" | "south" | "west" | "east" | "center",
+      "floorLevel": 0 | 1,
+      "relativeX": number (-0.90 to 0.90),
+      "relativeZ": number (-0.90 to 0.90),
+      "elevationCm": number (above its own floor level),
+      "facingDeg": number (0, 90, -90, or 180),
+      "widthCm": number,
+      "depthCm": number,
+      "heightCm": number,
+      "primaryColorHex": "#RRGGBB",
+      "accentColorHex": "#RRGGBB",
+      "reasonTr": "max 8 words Turkish reason"
+    }
+  ],
+  "missingObjects": [
+    {
+      "id": "missing-slug",
+      "nameTr": "Turkish name",
+      "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+      "parametricKind": ${VALID_ARCHETYPES},
+      "primaryColorHex": "#RRGGBB",
+      "accentColorHex": "#RRGGBB",
+      "box2d": [ymin, xmin, ymax, xmax],
+      "widthCm": number,
+      "depthCm": number,
+      "heightCm": number,
+      "mountMode": "floor" | "wall" | "ceiling" | "rug",
+      "suggestedWall": "north" | "south" | "west" | "east" | "center",
+      "floorLevel": 0 | 1,
+      "elevationCm": number,
+      "anchorToId": "",
+      "relation": "none" | "above" | "on_top_of" | "left_of" | "right_of" | "in_front_of",
+      "relativeX": number,
+      "relativeZ": number,
+      "facingDeg": number,
+      "visualDescriptionEn": "max 10 words"
+    }
+  ]
+}`;
+
+      const { model: modelUsed, parsed } = await runMultiProviderVision({
+        keys,
+        prompt: refinePrompt,
+        imageDataUrls: [originalPhotoDataUrl, rendered3dDataUrl],
+        geminiBody: {
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: refinePrompt },
+                { inlineData: { mimeType: origImg.mimeType, data: origImg.data } },
+                { inlineData: { mimeType: renImg.mimeType, data: renImg.data } },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.12,
+            maxOutputTokens: 4096,
+            responseMimeType: 'application/json',
+          },
+        },
+      });
+
+      return res.status(200).json({
+        ok: true,
+        model: modelUsed,
+        matchScore: typeof parsed.matchScore === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.matchScore))) : 80,
+        critiqueTr: String(parsed.critiqueTr || '3B sahne orijinal fotoğrafla karşılaştırılarak kalibre edildi.'),
+        roomFixes: parsed.roomFixes || null,
+        objectFixes: Array.isArray(parsed.objectFixes) ? parsed.objectFixes : [],
+        missingObjects: Array.isArray(parsed.missingObjects) ? parsed.missingObjects.slice(0, 4) : [],
       });
     }
 

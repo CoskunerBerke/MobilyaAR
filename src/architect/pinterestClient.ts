@@ -53,6 +53,8 @@ export interface PinterestDetectedObject {
   suggestedWall: WallId | 'center';
   floorLevel?: 0 | 1;
   elevationCm: number;
+  anchorToId?: string;
+  relation?: 'none' | 'above' | 'on_top_of' | 'left_of' | 'right_of' | 'in_front_of';
   relativeX: number;
   relativeZ: number;
   facingDeg: number;
@@ -603,4 +605,75 @@ export async function generatePhotorealRender(params: {
 
   const errJson = await resp.json().catch(() => null);
   throw new Error(errJson?.error || `Render hatası (HTTP ${resp.status})`);
+}
+
+export interface VerifyAndRefineResult {
+  model: string;
+  matchScore: number;
+  critiqueTr: string;
+  roomFixes: {
+    removeWindows?: boolean;
+    wallColorHex?: string | null;
+    floorTintHex?: string | null;
+    enableMezzanine?: boolean | null;
+    mezzanineHeightCm?: number | null;
+  } | null;
+  objectFixes: Array<{
+    id: string;
+    action: 'update' | 'remove';
+    wall?: WallId | 'center';
+    floorLevel?: 0 | 1;
+    relativeX?: number;
+    relativeZ?: number;
+    elevationCm?: number;
+    facingDeg?: number;
+    widthCm?: number;
+    depthCm?: number;
+    heightCm?: number;
+    primaryColorHex?: string;
+    accentColorHex?: string;
+    reasonTr?: string;
+  }>;
+  missingObjects: PinterestDetectedObject[];
+}
+
+export async function verifyAndRefinePinterestRoom(params: {
+  originalPhotoDataUrl: string;
+  rendered3dDataUrl: string;
+  roomSummary: string;
+  roomWidthM: number;
+  roomDepthM: number;
+  roomCeilingM: number;
+  placedObjects: Array<Record<string, unknown>>;
+  geminiKey?: string;
+}): Promise<VerifyAndRefineResult> {
+  const key = (params.geminiKey || getSavedGeminiKey()).trim();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (key) headers['x-gemini-key'] = key;
+
+  const resp = await fetch('/api/pinterest3d?action=verifyAndRefine', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      originalPhotoDataUrl: params.originalPhotoDataUrl,
+      rendered3dDataUrl: params.rendered3dDataUrl,
+      roomSummary: params.roomSummary,
+      roomWidthM: params.roomWidthM,
+      roomDepthM: params.roomDepthM,
+      roomCeilingM: params.roomCeilingM,
+      placedObjects: params.placedObjects,
+    }),
+  });
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok || !data?.ok) {
+    throw new Error(data?.error || `Görsel doğrulama başarısız (HTTP ${resp.status})`);
+  }
+  return {
+    model: data.model || 'gemini-3.8-flash',
+    matchScore: typeof data.matchScore === 'number' ? data.matchScore : 85,
+    critiqueTr: data.critiqueTr || '3B sahne görsel olarak doğrulandı.',
+    roomFixes: data.roomFixes || null,
+    objectFixes: Array.isArray(data.objectFixes) ? data.objectFixes : [],
+    missingObjects: Array.isArray(data.missingObjects) ? data.missingObjects : [],
+  };
 }

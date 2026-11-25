@@ -35,10 +35,17 @@ import {
   resolvePinterestArchetype,
   sampleDominantHexFromDataUrl,
   saveGeminiKey,
+  verifyAndRefinePinterestRoom,
   type PinterestDetectedObject,
   type PinterestRoomStyle,
   type PinterestServerConfig,
 } from './pinterestClient';
+import {
+  applyArchitecturalRelationships,
+  applyVisualCritiqueFixes,
+  resolveMezzaninePlan,
+  type VisualRefineRoomFix,
+} from './layoutSolver';
 import {
   WALL_LABELS,
   getMezzanineBounds,
@@ -58,6 +65,7 @@ interface Props {
     style: PinterestRoomStyle | null,
     replaceExisting: boolean
   ) => void;
+  onRefinePinterestScene?: (objects: ArchPlacedObject[], roomFixes: VisualRefineRoomFix | null) => void;
   onAddGeneratedObject: (obj: ArchPlacedObject) => void;
   onSelectObjectInRoom: (objId: string) => void;
   onRemoveObjectInRoom: (objId: string) => void;
@@ -160,6 +168,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
   project,
   onApplyRoomStyle,
   onApplyPinterestScene,
+  onRefinePinterestScene,
   onAddGeneratedObject,
   onSelectObjectInRoom,
   onRemoveObjectInRoom,
@@ -180,8 +189,17 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [refining, setRefining] = useState(false);
   const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
   const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(true);
+  const [autoVerifyAfterBuild, setAutoVerifyAfterBuild] = useState(true);
+  const [qaResult, setQaResult] = useState<{
+    matchScore: number;
+    critiqueTr: string;
+    fixedCount: number;
+    addedCount: number;
+    model: string;
+  } | null>(null);
   const [roomStyle, setRoomStyle] = useState<PinterestRoomStyle | null>(null);
   const [detected, setDetected] = useState<PinterestDetectedObject[]>([]);
   const [jobs, setJobs] = useState<Record<string, ItemJobState>>({});
@@ -622,7 +640,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
       };
     }
 
-    onApplyPinterestScene(builtObjects, styleToApply, replaceExisting);
+    const sourceMap = new Map<string, PinterestDetectedObject>();
+    ordered.forEach((it) => sourceMap.set(it.id, it));
+
+    // Stage 2: Enforce universal architectural parent-child physics (lamps on tables, nightstands beside beds, chairs facing desks/tables, etc.)
+    const solvedObjects = applyArchitecturalRelationships(
+      builtObjects,
+      sourceMap,
+      project,
+      effectiveCeilingM,
+      mezBounds
+    );
+
+    onApplyPinterestScene(solvedObjects, styleToApply, replaceExisting);
     setJobs((prev) => {
       const next = { ...prev };
       for (const [id, patch] of Object.entries(jobPatches)) {
@@ -630,10 +660,176 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
       return next;
     });
-    setStatusBanner(
-      `${builtObjects.length} Pinterest parçası${mezSpec ? ' (2 katlı asma kat dahil!)' : ''} gerçek renk ve konumlarıyla 3B odaya kuruldu! İstediğine tıklayıp rengini değiştirebilir veya tek tıkla silebilirsin.`
-    );
-    onToast(`Pinterest odası ${builtObjects.length} parçayla 3B olarak kuruldu!`);
+
+    if (autoVerifyAfterBuild) {
+      await runVisualSelfCritique(solvedObjects, styleToApply, imgUrl, sourceMap, effectiveCeilingM, mezSpec);
+    } else {
+      setStatusBanner(
+        `${solvedObjects.length} Pinterest parçası${mezSpec ? ' (2 katlı asma kat dahil!)' : ''} gerçek renk ve konumlarıyla 3B odaya kuruldu!`
+      );
+      onToast(`Pinterest odası ${solvedObjects.length} parçayla 3B olarak kuruldu!`);
+    }
+  };
+
+  /**
+   * STAGE 3 — Visual Self-Critique & Auto-Correction Loop:
+   * Captures our live 3D rendered room, sends [Original Pinterest Photo + Rendered 3D Screenshot + Placed Object JSON]
+   * to Vision AI, and automatically applies every position/wall/floor/color/window correction!
+   */
+  const runVisualSelfCritique = async (
+    currentObjs: ArchPlacedObject[],
+    styleCtx: PinterestRoomStyle | null,
+    origImgUrl: string,
+    sourceMapInput?: Map<string, PinterestDetectedObject>,
+    ceilingOverride?: number,
+    mezOverride?: ArchMezzanine | null
+  ) => {
+    setRefining(true);
+    setStatusBanner('Adım 3/3 · Görsel Kalite Kontrolü: 3B oda orijinal fotoğrafla karşılaştırılıp hatalı yerleşimler düzeltiliyor...');
+    try {
+      // Wait for Three.js WebGL camera reset & geometry rebuild to finish drawing a fresh clean frame
+      await new Promise((r) => setTimeout(r, 700));
+      const snap3d = onCaptureViewport();
+      if (!snap3d) {
+        setStatusBanner(`${currentObjs.length} Pinterest parçası 3B odaya kuruldu!`);
+        return;
+      }
+
+      const effCeil = ceilingOverride || project.ceilingM;
+      const effMez = mezOverride !== undefined ? mezOverride : project.mezzanine || null;
+      const summary = `${styleCtx?.styleNameTr || 'Mimari Oda'} · Tavan ${effCeil.toFixed(2)}m · ${
+        effMez?.enabled ? `2 Katlı Asma Kat (${Math.round(effMez.heightM * 100)}cm)` : 'Tek Kat'
+      }`;
+
+      const qa = await verifyAndRefinePinterestRoom({
+        originalPhotoDataUrl: origImgUrl,
+        rendered3dDataUrl: snap3d,
+        roomSummary: summary,
+        roomWidthM: project.widthM,
+        roomDepthM: project.depthM,
+        roomCeilingM: effCeil,
+        placedObjects: currentObjs as unknown as Array<Record<string, unknown>>,
+        geminiKey,
+      });
+
+      const updatedCeil =
+        qa.roomFixes?.enableMezzanine && effCeil < 3.85 ? 4.1 : effCeil;
+      const updatedMez: ArchMezzanine | undefined =
+        qa.roomFixes?.enableMezzanine
+          ? {
+              enabled: true,
+              anchorWall: effMez?.anchorWall || 'north',
+              heightM: (qa.roomFixes.mezzanineHeightCm || 205) / 100,
+              depthM: effMez?.depthM || Math.round(project.depthM * 52) / 100,
+              widthRatio: effMez?.widthRatio || 0.78,
+              stairGapSide: effMez?.stairGapSide || 'west',
+              thicknessM: 0.16,
+              deckColorHex: effMez?.deckColorHex || styleCtx?.floorTintHex || '#c9b092',
+              railingStyle: effMez?.railingStyle || 'none',
+              underLed: true,
+            }
+          : effMez || undefined;
+
+      const { objects: refinedObjs, appliedCount } = applyVisualCritiqueFixes(currentObjs, qa.objectFixes, {
+        widthM: project.widthM,
+        depthM: project.depthM,
+        ceilingM: updatedCeil,
+        mezzanine: updatedMez,
+      });
+
+      // Spawn any obvious missed hero items reported by QA (capped to 3)
+      const addedObjs: ArchPlacedObject[] = [];
+      const addedDetected: PinterestDetectedObject[] = [];
+      if (qa.missingObjects && qa.missingObjects.length > 0) {
+        const mezB = getMezzanineBounds({
+          widthM: project.widthM,
+          depthM: project.depthM,
+          ceilingM: updatedCeil,
+          mezzanine: updatedMez,
+        });
+        const occG: OBB2D[] = refinedObjs
+          .filter((o) => (o.floorLevel || 0) === 0 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
+          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+        const occU: OBB2D[] = refinedObjs
+          .filter((o) => o.floorLevel === 1 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
+          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+        const wcG: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+        const wcU: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+        for (const miss of qa.missingObjects.slice(0, 3)) {
+          const built = await buildInstant3DObject(
+            miss,
+            origImgUrl,
+            occG,
+            wcG,
+            occU,
+            wcU,
+            updatedCeil,
+            mezB,
+            updatedMez || null
+          );
+          addedObjs.push(built.obj);
+          addedDetected.push(miss);
+        }
+      }
+
+      const combined = [...refinedObjs, ...addedObjs];
+      const srcMap = new Map<string, PinterestDetectedObject>(sourceMapInput || []);
+      detected.forEach((d) => srcMap.set(d.id, d));
+      addedDetected.forEach((d) => srcMap.set(d.id, d));
+
+      const finalObjects = applyArchitecturalRelationships(
+        combined,
+        srcMap,
+        project,
+        updatedCeil,
+        getMezzanineBounds({
+          widthM: project.widthM,
+          depthM: project.depthM,
+          ceilingM: updatedCeil,
+          mezzanine: updatedMez,
+        })
+      );
+
+      if (addedDetected.length > 0) {
+        setDetected((prev) => [...prev, ...addedDetected]);
+        setJobs((prev) => {
+          const next = { ...prev };
+          addedDetected.forEach((d) => {
+            next[d.id] = { selected: true, status: 'done', progressText: 'Görsel kontrol ile eklendi' };
+          });
+          return next;
+        });
+      }
+
+      if (onRefinePinterestScene) {
+        onRefinePinterestScene(finalObjects, qa.roomFixes);
+      } else {
+        onApplyPinterestScene(finalObjects, styleCtx, true);
+      }
+
+      setQaResult({
+        matchScore: qa.matchScore,
+        critiqueTr: qa.critiqueTr,
+        fixedCount: appliedCount,
+        addedCount: addedObjs.length,
+        model: qa.model,
+      });
+      setStatusBanner(
+        `✓ 3 Aşamalı Doğrulama Tamamlandı (${finalObjects.length} parça · ${appliedCount} düzeltme${
+          addedObjs.length > 0 ? `, +${addedObjs.length} eksik parça eklendi` : ''
+        }).`
+      );
+      onToast(`3B oda görsel olarak doğrulandı (${appliedCount} otomatik düzeltme)!`);
+    } catch (err) {
+      // Initial Stage-2 scene is already cleanly built; surface non-fatal QA note gracefully
+      setStatusBanner(
+        `${currentObjs.length} Pinterest parçası 3B odaya kuruldu (Görsel doğrulama atlandı: ${
+          err instanceof Error ? err.message.slice(0, 90) : 'tekrar deneyebilirsiniz'
+        }).`
+      );
+    } finally {
+      setRefining(false);
+    }
   };
 
   const handleUploadInspiration = async (file: File | null) => {
@@ -644,6 +840,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       setRoomStyle(null);
       setDetected([]);
       setJobs({});
+      setQaResult(null);
       setDrawMode('off');
       setDraftBox(null);
       setStatusBanner(null);
@@ -660,8 +857,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return;
     }
     setAnalyzing(true);
+    setQaResult(null);
     setDrawMode('off');
-    setStatusBanner('Yapay zeka odadaki tüm mobilya, renk, ölçü ve dokuları analiz ediyor...');
+    setStatusBanner('Adım 1/3 · Mimari Analiz: Duvarlar, kat yapısı, renkler ve tüm eşyalar okunuyor...');
     try {
       const res = await analyzePinterestRoom({
         imageDataUrl: photoDataUrl,
@@ -679,6 +877,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       setJobs(initJobs);
 
       if (autoPopulateOnAnalyze && res.detectedObjects.length > 0) {
+        setStatusBanner('Adım 2/3 · Mimari İlişki Motoru: Eşyalar doğru duvarlara, katlara ve hizalara kuruluyor...');
         await assembleAllInstantIn3D(res.detectedObjects, res.roomStyle, photoDataUrl, replaceExistingOnBuild);
       } else {
         setStatusBanner(
@@ -1374,18 +1573,31 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 />
                 <span>Mevcut demo eşyalarını temizleyip yeni odayı kur</span>
               </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoVerifyAfterBuild}
+                  onChange={(e) => setAutoVerifyAfterBuild(e.target.checked)}
+                  className="accent-stone-950"
+                />
+                <span className="font-medium text-stone-900">
+                  Kurulum sonrası 3B sahneyi fotoğrafla doğrula &amp; otomatik düzelt
+                </span>
+              </label>
             </div>
 
             <button
               type="button"
-              disabled={analyzing}
+              disabled={analyzing || refining}
               onClick={handleAnalyze}
               className="w-full py-2.5 bg-stone-950 hover:bg-stone-800 disabled:opacity-50 text-white font-semibold flex items-center justify-center gap-2 transition"
             >
-              {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {analyzing || refining ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               <span>
-                {analyzing
-                  ? 'Oda Analiz Ediliyor & 3B Kuruluyor...'
+                {refining
+                  ? '3/3 · Görsel Kontrol & Düzeltme Yapılıyor...'
+                  : analyzing
+                  ? '1/3 · Oda Analiz Ediliyor & 3B Kuruluyor...'
                   : autoPopulateOnAnalyze
                   ? "Pinterest Odasını Analiz Et & 3B'ye Kur"
                   : 'Odayı & Tüm Eşyaları Tespit Et'}
@@ -1398,6 +1610,39 @@ export const PinterestAIPanel: React.FC<Props> = ({
       {statusBanner && (
         <div className="border border-stone-300 bg-white px-3 py-2 text-[11px] text-stone-800 leading-snug">
           {statusBanner}
+        </div>
+      )}
+
+      {/* Stage 3 Visual QA Readout & On-Demand Re-Verify Button */}
+      {photoDataUrl && project.objects.length > 0 && (qaResult || detected.length > 0) && (
+        <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-800">
+              Görsel Kalite Kontrolü (Aşama 3)
+            </span>
+            {qaResult && (
+              <span className="text-[10px] font-mono font-bold text-emerald-700">
+                Uyum %{qaResult.matchScore}
+              </span>
+            )}
+          </div>
+          {qaResult && (
+            <p className="text-[11px] text-stone-700 leading-snug">
+              {qaResult.critiqueTr}{' '}
+              <span className="font-mono text-[10px] text-stone-500">
+                ({qaResult.fixedCount} düzeltme{qaResult.addedCount > 0 ? `, +${qaResult.addedCount} ekleme` : ''})
+              </span>
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={analyzing || refining}
+            onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl)}
+            className="w-full py-1.5 border border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-950 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+          >
+            {refining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+            <span>{refining ? 'Fotoğrafla Karşılaştırılıyor...' : '3B Sahneyi Fotoğrafla Tekrar Doğrula & Düzelt'}</span>
+          </button>
         </div>
       )}
 

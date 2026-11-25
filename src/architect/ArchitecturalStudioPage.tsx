@@ -1690,6 +1690,52 @@ export const ArchitecturalStudioPage: React.FC = () => {
               setSelection(null);
             }
           }}
+          onRefinePinterestScene={(nextObjects, roomFixes) => {
+            setProject((prev) => {
+              const nextCeil =
+                roomFixes?.enableMezzanine && prev.ceilingM < 3.85 ? 4.1 : prev.ceilingM;
+              const nextMez =
+                roomFixes?.enableMezzanine === true
+                  ? {
+                      enabled: true,
+                      anchorWall: prev.mezzanine?.anchorWall || ('north' as WallId),
+                      heightM: (roomFixes.mezzanineHeightCm || 205) / 100,
+                      depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
+                      widthRatio: prev.mezzanine?.widthRatio || 0.78,
+                      stairGapSide: prev.mezzanine?.stairGapSide || ('west' as const),
+                      thicknessM: 0.16,
+                      deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
+                      railingStyle: prev.mezzanine?.railingStyle || ('none' as const),
+                      underLed: true,
+                    }
+                  : roomFixes?.enableMezzanine === false
+                  ? undefined
+                  : prev.mezzanine;
+
+              const nextWalls =
+                roomFixes?.wallColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.wallColorHex)
+                  ? {
+                      north: { ...prev.walls.north, colorHex: roomFixes.wallColorHex },
+                      south: { ...prev.walls.south, colorHex: roomFixes.wallColorHex },
+                      west: { ...prev.walls.west, colorHex: roomFixes.wallColorHex },
+                      east: { ...prev.walls.east, colorHex: roomFixes.wallColorHex },
+                    }
+                  : prev.walls;
+
+              return {
+                ...prev,
+                ceilingM: nextCeil,
+                mezzanine: nextMez,
+                walls: nextWalls,
+                floorTintHex:
+                  roomFixes?.floorTintHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.floorTintHex)
+                    ? roomFixes.floorTintHex
+                    : prev.floorTintHex,
+                ...(roomFixes?.removeWindows ? { windows: [], curtainCoves: [] } : {}),
+                objects: nextObjects,
+              };
+            });
+          }}
           onAddGeneratedObject={(obj) => {
             setProject((prev) => {
               // If upgrading/replacing an existing instant Pinterest object in-place, preserve its exact position & rotation!
