@@ -568,21 +568,27 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
       }
 
       const compactList = Array.isArray(placedObjects)
-        ? placedObjects.slice(0, 24).map((o) => ({
-            id: o.id,
-            name: o.name,
-            kind: o.parametricKind || 'glb',
-            wall: o.attachedWall || 'center',
-            floorLevel: o.floorLevel || 0,
-            relativeX: Number(((o.x || 0) / Math.max(0.5, roomWidthM * 0.45)).toFixed(2)),
-            relativeZ: Number(((o.z || 0) / Math.max(0.5, roomDepthM * 0.45)).toFixed(2)),
-            elevationCm: Math.round((o.y || 0) * 100),
-            facingDeg: Math.round((((o.rot || 0) * 180) / Math.PI) % 360),
-            widthCm: Math.round((o.widthM || 1) * 100),
-            depthCm: Math.round((o.depthM || 1) * 100),
-            heightCm: Math.round((o.heightM || 1) * 100),
-            colorHex: o.parametricColorHex || o.tintHex || '',
-          }))
+        ? placedObjects.slice(0, 24).map((o) => {
+            const fl = o.floorLevel === 1 ? 1 : 0;
+            // Send relative elevation above the object's OWN floor level so 2nd-floor items report 0cm (not 205cm)!
+            const floorBaseM = fl === 1 && Number(o.y || 0) >= 1.5 ? (Number(o.y) >= 2.6 ? 2.05 : Number(o.y)) : 0;
+            const relElevCm = Math.max(0, Math.round(((o.y || 0) - (fl === 1 ? floorBaseM : 0)) * 100));
+            return {
+              id: o.id,
+              name: o.name,
+              kind: o.parametricKind || 'glb',
+              wall: o.attachedWall || 'center',
+              floorLevel: fl,
+              relativeX: Number(((o.x || 0) / Math.max(0.5, roomWidthM * 0.45)).toFixed(2)),
+              relativeZ: Number(((o.z || 0) / Math.max(0.5, roomDepthM * 0.45)).toFixed(2)),
+              elevationCm: relElevCm,
+              facingDeg: Math.round((((o.rot || 0) * 180) / Math.PI) % 360),
+              widthCm: Math.round((o.widthM || 1) * 100),
+              depthCm: Math.round((o.depthM || 1) * 100),
+              heightCm: Math.round((o.heightM || 1) * 100),
+              colorHex: o.parametricColorHex || o.tintHex || '',
+            };
+          })
         : [];
 
       const refinePrompt = `You are a strict Senior Interior Architecture QA Inspector.

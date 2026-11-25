@@ -512,8 +512,24 @@ export function applyVisualCritiqueFixes(
       }
     }
 
-    if (typeof f.elevationCm === 'number' && Number.isFinite(f.elevationCm)) {
-      o.y = Math.max(0, Math.min(project.ceilingM - o.heightM - 0.04, baseY + f.elevationCm / 100));
+    const isHighWallKind =
+      o.parametricKind === 'wall_art' ||
+      o.parametricKind === 'wall_tv' ||
+      o.parametricKind === 'ac_unit' ||
+      o.parametricKind === 'chandelier' ||
+      (o.parametricKind === 'wall_mirror' && o.heightM < 1.25 && !/boy|ayakta|zemin|full/i.test(o.name));
+    const isFloorStandingKind = !isHighWallKind && o.parametricKind !== 'table_lamp';
+
+    if (isFloorStandingKind) {
+      // Floor & rug items ALWAYS sit flush on their own floor level (0 or mezzanine deck top — NEVER float!)
+      o.y = o.mountMode === 'rug' ? baseY + 0.004 : baseY;
+    } else if (typeof f.elevationCm === 'number' && Number.isFinite(f.elevationCm)) {
+      // Guard against AI echoing world elevation (e.g. 205cm) instead of relative elevation above mezzanine!
+      let relM = f.elevationCm / 100;
+      if (floorLevel === 1 && mezBounds && relM >= mezBounds.topY - 0.15) {
+        relM = Math.max(0, relM - mezBounds.topY);
+      }
+      o.y = Math.max(baseY, Math.min(project.ceilingM - o.heightM - 0.04, baseY + relM));
     } else if (f.floorLevel !== undefined) {
       o.y = baseY;
     }
