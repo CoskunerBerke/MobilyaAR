@@ -217,7 +217,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const hasGeminiAccess = serverCfg.geminiConfigured || Boolean(serverCfg.openaiConfigured) || Boolean(geminiKey.trim());
+  const hasGeminiAccess =
+    serverCfg.geminiConfigured ||
+    Boolean(serverCfg.groqConfigured) ||
+    Boolean(serverCfg.openaiConfigured) ||
+    Boolean(serverCfg.openrouterConfigured) ||
+    Boolean(geminiKey.trim());
 
   const findPlacedObjForItem = (itemId: string): ArchPlacedObject | undefined =>
     project.objects.find((o) => o.pinterestItemId === itemId);
@@ -890,7 +895,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
           <span className={hasGeminiAccess ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
-            ● Vision AI: {serverCfg.geminiConfigured ? 'Sunucu Bağlı' : geminiKey ? 'Oturum Anahtarı' : 'Anahtar Gerekli'}
+            ● Vision AI:{' '}
+            {geminiKey.trim()
+              ? 'Oturum Anahtarı'
+              : serverCfg.groqConfigured || serverCfg.openaiConfigured || serverCfg.openrouterConfigured
+              ? 'Çift Motor Bağlı'
+              : serverCfg.geminiConfigured
+              ? 'Sunucu Bağlı'
+              : 'Anahtar Gerekli'}
           </span>
           <span className={runpodReady ? 'text-emerald-700 font-semibold' : 'text-stone-500'}>
             ● 2K PBR: {runpodReady ? 'Hazır' : 'Opsiyonel'}
@@ -900,7 +912,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         {showKeyBox && (
           <div className="pt-2 border-t border-stone-200 space-y-2">
             <label className="block text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              Gemini (AIza...) veya OpenAI (sk-...) API Key
+              Gemini (AIza...) · Groq Ücretsiz (gsk_...) · OpenAI (sk-...)
             </label>
             <div className="flex items-center gap-1.5 min-w-0">
               <input
@@ -912,7 +924,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   geminiImageQuotaBlockedRef.current = false;
                   setGeminiImageQuotaNote(false);
                 }}
-                placeholder="AIzaSy... veya sk-..."
+                placeholder="AIzaSy... / gsk_... / sk-..."
                 className="flex-1 min-w-0 w-full px-2 py-1.5 border border-stone-300 bg-white font-mono text-[11px]"
               />
               <button
@@ -929,7 +941,28 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   setTestingKey(true);
                   setKeyTestResult('Test ediliyor...');
                   try {
-                    if (clean.startsWith('sk-')) {
+                    if (clean.startsWith('gsk_')) {
+                      const r = await fetch('https://api.groq.com/openai/v1/models', {
+                        headers: { Authorization: `Bearer ${clean}` },
+                      });
+                      if (r.ok) {
+                        setKeyTestResult('✓ Groq Llama-4 Vision doğrulandı (Ücretsiz & 503 yok!)');
+                        onToast('Groq API anahtarı doğrulandı ve kaydedildi!');
+                      } else {
+                        const d = await r.json().catch(() => null);
+                        setKeyTestResult(`Hata: ${d?.error?.message || 'Groq anahtarı geçersiz'}`);
+                      }
+                    } else if (clean.startsWith('sk-or-')) {
+                      const r = await fetch('https://openrouter.ai/api/v1/auth/key', {
+                        headers: { Authorization: `Bearer ${clean}` },
+                      });
+                      if (r.ok) {
+                        setKeyTestResult('✓ OpenRouter Vision doğrulandı');
+                        onToast('OpenRouter API anahtarı doğrulandı!');
+                      } else {
+                        setKeyTestResult('Hata: OpenRouter anahtarı geçersiz');
+                      }
+                    } else if (clean.startsWith('sk-')) {
                       const r = await fetch('https://api.openai.com/v1/models', {
                         headers: { Authorization: `Bearer ${clean}` },
                       });

@@ -2,7 +2,9 @@ import type { FloorMaterialKind, ParametricFurnitureKind, WallId, WallPattern } 
 
 export interface PinterestServerConfig {
   geminiConfigured: boolean;
+  groqConfigured?: boolean;
   openaiConfigured?: boolean;
+  openrouterConfigured?: boolean;
   runpodConfigured: boolean;
   visionModel: string;
   imageModel: string;
@@ -224,7 +226,9 @@ export async function fetchPinterestConfig(): Promise<PinterestServerConfig> {
       if (d && d.ok) {
         return {
           geminiConfigured: Boolean(d.geminiConfigured),
+          groqConfigured: Boolean(d.groqConfigured),
           openaiConfigured: Boolean(d.openaiConfigured),
+          openrouterConfigured: Boolean(d.openrouterConfigured),
           runpodConfigured: Boolean(d.runpodConfigured),
           visionModel: d.visionModel || DIRECT_VISION_MODELS[0],
           imageModel: d.imageModel || DIRECT_IMAGE_MODELS[0],

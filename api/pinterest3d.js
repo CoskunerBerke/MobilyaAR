@@ -53,7 +53,7 @@ const IMAGE_MODELS = [
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-gemini-key, x-openai-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-gemini-key, x-openai-key, x-groq-key, x-openrouter-key');
 }
 
 function splitDataUrl(dataUrl) {
@@ -62,20 +62,33 @@ function splitDataUrl(dataUrl) {
   return { mimeType: m[1], data: m[2] };
 }
 
-function getGeminiKey(req) {
-  const fromHeader = String(req.headers['x-gemini-key'] || '').trim();
-  const fromEnv = String(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '').trim();
-  if (fromHeader && !fromHeader.startsWith('sk-')) return fromHeader;
-  return fromEnv;
+function classifyKey(raw) {
+  const k = String(raw || '').trim();
+  if (!k) return null;
+  if (k.startsWith('gsk_')) return { provider: 'groq', key: k };
+  if (k.startsWith('sk-or-')) return { provider: 'openrouter', key: k };
+  if (k.startsWith('sk-')) return { provider: 'openai', key: k };
+  return { provider: 'gemini', key: k };
 }
 
-function getOpenAIKey(req) {
-  const explicit = String(req.headers['x-openai-key'] || '').trim();
-  const fromGeminiBox = String(req.headers['x-gemini-key'] || '').trim();
-  const fromEnv = String(process.env.OPENAI_API_KEY || '').trim();
-  if (explicit) return explicit;
-  if (fromGeminiBox.startsWith('sk-')) return fromGeminiBox;
-  return fromEnv;
+function resolveProviderKeys(req) {
+  const headerBox = classifyKey(req.headers['x-gemini-key']);
+  const keys = {
+    gemini: String(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '').trim(),
+    groq: String(req.headers['x-groq-key'] || process.env.GROQ_API_KEY || '').trim(),
+    openai: String(req.headers['x-openai-key'] || process.env.OPENAI_API_KEY || '').trim(),
+    openrouter: String(req.headers['x-openrouter-key'] || process.env.OPENROUTER_API_KEY || '').trim(),
+    preferred: null,
+  };
+  if (headerBox) {
+    keys[headerBox.provider] = headerBox.key;
+    keys.preferred = headerBox.provider;
+  }
+  return keys;
+}
+
+function getGeminiKey(req) {
+  return resolveProviderKeys(req).gemini;
 }
 
 async function discoverFallbackModels(apiKey, mode, alreadyTried) {
@@ -148,8 +161,14 @@ async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, exp
 }
 
 async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
+  const statusMap = [];
   const errors = [];
   const tried = new Set();
+  const recordErr = (model, e) => {
+    const st = e?.status || 'ERR';
+    statusMap.push(`${model}:${st}`);
+    errors.push(e?.message || String(e));
+  };
 
   // For Vision: race COMPLETELY SEPARATE serving pools in parallel waves -> beats 503 spikes!
   if (mode === 'vision') {
@@ -160,8 +179,8 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 38000 : 18000, true).catch((e) => {
-              errors.push(e.message || String(e));
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 35000 : 16000, true).catch((e) => {
+              recordErr(m, e);
               throw e;
             })
           )
@@ -174,22 +193,32 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
         }
       }
     }
-    const discovered = await discoverFallbackModels(apiKey, 'vision', tried);
-    if (discovered.length > 0) {
+
+    // One brief jittered retry wave if transient 503 high-demand spike hit every pool
+    const had503 = statusMap.some((s) => s.endsWith(':503'));
+    if (had503) {
+      await new Promise((r) => setTimeout(r, 1800));
       try {
         return await Promise.any(
-          discovered.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, 14000, true).catch((e) => {
-              errors.push(e.message || String(e));
+          ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemma-4-26b-a4b-it'].map((m) =>
+            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 26000 : 12000, true).catch((e) => {
+              recordErr(`${m}[retry]`, e);
               throw e;
             })
           )
         );
       } catch {
-        /* fall through */
+        /* fall through to summary */
       }
     }
-    throw new Error(errors.join(' | ').slice(0, 480) || 'Gemini Vision sunucuları şu an yoğun, lütfen 5 saniye sonra tekrar deneyin.');
+
+    const summary = statusMap.join(', ');
+    if (had503) {
+      throw new Error(
+        `Google Gemini ücretsiz kota sunucuları şu an yoğun (503). Birkaç saniye sonra tekrar deneyin veya API kutusuna ücretsiz Groq (gsk_...) / OpenAI (sk-...) anahtarı girin. [${summary}]`
+      );
+    }
+    throw new Error(`Gemini Vision başarısız: ${summary || errors[0] || 'Bilinmeyen hata'}`);
   }
 
   // Image generation mode: sequential fallback across image models
@@ -267,38 +296,109 @@ function parseJsonResponse(rawText) {
 const VALID_ARCHETYPES =
   '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_wall_unit" | "wall_tv" | "fireplace_marble" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
 
-async function callOpenAIVisionBackup(prompt, imageDataUrls, openAiKeyOverride = '') {
-  const openAiKey = String(openAiKeyOverride || process.env.OPENAI_API_KEY || '').trim();
-  if (!openAiKey) return null;
+async function callOpenAICompatibleVision({ endpoint, apiKey, models, prompt, imageDataUrls, label, extraHeaders = {} }) {
+  if (!apiKey) throw new Error(`${label} anahtarı eksik.`);
   const content = [{ type: 'text', text: prompt }];
   for (const url of imageDataUrls) {
     if (url) content.push({ type: 'image_url', image_url: { url } });
   }
-  for (const model of ['gpt-4.1-mini', 'gpt-4o-mini']) {
+  const errs = [];
+  for (const model of models) {
     try {
-      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      const r = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${openAiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          ...extraHeaders,
         },
         body: JSON.stringify({
           model,
-          temperature: 0.2,
+          temperature: 0.15,
+          max_tokens: 4096,
           response_format: { type: 'json_object' },
           messages: [{ role: 'user', content }],
         }),
         signal: AbortSignal.timeout(24000),
       });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const txt = j?.choices?.[0]?.message?.content;
-      if (txt) return { model: `openai:${model}`, text: txt };
-    } catch {
-      /* try next */
+      const txt = await r.text();
+      if (!r.ok) {
+        errs.push(`${label}/${model}:${r.status}`);
+        continue;
+      }
+      const j = JSON.parse(txt);
+      const out = j?.choices?.[0]?.message?.content;
+      if (out) {
+        return { model: `${label}:${model}`, parsed: parseJsonResponse(out) };
+      }
+    } catch (e) {
+      errs.push(`${label}/${model}:${e?.name || 'ERR'}`);
     }
   }
-  return null;
+  throw new Error(`${label} Vision başarısız: ${errs.join(', ')}`);
+}
+
+async function runMultiProviderVision({ keys, prompt, imageDataUrls, geminiBody }) {
+  const runners = {};
+  if (keys.gemini) {
+    runners.gemini = async () => {
+      const win = await callGeminiWithFallback(keys.gemini, VISION_MODELS, geminiBody, 'vision');
+      return { model: win.model, parsed: win.parsed || parseJsonResponse(extractText(win.json)) };
+    };
+  }
+  if (keys.groq) {
+    runners.groq = () =>
+      callOpenAICompatibleVision({
+        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+        apiKey: keys.groq,
+        models: ['meta-llama/llama-4-maverick-17b-128e-instruct', 'meta-llama/llama-4-scout-17b-16e-instruct'],
+        prompt,
+        imageDataUrls,
+        label: 'groq',
+      });
+  }
+  if (keys.openai) {
+    runners.openai = () =>
+      callOpenAICompatibleVision({
+        endpoint: 'https://api.openai.com/v1/chat/completions',
+        apiKey: keys.openai,
+        models: ['gpt-4.1-mini', 'gpt-4o-mini'],
+        prompt,
+        imageDataUrls,
+        label: 'openai',
+      });
+  }
+  if (keys.openrouter) {
+    runners.openrouter = () =>
+      callOpenAICompatibleVision({
+        endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+        apiKey: keys.openrouter,
+        models: ['google/gemini-2.5-flash', 'openai/gpt-4.1-mini', 'meta-llama/llama-4-maverick'],
+        prompt,
+        imageDataUrls,
+        label: 'openrouter',
+        extraHeaders: { 'HTTP-Referer': 'https://mobilya-ar.vercel.app', 'X-Title': 'MekanAR Mimari' },
+      });
+  }
+
+  // If user explicitly pasted a specific provider key in the UI box, try it first!
+  if (keys.preferred && runners[keys.preferred]) {
+    try {
+      return await runners[keys.preferred]();
+    } catch (prefErr) {
+      const others = Object.entries(runners)
+        .filter(([name]) => name !== keys.preferred)
+        .map(([, fn]) => fn());
+      if (others.length === 0) throw prefErr;
+      return await Promise.any(others);
+    }
+  }
+
+  const all = Object.values(runners).map((fn) => fn());
+  if (all.length === 0) {
+    throw new Error('Vision API anahtarı eksik (GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY veya OPENROUTER_API_KEY).');
+  }
+  return all.length === 1 ? await all[0] : await Promise.any(all);
 }
 
 export default async function handler(req, res) {
@@ -329,7 +429,9 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       geminiConfigured: envGemini,
+      groqConfigured: Boolean(String(process.env.GROQ_API_KEY || '').trim()),
       openaiConfigured: Boolean(String(process.env.OPENAI_API_KEY || '').trim()),
+      openrouterConfigured: Boolean(String(process.env.OPENROUTER_API_KEY || '').trim()),
       runpodConfigured: envRunpod,
       visionModel: VISION_MODELS[0],
       imageModel: IMAGE_MODELS[0],
@@ -341,14 +443,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Yalnızca POST desteklenir.' });
   }
 
-  const rawHeaderKey = String(req.headers['x-gemini-key'] || '').trim();
-  const apiKey = getGeminiKey(req);
-  const openAiKey = getOpenAIKey(req);
-  const preferOpenAI = rawHeaderKey.startsWith('sk-') || Boolean(String(req.headers['x-openai-key'] || '').trim());
-  if (!apiKey && !openAiKey) {
+  const keys = resolveProviderKeys(req);
+  const apiKey = keys.gemini;
+  if (!keys.gemini && !keys.groq && !keys.openai && !keys.openrouter) {
     return res.status(400).json({
       ok: false,
-      error: 'Gemini veya OpenAI API anahtarı eksik. Vercel ortam değişkenine GEMINI_API_KEY (veya OPENAI_API_KEY) ekleyin.',
+      error: 'Vision API anahtarı eksik. GEMINI_API_KEY, GROQ_API_KEY (ücretsiz) veya OPENAI_API_KEY ekleyin.',
     });
   }
 
@@ -405,60 +505,24 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
 - box2d: integers 0..1000 [ymin, xmin, ymax, xmax] tightly enclosing the item.
 - Realistic cm dimensions and non-overlapping layout matching the photo.`;
 
-      let modelUsed = '';
-      let parsed = null;
-      const runGeminiAnalyze = async () => {
-        const win = await callGeminiWithFallback(
-          apiKey,
-          VISION_MODELS,
-          {
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.15,
-              maxOutputTokens: 6144,
-              responseMimeType: 'application/json',
+      const { model: modelUsed, parsed } = await runMultiProviderVision({
+        keys,
+        prompt,
+        imageDataUrls: [imageDataUrl],
+        geminiBody: {
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }, { inlineData: { mimeType: img.mimeType, data: img.data } }],
             },
+          ],
+          generationConfig: {
+            temperature: 0.15,
+            maxOutputTokens: 6144,
+            responseMimeType: 'application/json',
           },
-          'vision'
-        );
-        return { model: win.model, parsed: win.parsed || parseJsonResponse(extractText(win.json)) };
-      };
-      const runOpenAIAnalyze = async () => {
-        const oa = await callOpenAIVisionBackup(prompt, [imageDataUrl], openAiKey);
-        if (!oa) throw new Error('OpenAI Vision yanıt vermedi.');
-        return { model: oa.model, parsed: parseJsonResponse(oa.text) };
-      };
-
-      if (preferOpenAI && openAiKey) {
-        try {
-          const out = await runOpenAIAnalyze();
-          modelUsed = out.model;
-          parsed = out.parsed;
-        } catch (oaErr) {
-          if (!apiKey) throw oaErr;
-          const out = await runGeminiAnalyze();
-          modelUsed = out.model;
-          parsed = out.parsed;
-        }
-      } else if (apiKey && openAiKey) {
-        // Race Gemini pool AND OpenAI Vision simultaneously — guaranteed 2-4s response even during 503 peaks!
-        const out = await Promise.any([runGeminiAnalyze(), runOpenAIAnalyze()]);
-        modelUsed = out.model;
-        parsed = out.parsed;
-      } else if (apiKey) {
-        const out = await runGeminiAnalyze();
-        modelUsed = out.model;
-        parsed = out.parsed;
-      } else {
-        const out = await runOpenAIAnalyze();
-        modelUsed = out.model;
-        parsed = out.parsed;
-      }
+        },
+      });
 
       return res.status(200).json({
         ok: true,
@@ -496,54 +560,19 @@ Return ONLY valid JSON:
       ];
       if (fullImg) parts.push({ inlineData: { mimeType: fullImg.mimeType, data: fullImg.data } });
 
-      let modelUsed = '';
-      let parsed = null;
-      const runGeminiCrop = async () => {
-        const win = await callGeminiWithFallback(
-          apiKey,
-          VISION_MODELS,
-          {
-            contents: [{ role: 'user', parts }],
-            generationConfig: {
-              temperature: 0.15,
-              maxOutputTokens: 1536,
-              responseMimeType: 'application/json',
-            },
+      const { model: modelUsed, parsed } = await runMultiProviderVision({
+        keys,
+        prompt: cropPrompt,
+        imageDataUrls: [croppedImageDataUrl, fullRoomImageDataUrl].filter(Boolean),
+        geminiBody: {
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            temperature: 0.15,
+            maxOutputTokens: 1536,
+            responseMimeType: 'application/json',
           },
-          'vision'
-        );
-        return { model: win.model, parsed: win.parsed || parseJsonResponse(extractText(win.json)) };
-      };
-      const runOpenAICrop = async () => {
-        const oa = await callOpenAIVisionBackup(cropPrompt, [croppedImageDataUrl, fullRoomImageDataUrl], openAiKey);
-        if (!oa) throw new Error('OpenAI Vision yanıt vermedi.');
-        return { model: oa.model, parsed: parseJsonResponse(oa.text) };
-      };
-
-      if (preferOpenAI && openAiKey) {
-        try {
-          const out = await runOpenAICrop();
-          modelUsed = out.model;
-          parsed = out.parsed;
-        } catch (oaErr) {
-          if (!apiKey) throw oaErr;
-          const out = await runGeminiCrop();
-          modelUsed = out.model;
-          parsed = out.parsed;
-        }
-      } else if (apiKey && openAiKey) {
-        const out = await Promise.any([runGeminiCrop(), runOpenAICrop()]);
-        modelUsed = out.model;
-        parsed = out.parsed;
-      } else if (apiKey) {
-        const out = await runGeminiCrop();
-        modelUsed = out.model;
-        parsed = out.parsed;
-      } else {
-        const out = await runOpenAICrop();
-        modelUsed = out.model;
-        parsed = out.parsed;
-      }
+        },
+      });
       return res.status(200).json({ ok: true, model: modelUsed, item: parsed });
     }
 
