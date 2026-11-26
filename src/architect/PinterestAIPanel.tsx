@@ -306,6 +306,136 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [drawMode, setDrawMode] = useState<'off' | 'new' | string>('off');
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const photoWrapRef = useRef<HTMLDivElement | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  // Prevent accidental browser tab navigation when dropping an image anywhere near the panel
+  useEffect(() => {
+    const preventNav = (e: DragEvent) => {
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).some((t) => t === 'Files' || t === 'text/uri-list')) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('dragover', preventNav);
+    window.addEventListener('drop', preventNav);
+    return () => {
+      window.removeEventListener('dragover', preventNav);
+      window.removeEventListener('drop', preventNav);
+    };
+  }, []);
+
+  const handleDroppedDataTransfer = async (dt: DataTransfer | null) => {
+    if (!dt) return;
+
+    // 1) Direct local image file (Windows Explorer / Finder / Desktop / Downloads)
+    const files = Array.from(dt.files || []);
+    const imgFile = files.find((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|avif|gif)$/i.test(f.name));
+    if (imgFile) {
+      await handleUploadInspiration(imgFile);
+      onToast('Fotoğraf sürüklenerek yüklendi!');
+      return;
+    }
+
+    // 2) DataTransferItem file fallback
+    for (const item of Array.from(dt.items || [])) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile();
+        if (f) {
+          await handleUploadInspiration(f);
+          onToast('Fotoğraf sürüklenerek yüklendi!');
+          return;
+        }
+      }
+    }
+
+    // 3) Image dragged directly from a Pinterest / web browser tab (HTML <img src> or URL)
+    const html = dt.getData('text/html') || '';
+    const htmlSrcMatch = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+    const rawUri = (htmlSrcMatch?.[1] || dt.getData('text/uri-list') || dt.getData('text/plain') || '')
+      .split(/\r?\n/)
+      .find((line) => /^https?:\/\/|^data:image\//i.test(line.trim()))
+      ?.trim();
+
+    if (!rawUri) {
+      onToast('Lütfen bir fotoğraf dosyası (JPG/PNG/WebP) sürükleyip bırakın.');
+      return;
+    }
+
+    try {
+      if (rawUri.startsWith('data:image/')) {
+        const res = await fetch(rawUri);
+        const blob = await res.blob();
+        await handleUploadInspiration(new File([blob], 'pinterest-drop.jpg', { type: blob.type || 'image/jpeg' }));
+        onToast('Fotoğraf sürüklenerek yüklendi!');
+        return;
+      }
+
+      // Try direct fetch first; fall back cleanly to our HTTPS image proxy (handles Pinterest i.pinimg.com CORS!)
+      let fetchedBlob: Blob | null = null;
+      try {
+        const direct = await fetch(rawUri);
+        if (direct.ok) {
+          const b = await direct.blob();
+          if (b.type.startsWith('image/')) fetchedBlob = b;
+        }
+      } catch {
+        /* CORS blocked -> use server proxy */
+      }
+
+      if (!fetchedBlob) {
+        const proxyRes = await fetch('/api/pinterest3d?action=fetchImage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: rawUri }),
+        });
+        const proxyJson = await proxyRes.json().catch(() => null);
+        if (proxyRes.ok && proxyJson?.ok && proxyJson?.dataUrl) {
+          const r = await fetch(proxyJson.dataUrl);
+          fetchedBlob = await r.blob();
+        }
+      }
+
+      if (fetchedBlob) {
+        await handleUploadInspiration(
+          new File([fetchedBlob], 'pinterest-drop.jpg', { type: fetchedBlob.type || 'image/jpeg' })
+        );
+        onToast('Tarayıcıdan sürüklenen fotoğraf yüklendi!');
+      } else {
+        onToast('Görsel doğrudan alınamadı — sağ tık "Resmi Kopyala" yapıp Ctrl+V ile yapıştırabilirsiniz.');
+      }
+    } catch {
+      onToast('Görsel okunamadı — dosyayı sürükleyebilir veya Ctrl+V ile yapıştırabilirsiniz.');
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    setIsDraggingFile(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    if (!isDraggingFile) setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsDraggingFile(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+    void handleDroppedDataTransfer(e.dataTransfer);
+  };
 
   // Photoreal V-Ray style render state
   const [renderStyleNote, setRenderStyleNote] = useState(
@@ -1515,7 +1645,20 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const activeHoverItem = detected.find((d) => d.id === hoveredId) || null;
 
   return (
-    <div className="space-y-4 text-xs">
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="space-y-4 text-xs relative"
+    >
+      {isDraggingFile && (
+        <div className="pointer-events-none fixed lg:absolute inset-0 z-40 bg-stone-950/80 border-2 border-dashed border-white flex flex-col items-center justify-center text-white text-center p-4 gap-2">
+          <Upload className="w-7 h-7" />
+          <p className="font-bold text-sm">Fotoğrafı Buraya Bırak</p>
+          <p className="text-[11px] text-stone-200">Bilgisayardan veya Pinterest sekmesinden doğrudan sürükleyebilirsin</p>
+        </div>
+      )}
       {/* Engine status & Gemini API Key config */}
       <div className="border border-stone-200 bg-[#faf9f6] p-3 space-y-2">
         <div className="flex items-center justify-between gap-2">
@@ -1688,11 +1831,17 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
         {!photoDataUrl ? (
           <div className="space-y-2">
-            <label className="block border border-dashed border-stone-400 hover:border-stone-950 bg-white p-5 text-center cursor-pointer transition">
+            <label
+              className={`block border-2 border-dashed p-5 text-center cursor-pointer transition ${
+                isDraggingFile
+                  ? 'border-stone-950 bg-stone-100'
+                  : 'border-stone-400 hover:border-stone-950 bg-white'
+              }`}
+            >
               <Upload className="w-5 h-5 mx-auto text-stone-500 mb-1.5" />
-              <p className="font-semibold text-stone-900">Oda / Ürün Fotoğrafı Yükle veya Ctrl+V</p>
+              <p className="font-semibold text-stone-900">Fotoğrafı Sürükle-Bırak, Seç veya Ctrl+V</p>
               <p className="text-[11px] text-stone-500 mt-0.5">
-                Referans görseli saniyeler içinde seçtiğin odaya 3B olarak kurar
+                Masaüstünden ya da Pinterest sekmesinden doğrudan buraya sürükleyebilirsin
               </p>
               <input
                 type="file"

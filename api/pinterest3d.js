@@ -436,6 +436,46 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (action === 'fetchImage') {
+      const rawUrl = String(req.body?.url || '').trim();
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(rawUrl);
+      } catch {
+        return res.status(400).json({ ok: false, error: 'Geçersiz görsel adresi.' });
+      }
+      if (parsedUrl.protocol !== 'https:') {
+        return res.status(400).json({ ok: false, error: 'Yalnızca HTTPS görsel adresleri desteklenir.' });
+      }
+      const host = parsedUrl.hostname.toLowerCase();
+      if (
+        host === 'localhost' ||
+        host.endsWith('.local') ||
+        /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|::1|\[::1\])/.test(host)
+      ) {
+        return res.status(400).json({ ok: false, error: 'Geçersiz görsel sunucusu.' });
+      }
+      const imgResp = await fetch(parsedUrl.toString(), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MekanAR/1.0)' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!imgResp.ok) {
+        return res.status(502).json({ ok: false, error: `Görsel alınamadı (HTTP ${imgResp.status}).` });
+      }
+      const ct = (imgResp.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+      if (!ct.startsWith('image/')) {
+        return res.status(400).json({ ok: false, error: 'Sürüklenen bağlantı geçerli bir görsel değil.' });
+      }
+      const buf = Buffer.from(await imgResp.arrayBuffer());
+      if (buf.byteLength > 10 * 1024 * 1024) {
+        return res.status(413).json({ ok: false, error: 'Görsel 10 MB sınırını aşıyor.' });
+      }
+      return res.status(200).json({
+        ok: true,
+        dataUrl: `data:${ct};base64,${buf.toString('base64')}`,
+      });
+    }
+
     if (action === 'analyze') {
       const { imageDataUrl, roomWidthM = 5.4, roomDepthM = 4.8, roomCeilingM = 2.85, userPrompt = '' } = req.body || {};
       const img = splitDataUrl(imageDataUrl);
