@@ -38,17 +38,35 @@ import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
 import { BrandCatalogPanel } from './BrandCatalogPanel';
-import { SUPPLIER_SHORT } from './materialCatalogs';
+import {
+  SUPPLIER_SHORT,
+  type CountertopCatalogItem,
+  type DoorPanelCatalogItem,
+  type FurniturePanelCatalogItem,
+  type ParquetCatalogItem,
+  type SkirtingTrimCatalogItem,
+  type WallPanelCatalogItem,
+} from './materialCatalogs';
 import { NumericInput } from './NumericInput';
 import { PinterestAIPanel } from './PinterestAIPanel';
 import { SelectionInspector } from './SelectionInspector';
 import { QUICK_ADD_SUGGESTIONS, parseQuickAddQuery } from './quickAddParser';
+import { runUniversalSearch, type UniversalSearchGroup, type UniversalSearchResult } from './universalSearch';
+import {
+  ROOM_KIND_DEFAULTS,
+  attachAdjacentRoom,
+  buildApartmentPreset,
+  type ApartmentPresetId,
+} from './multiRoomTemplates';
 import { bearingToCompassLabel, bearingToShortCode, computeSolarLighting } from './solarMath';
 import {
   DOOR_KIND_LABELS,
+  PASSAGE_STYLE_LABELS,
+  ROOM_KIND_LABELS,
   WALL_LABELS,
   WINDOW_KIND_LABELS,
   createDefaultArchitectProject,
+  getHouseBounds,
   getWallLengthM,
   type ArchBeam,
   type ArchColumn,
@@ -61,6 +79,8 @@ import {
   type ArchWindow,
   type DoorKind,
   type ParametricFurnitureKind,
+  type PassageStyle,
+  type RoomKind,
   type SolarSeason,
   type WallId,
   type WallPattern,
@@ -68,7 +88,7 @@ import {
 } from './types';
 
 type StudioTab = 'room' | 'catalog' | 'objects' | 'sun' | 'pinterest';
-type RoomAccordion = 'dims' | 'openings' | 'structure';
+type RoomAccordion = 'houses' | 'dims' | 'openings' | 'structure';
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
 
@@ -89,6 +109,12 @@ const PARAMETRIC_CARDS: Array<{
   { kind: 'tv_wall_unit', name: 'Çıtalı TV Ünitesi', sub: '240 × 42 × 245 cm', w: 2.4, d: 0.42, h: 2.45, y: 0, mount: 'wall', c1: '#b78e66', c2: '#252423' },
   { kind: 'wardrobe', name: 'Mimari Gardırop', sub: '220 × 60 × 240 cm', w: 2.2, d: 0.6, h: 2.4, y: 0, mount: 'wall', c1: '#ebe6dd', c2: '#2b2a28' },
   { kind: 'kitchen_counter', name: 'Laminat Tezgah', sub: '220 × 65 × 90 cm', w: 2.2, d: 0.65, h: 0.9, y: 0, mount: 'wall', c1: '#efede7', c2: '#3f4247' },
+  { kind: 'kitchen_upper_cabinet', name: 'Üst Mutfak Dolabı', sub: '220 × 36 × 72 cm', w: 2.2, d: 0.36, h: 0.72, y: 1.48, mount: 'wall', c1: '#f3f1eb', c2: '#262628' },
+  { kind: 'fridge', name: 'Inox Buzdolabı', sub: '75 × 70 × 192 cm', w: 0.75, d: 0.7, h: 1.92, y: 0, mount: 'wall', c1: '#c6c9ce', c2: '#2b2d31' },
+  { kind: 'toilet_wc', name: 'VitrA Klozet (WC)', sub: '42 × 68 × 110 cm', w: 0.42, d: 0.68, h: 1.1, y: 0, mount: 'wall', c1: '#f7f6f2', c2: '#c8cdd4' },
+  { kind: 'bathroom_vanity', name: 'Banyo Lavabo', sub: '100 × 48 × 195 cm', w: 1.0, d: 0.48, h: 1.95, y: 0, mount: 'wall', c1: '#b99268', c2: '#c8cdd4' },
+  { kind: 'shower_cabin', name: 'Cam Duşakabin', sub: '95 × 95 × 205 cm', w: 0.95, d: 0.95, h: 2.05, y: 0, mount: 'floor', c1: '#242528', c2: '#cfd4da' },
+  { kind: 'washer', name: 'Çamaşır Makinesi', sub: '60 × 60 × 85 cm', w: 0.6, d: 0.6, h: 0.85, y: 0, mount: 'floor', c1: '#f4f4f2', c2: '#2c2e33' },
   { kind: 'dining_table', name: 'Yemek Masası', sub: '180 × 95 × 75 cm', w: 1.8, d: 0.95, h: 0.75, y: 0, mount: 'floor', c1: '#9b7452', c2: '#232325' },
   { kind: 'bookshelf', name: 'Işıklı Kitaplık', sub: '160 × 36 × 220 cm', w: 1.6, d: 0.36, h: 2.2, y: 0, mount: 'wall', c1: '#876246', c2: '#242322' },
   { kind: 'bed_frame', name: 'Çift Kişilik Yatak', sub: '175 × 212 × 112 cm', w: 1.75, d: 2.12, h: 1.12, y: 0, mount: 'floor', c1: '#dcd5c9', c2: '#f5f2ec' },
@@ -106,12 +132,22 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [project, setProject] = useState<ArchRoomProject>(() => createDefaultArchitectProject(PRODUCTS));
   const [activeTab, setActiveTab] = useState<StudioTab>('room');
   const [openSections, setOpenSections] = useState<Record<RoomAccordion, boolean>>({
+    houses: true,
     dims: false,
-    openings: true,
+    openings: false,
     structure: false,
   });
   const toggleSection = (key: RoomAccordion) =>
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  // Sims-style "+ Yanına Oda Ekle" form state
+  const [newRoomParentId, setNewRoomParentId] = useState<string>('main');
+  const [newRoomSide, setNewRoomSide] = useState<WallId>('east');
+  const [newRoomKind, setNewRoomKind] = useState<RoomKind>('bedroom');
+  const [newRoomPassage, setNewRoomPassage] = useState<PassageStyle>('door');
+  const [newRoomW, setNewRoomW] = useState<number>(3.8);
+  const [newRoomD, setNewRoomD] = useState<number>(3.6);
+  const [newRoomFurnish, setNewRoomFurnish] = useState<boolean>(true);
   const [cameraMode, setCameraMode] = useState<ArchCameraMode>('free');
   const [showGrid, setShowGrid] = useState(true);
   const [showSunOrb, setShowSunOrb] = useState(true);
@@ -129,9 +165,10 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [sunPlaying, setSunPlaying] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Quick-Add Command Bar ("televizyon 160x90", "şömine 200 cm", "gardırop", "oval pencere"...)
+  // Universal Smart Search Bar (Colors, codes, nearest shades, 3D items, windows, doors, rooms!)
   const [quickQuery, setQuickQuery] = useState('');
   const [quickFocused, setQuickFocused] = useState(false);
+  const [searchFilterGroup, setSearchFilterGroup] = useState<'all' | UniversalSearchGroup>('all');
   const [quickW, setQuickW] = useState('');
   const [quickD, setQuickD] = useState('');
   const [quickH, setQuickH] = useState('');
@@ -181,9 +218,62 @@ export const ArchitecturalStudioPage: React.FC = () => {
   }, [selection, project.wallZones]);
 
   const solar = useMemo(() => computeSolarLighting(project.sun), [project.sun]);
+  const houseBounds = useMemo(() => getHouseBounds(project), [project]);
+  const totalRoomCount = 1 + (project.adjacentRooms?.length || 0);
+
+  const applyApartmentPreset = useCallback(
+    (preset: ApartmentPresetId) => {
+      const built = buildApartmentPreset(preset, catalog);
+      setProject(built);
+      setSelection(null);
+      setNewRoomParentId('main');
+      setTimeout(() => viewportRef.current?.resetCamera(cameraMode === 'plan' ? 'plan' : 'free'), 80);
+      const label =
+        preset === 'single'
+          ? 'Tek Oda (Salon) yüklendi.'
+          : `${preset} Daire Planı (${1 + (built.adjacentRooms?.length || 0)} oda) kuruldu!`;
+      showToast(label);
+    },
+    [catalog, cameraMode, showToast]
+  );
+
+  const handleAttachAdjacentRoom = useCallback(
+    (opts: {
+      parentRoomId: string;
+      side: WallId;
+      roomKind: RoomKind;
+      widthM?: number;
+      depthM?: number;
+      passageStyle?: PassageStyle;
+      autoFurnish?: boolean;
+    }) => {
+      let createdRoomId = '';
+      let createdName = '';
+      setProject((prev) => {
+        const { room, newObjects } = attachAdjacentRoom(prev, opts);
+        createdRoomId = room.id;
+        createdName = room.name;
+        return {
+          ...prev,
+          adjacentRooms: [...(prev.adjacentRooms || []), room],
+          objects: [...prev.objects, ...newObjects],
+        };
+      });
+      setTimeout(() => {
+        if (createdRoomId) setSelection({ type: 'adjacentRoom', id: createdRoomId });
+        viewportRef.current?.resetCamera(cameraMode === 'plan' ? 'plan' : 'free');
+      }, 90);
+      showToast(`${createdName || ROOM_KIND_LABELS[opts.roomKind]} eklendi ve kapı geçişi açıldı.`);
+    },
+    [cameraMode, showToast]
+  );
   const parsedQuick = useMemo(
     () => parseQuickAddQuery(quickQuery, catalog, project.ceilingM),
     [quickQuery, catalog, project.ceilingM]
+  );
+  const universalSearch = useMemo(
+    () => runUniversalSearch(quickQuery, catalog, searchFilterGroup, 26),
+    [quickQuery, catalog, searchFilterGroup]
   );
 
   // Sync editable quick-size boxes whenever parsed command changes
@@ -559,6 +649,280 @@ export const ArchitecturalStudioPage: React.FC = () => {
     setQuickFocused(false);
   };
 
+  // Shared 10-brand material-apply callbacks (used by BOTH Katalog tab & Universal Search!)
+  const applyParquetItem = (item: ParquetCatalogItem) => {
+    setProject((p) => ({
+      ...p,
+      floorMaterial: item.floorMaterial,
+      floorTintHex: item.hex,
+      floorBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.series} ${item.code} · ${item.name}`,
+    }));
+    showToast(`Zemin → ${SUPPLIER_SHORT[item.brand]} ${item.code} (${item.name})`);
+  };
+
+  const applyWallPanelItem = (item: WallPanelCatalogItem, mode: 'full' | 'all' | 'zone') => {
+    const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+    if (mode === 'zone') {
+      const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
+      const ceilCm = Math.round(project.ceilingM * 100);
+      const zone: ArchWallZone = {
+        id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        wall: activeWall,
+        label,
+        offsetCm: Math.round(wallLenCm * 0.5),
+        widthCm: Math.min(wallLenCm, 190),
+        bottomCm: 0,
+        heightCm: ceilCm,
+        pattern: item.pattern,
+        colorHex: item.hex,
+        brandLabel: label,
+      };
+      setProject((p) => ({ ...p, wallZones: [...(p.wallZones || []), zone] }));
+      setSelection({ type: 'wallZone', id: zone.id });
+      if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+      showToast(`${WALL_LABELS[activeWall]} → ${label} panel eklendi.`);
+    } else if (mode === 'all') {
+      setProject((p) => ({
+        ...p,
+        walls: {
+          north: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+          east: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+          south: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+          west: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+        },
+      }));
+      showToast(`4 Duvar → ${label}`);
+    } else {
+      setProject((p) => ({
+        ...p,
+        walls: {
+          ...p.walls,
+          [activeWall]: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+        },
+      }));
+      if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+      showToast(`${WALL_LABELS[activeWall]} → ${label}`);
+    }
+  };
+
+  const applySkirtingItem = (item: SkirtingTrimCatalogItem, target: 'baseboard' | 'corner' | 'both') => {
+    const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+    setProject((p) => ({
+      ...p,
+      ...(target === 'both' || target === 'baseboard'
+        ? {
+            showBaseboard: true,
+            baseboardColorHex: item.hex,
+            baseboardHeightCm: p.baseboardHeightCm || item.defaultHeightCm,
+            baseboardBrandLabel: label,
+          }
+        : {}),
+      ...(target === 'both' || target === 'corner'
+        ? {
+            showCornerTrim: true,
+            cornerTrimColorHex: item.hex,
+            cornerTrimBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.code} · Köşelik`,
+          }
+        : {}),
+    }));
+    showToast(
+      `${target === 'corner' ? 'Köşelik' : target === 'baseboard' ? 'Süpürgelik' : 'Süpürgelik & Köşelik'} → ${label}`
+    );
+  };
+
+  const applyDoorPanelItem = (item: DoorPanelCatalogItem) => {
+    const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+    if (project.doors.length === 0) {
+      const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
+      const door: ArchDoor = {
+        id: `door-${Date.now()}`,
+        wall: activeWall,
+        kind: 'single',
+        offsetCm: Math.round(wallLenCm * 0.35),
+        widthCm: 95,
+        heightCm: Math.min(215, Math.round(project.ceilingM * 100) - 15),
+        swing: 'inward',
+        hinge: 'left',
+        openAngleDeg: 40,
+        colorHex: item.hex,
+        handleColorHex: item.handleHex,
+        panelStyle: item.panelStyle,
+        brandLabel: label,
+      };
+      setProject((p) => ({ ...p, doors: [door] }));
+      setSelection({ type: 'door', id: door.id });
+      showToast(`${label} kapı eklendi.`);
+      return;
+    }
+    const targetDoorId = selection?.type === 'door' ? selection.id : null;
+    setProject((p) => ({
+      ...p,
+      doors: p.doors.map((d) =>
+        !targetDoorId || d.id === targetDoorId
+          ? {
+              ...d,
+              colorHex: item.hex,
+              handleColorHex: item.handleHex,
+              panelStyle: item.panelStyle,
+              brandLabel: label,
+            }
+          : d
+      ),
+    }));
+    showToast(`Kapı Paneli → ${label}`);
+  };
+
+  const applyCountertopItem = (item: CountertopCatalogItem) => {
+    const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+    const existing =
+      (selection?.type === 'object'
+        ? project.objects.find((o) => o.id === selection.id && o.parametricKind === 'kitchen_counter')
+        : undefined) || project.objects.find((o) => o.parametricKind === 'kitchen_counter');
+    if (existing) {
+      setProject((p) => ({
+        ...p,
+        objects: p.objects.map((o) =>
+          o.id === existing.id
+            ? {
+                ...o,
+                parametricColorHex: item.hex,
+                parametricAccentHex: item.recommendedCabinetHex,
+                countertopSurface: item.surfaceKind,
+                materialBrandLabel: label,
+              }
+            : o
+        ),
+      }));
+      setSelection({ type: 'object', id: existing.id });
+      showToast(`Tezgah → ${label}`);
+      return;
+    }
+    const snap = computeWallSnapTransform(activeWall, 0.65, project);
+    const obj: ArchPlacedObject = {
+      id: `mod-kitchen_counter-${Date.now()}`,
+      name: `${item.series} (${item.code})`,
+      category: 'Tezgah & Mutfak',
+      dimensionsCm: '220 × 65 × 90 cm',
+      parametricKind: 'kitchen_counter',
+      parametricColorHex: item.hex,
+      parametricAccentHex: item.recommendedCabinetHex,
+      countertopSurface: item.surfaceKind,
+      materialBrandLabel: label,
+      x: snap.x,
+      y: 0,
+      z: snap.z,
+      rot: snap.rot,
+      widthM: 2.2,
+      depthM: 0.65,
+      heightM: 0.9,
+      mountMode: 'wall',
+      attachedWall: activeWall,
+      source: 'parametric',
+    };
+    setProject((p) => ({ ...p, objects: [...p.objects, obj] }));
+    setSelection({ type: 'object', id: obj.id });
+    if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+    showToast(`${label} tezgah modülü eklendi.`);
+  };
+
+  const applyFurniturePanelItem = (item: FurniturePanelCatalogItem) => {
+    const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+    const targetObj = selection?.type === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
+    if (!targetObj) {
+      showToast('Önce 3B sahneden bir mobilyaya (dolap, kitaplık, masa, koltuk vb.) tıklayın.');
+      return;
+    }
+    setProject((p) => ({
+      ...p,
+      objects: p.objects.map((o) =>
+        o.id === targetObj.id
+          ? o.parametricKind
+            ? {
+                ...o,
+                parametricColorHex: item.hex,
+                parametricAccentHex: item.accentHex,
+                materialBrandLabel: label,
+              }
+            : { ...o, tintHex: item.hex, materialBrandLabel: label }
+          : o
+      ),
+    }));
+    showToast(`${targetObj.name} → ${label}`);
+  };
+
+  const executeUniversalResult = (res: UniversalSearchResult, altWallAll = false) => {
+    if (res.subKind === 'parquet') {
+      applyParquetItem(res.item);
+    } else if (res.subKind === 'wall') {
+      applyWallPanelItem(res.item, altWallAll ? 'all' : res.item.isProfile ? 'zone' : 'all');
+    } else if (res.subKind === 'skirting') {
+      applySkirtingItem(res.item, 'both');
+    } else if (res.subKind === 'doorPanel') {
+      applyDoorPanelItem(res.item);
+    } else if (res.subKind === 'countertop') {
+      applyCountertopItem(res.item);
+    } else if (res.subKind === 'furniturePanel') {
+      applyFurniturePanelItem(res.item);
+    } else if (res.subKind === 'parametric') {
+      spawnParametricObject(res.spec);
+    } else if (res.subKind === 'catalogProduct') {
+      addCatalogProduct(res.product);
+    } else if (res.subKind === 'window') {
+      addWindowOnWall(activeWall, res.windowKind);
+    } else if (res.subKind === 'door') {
+      addDoorOnWall(activeWall, res.doorKind);
+    } else if (res.subKind === 'action') {
+      if (res.actionId === 'add_cove') toggleCurtainCove(activeWall);
+      else if (res.actionId === 'add_column') addColumn('rect');
+      else if (res.actionId === 'add_beam') addBeam('x');
+      else if (res.actionId === 'toggle_mezzanine') {
+        setActiveTab('room');
+        setOpenSections((prev) => ({ ...prev, structure: true }));
+        setProject((prev) => {
+          const enabling = !prev.mezzanine?.enabled;
+          return {
+            ...prev,
+            ceilingM: enabling ? Math.max(4.0, prev.ceilingM) : prev.ceilingM,
+            mezzanine: enabling
+              ? {
+                  enabled: true,
+                  anchorWall: 'north',
+                  heightM: 2.05,
+                  depthM: Math.round(prev.depthM * 52) / 100,
+                  widthRatio: 0.78,
+                  stairGapSide: 'west',
+                  thicknessM: 0.16,
+                  deckColorHex: prev.floorTintHex || '#c9b092',
+                  railingStyle: 'none',
+                  underLed: true,
+                }
+              : { ...(prev.mezzanine as any), enabled: false },
+          };
+        });
+        showToast('2. Kat / Asma Kat güncellendi.');
+      } else if (res.actionId === 'template_1plus1') {
+        applyApartmentPreset('1+1');
+      } else if (res.actionId === 'template_2plus1') {
+        applyApartmentPreset('2+1');
+      } else if (res.actionId === 'template_3plus1') {
+        applyApartmentPreset('3+1');
+      } else if (res.actionId === 'add_room_bedroom') {
+        handleAttachAdjacentRoom({ parentRoomId: 'main', side: activeWall, roomKind: 'bedroom', autoFurnish: true });
+      } else if (res.actionId === 'add_room_kitchen') {
+        handleAttachAdjacentRoom({ parentRoomId: 'main', side: activeWall, roomKind: 'kitchen', passageStyle: 'open_arch', autoFurnish: true });
+      } else if (res.actionId === 'add_room_bathroom') {
+        handleAttachAdjacentRoom({ parentRoomId: 'main', side: activeWall, roomKind: 'bathroom', autoFurnish: true });
+      } else if (res.actionId === 'add_room_hallway') {
+        handleAttachAdjacentRoom({ parentRoomId: 'main', side: activeWall, roomKind: 'hallway', passageStyle: 'open_arch', autoFurnish: false });
+      } else {
+        setActiveTab('room');
+        setOpenSections((prev) => ({ ...prev, houses: true }));
+      }
+    }
+    setQuickFocused(false);
+    setMobileSearchOpen(false);
+  };
+
   const handleCadUpload = async (file: File | null) => {
     if (!file) return;
     setUploadingCad(true);
@@ -753,7 +1117,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
       try {
         const parsed = JSON.parse(String(reader.result || '')) as ArchRoomProject;
         if (!parsed || typeof parsed.widthM !== 'number' || !parsed.walls) throw new Error('Geçersiz dosya');
-        setProject({ ...parsed, wallZones: parsed.wallZones || [] });
+        setProject({ ...parsed, wallZones: parsed.wallZones || [], adjacentRooms: parsed.adjacentRooms || [] });
         setSelection(null);
         showToast('Proje yüklendi.');
       } catch {
@@ -783,8 +1147,245 @@ export const ArchitecturalStudioPage: React.FC = () => {
 
   const renderLeftSidebar = () => {
     if (activeTab === 'room') {
+      const adjList = project.adjacentRooms || [];
       return (
         <div className="divide-y divide-stone-200 text-xs">
+          {/* Accordion 0: Sims-Style Multi-Room House & 3+1 Apartment Builder */}
+          <div>
+            <button
+              type="button"
+              onClick={() => toggleSection('houses')}
+              className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
+            >
+              <span>
+                00 · Ev Planı &amp; Çoklu Oda ({totalRoomCount} Oda · {Math.round(houseBounds.totalAreaM2)} m²)
+              </span>
+              {openSections.houses ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            </button>
+            {openSections.houses && (
+              <div className="p-3.5 space-y-3">
+                {/* 1-Click Turkish Apartment Presets */}
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                    Hazır Daire Planları (Tek Tık)
+                  </span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(
+                      [
+                        { id: 'single' as ApartmentPresetId, lbl: 'Tek Oda' },
+                        { id: '1+1' as ApartmentPresetId, lbl: '1+1' },
+                        { id: '2+1' as ApartmentPresetId, lbl: '2+1' },
+                        { id: '3+1' as ApartmentPresetId, lbl: '3+1 Daire' },
+                      ]
+                    ).map((pr) => {
+                      const active =
+                        (pr.id === 'single' && adjList.length === 0) ||
+                        (pr.id !== 'single' && project.projectName.startsWith(pr.id));
+                      return (
+                        <button
+                          key={pr.id}
+                          type="button"
+                          onClick={() => applyApartmentPreset(pr.id)}
+                          className={`py-1.5 px-1 border text-[10px] font-bold whitespace-nowrap transition ${
+                            active
+                              ? 'border-stone-950 bg-stone-950 text-white'
+                              : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                          }`}
+                        >
+                          {pr.lbl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Sims-Style "+ Yanına Oda Ekle" Interactive Builder */}
+                <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2.5">
+                  <span className="text-[10px] font-mono uppercase font-bold text-stone-900 block">
+                    + Yanına Geçişli Oda Ekle (Sims)
+                  </span>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <label className="space-y-0.5">
+                      <span className="text-[10px] text-stone-500 block">Bağlanacak Oda</span>
+                      <select
+                        value={newRoomParentId}
+                        onChange={(e) => setNewRoomParentId(e.target.value)}
+                        className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                      >
+                        <option value="main">Ana Salon</option>
+                        {adjList.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-0.5">
+                      <span className="text-[10px] text-stone-500 block">Oda Tipi</span>
+                      <select
+                        value={newRoomKind}
+                        onChange={(e) => {
+                          const k = e.target.value as RoomKind;
+                          setNewRoomKind(k);
+                          setNewRoomW(ROOM_KIND_DEFAULTS[k].w);
+                          setNewRoomD(ROOM_KIND_DEFAULTS[k].d);
+                          setNewRoomPassage(ROOM_KIND_DEFAULTS[k].passageStyle);
+                        }}
+                        className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                      >
+                        {(Object.keys(ROOM_KIND_LABELS) as RoomKind[]).map((rk) => (
+                          <option key={rk} value={rk}>
+                            {ROOM_KIND_LABELS[rk]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {/* Wall Side Picker */}
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-stone-500 block">Hangi Cepheye Eklensin?</span>
+                    <div className="grid grid-cols-4 gap-1">
+                      {(
+                        [
+                          { id: 'north' as WallId, lbl: 'Üst A' },
+                          { id: 'east' as WallId, lbl: 'Sağ B' },
+                          { id: 'south' as WallId, lbl: 'Alt C' },
+                          { id: 'west' as WallId, lbl: 'Sol D' },
+                        ]
+                      ).map((sd) => (
+                        <button
+                          key={sd.id}
+                          type="button"
+                          onClick={() => setNewRoomSide(sd.id)}
+                          className={`py-1 border text-[10px] font-semibold ${
+                            newRoomSide === sd.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
+                          }`}
+                        >
+                          {sd.lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Passage Style + Size */}
+                  <div className="grid grid-cols-3 gap-1">
+                    {(['door', 'open_arch', 'open_wide'] as PassageStyle[]).map((ps) => (
+                      <button
+                        key={ps}
+                        type="button"
+                        onClick={() => setNewRoomPassage(ps)}
+                        className={`py-1 border text-[10px] font-semibold truncate ${
+                          newRoomPassage === ps ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
+                        }`}
+                      >
+                        {PASSAGE_STYLE_LABELS[ps].split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <label className="text-[10px] text-stone-600">
+                      En (m)
+                      <NumericInput
+                        min={1.4}
+                        max={8}
+                        step={0.2}
+                        decimals={1}
+                        value={newRoomW}
+                        onChange={setNewRoomW}
+                        className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
+                      />
+                    </label>
+                    <label className="text-[10px] text-stone-600">
+                      Derinlik (m)
+                      <NumericInput
+                        min={1.4}
+                        max={8}
+                        step={0.2}
+                        decimals={1}
+                        value={newRoomD}
+                        onChange={setNewRoomD}
+                        className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newRoomFurnish}
+                      onChange={(e) => setNewRoomFurnish(e.target.checked)}
+                      className="accent-stone-950"
+                    />
+                    <span>Eşyalarıyla birlikte hazır kur (WC / Tezgah / Yatak)</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleAttachAdjacentRoom({
+                        parentRoomId: newRoomParentId,
+                        side: newRoomSide,
+                        roomKind: newRoomKind,
+                        widthM: newRoomW,
+                        depthM: newRoomD,
+                        passageStyle: newRoomPassage,
+                        autoFurnish: newRoomFurnish,
+                      })
+                    }
+                    className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Odayı Yanına Ekle &amp; Geçiş Aç</span>
+                  </button>
+                </div>
+
+                {/* Clickable list of active rooms in the house */}
+                {adjList.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-stone-200">
+                    <span className="text-[10px] font-mono uppercase text-stone-500">
+                      Evdeki Odalar (Malzeme İçin Tıkla)
+                    </span>
+                    <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelection({ type: 'floor' })}
+                        className="w-full px-2 py-1.5 border border-stone-200 hover:border-stone-950 bg-white flex items-center justify-between text-[11px]"
+                      >
+                        <span className="font-semibold text-stone-900">01 · Ana Salon</span>
+                        <span className="font-mono text-[10px] text-stone-500">
+                          {(project.widthM * project.depthM).toFixed(1)} m²
+                        </span>
+                      </button>
+                      {adjList.map((r, i) => {
+                        const active = selection?.type === 'adjacentRoom' && selection.id === r.id;
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => setSelection({ type: 'adjacentRoom', id: r.id })}
+                            className={`w-full px-2 py-1.5 border flex items-center justify-between text-[11px] ${
+                              active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                            }`}
+                          >
+                            <span className="truncate font-medium">
+                              {String(i + 2).padStart(2, '0')} · {r.name}
+                            </span>
+                            <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
+                              {(r.widthM * r.depthM).toFixed(1)} m²
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Accordion 1: Oda Ölçüleri (bağımsız aç/kapat) */}
           <div>
             <button
@@ -1327,83 +1928,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
             setActiveWall(wId);
             if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
           }}
-          onApplyParquet={(item) => {
-            setProject((p) => ({
-              ...p,
-              floorMaterial: item.floorMaterial,
-              floorTintHex: item.hex,
-              floorBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.series} ${item.code} · ${item.name}`,
-            }));
-            showToast(`Zemin → ${SUPPLIER_SHORT[item.brand]} ${item.code} (${item.name})`);
-          }}
-          onApplyWallPanel={(item, mode) => {
-            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
-            if (mode === 'zone') {
-              const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
-              const ceilCm = Math.round(project.ceilingM * 100);
-              const zone: ArchWallZone = {
-                id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-                wall: activeWall,
-                label,
-                offsetCm: Math.round(wallLenCm * 0.5),
-                widthCm: Math.min(wallLenCm, 190),
-                bottomCm: 0,
-                heightCm: ceilCm,
-                pattern: item.pattern,
-                colorHex: item.hex,
-                brandLabel: label,
-              };
-              setProject((p) => ({ ...p, wallZones: [...(p.wallZones || []), zone] }));
-              setSelection({ type: 'wallZone', id: zone.id });
-              if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
-              showToast(`${WALL_LABELS[activeWall]} → ${label} panel eklendi.`);
-            } else if (mode === 'all') {
-              setProject((p) => ({
-                ...p,
-                walls: {
-                  north: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
-                  east: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
-                  south: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
-                  west: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
-                },
-              }));
-              showToast(`4 Duvar → ${label}`);
-            } else {
-              setProject((p) => ({
-                ...p,
-                walls: {
-                  ...p.walls,
-                  [activeWall]: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
-                },
-              }));
-              if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
-              showToast(`${WALL_LABELS[activeWall]} → ${label}`);
-            }
-          }}
-          onApplySkirtingTrim={(item, target) => {
-            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
-            setProject((p) => ({
-              ...p,
-              ...(target === 'both' || target === 'baseboard'
-                ? {
-                    showBaseboard: true,
-                    baseboardColorHex: item.hex,
-                    baseboardHeightCm: p.baseboardHeightCm || item.defaultHeightCm,
-                    baseboardBrandLabel: label,
-                  }
-                : {}),
-              ...(target === 'both' || target === 'corner'
-                ? {
-                    showCornerTrim: true,
-                    cornerTrimColorHex: item.hex,
-                    cornerTrimBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.code} · Köşelik`,
-                  }
-                : {}),
-            }));
-            showToast(
-              `${target === 'corner' ? 'Köşelik' : target === 'baseboard' ? 'Süpürgelik' : 'Süpürgelik & Köşelik'} → ${label}`
-            );
-          }}
+          onApplyParquet={applyParquetItem}
+          onApplyWallPanel={applyWallPanelItem}
+          onApplySkirtingTrim={applySkirtingItem}
           onUpdateSkirtingHeight={(cm) => {
             setProject((p) => ({ ...p, showBaseboard: true, baseboardHeightCm: cm }));
             showToast(`Süpürgelik yüksekliği: ${cm} cm`);
@@ -1411,123 +1938,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
           onToggleCornerTrim={(enabled) => {
             setProject((p) => ({ ...p, showCornerTrim: enabled }));
           }}
-          onApplyDoorPanel={(item) => {
-            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
-            if (project.doors.length === 0) {
-              const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
-              const door: ArchDoor = {
-                id: `door-${Date.now()}`,
-                wall: activeWall,
-                kind: 'single',
-                offsetCm: Math.round(wallLenCm * 0.35),
-                widthCm: 95,
-                heightCm: Math.min(215, Math.round(project.ceilingM * 100) - 15),
-                swing: 'inward',
-                hinge: 'left',
-                openAngleDeg: 40,
-                colorHex: item.hex,
-                handleColorHex: item.handleHex,
-                panelStyle: item.panelStyle,
-                brandLabel: label,
-              };
-              setProject((p) => ({ ...p, doors: [door] }));
-              setSelection({ type: 'door', id: door.id });
-              showToast(`${label} kapı eklendi.`);
-              return;
-            }
-            const targetDoorId = selection?.type === 'door' ? selection.id : null;
-            setProject((p) => ({
-              ...p,
-              doors: p.doors.map((d) =>
-                !targetDoorId || d.id === targetDoorId
-                  ? {
-                      ...d,
-                      colorHex: item.hex,
-                      handleColorHex: item.handleHex,
-                      panelStyle: item.panelStyle,
-                      brandLabel: label,
-                    }
-                  : d
-              ),
-            }));
-            showToast(`Kapı Paneli → ${label}`);
-          }}
-          onApplyCountertop={(item) => {
-            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
-            const existing =
-              (selection?.type === 'object'
-                ? project.objects.find((o) => o.id === selection.id && o.parametricKind === 'kitchen_counter')
-                : undefined) || project.objects.find((o) => o.parametricKind === 'kitchen_counter');
-            if (existing) {
-              setProject((p) => ({
-                ...p,
-                objects: p.objects.map((o) =>
-                  o.id === existing.id
-                    ? {
-                        ...o,
-                        parametricColorHex: item.hex,
-                        parametricAccentHex: item.recommendedCabinetHex,
-                        countertopSurface: item.surfaceKind,
-                        materialBrandLabel: label,
-                      }
-                    : o
-                ),
-              }));
-              setSelection({ type: 'object', id: existing.id });
-              showToast(`Laminat Tezgah → ${label}`);
-              return;
-            }
-            const snap = computeWallSnapTransform(activeWall, 0.65, project);
-            const obj: ArchPlacedObject = {
-              id: `mod-kitchen_counter-${Date.now()}`,
-              name: `${item.series} (${item.code})`,
-              category: 'Tezgah & Mutfak',
-              dimensionsCm: '220 × 65 × 90 cm',
-              parametricKind: 'kitchen_counter',
-              parametricColorHex: item.hex,
-              parametricAccentHex: item.recommendedCabinetHex,
-              countertopSurface: item.surfaceKind,
-              materialBrandLabel: label,
-              x: snap.x,
-              y: 0,
-              z: snap.z,
-              rot: snap.rot,
-              widthM: 2.2,
-              depthM: 0.65,
-              heightM: 0.9,
-              mountMode: 'wall',
-              attachedWall: activeWall,
-              source: 'parametric',
-            };
-            setProject((p) => ({ ...p, objects: [...p.objects, obj] }));
-            setSelection({ type: 'object', id: obj.id });
-            if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
-            showToast(`${label} tezgah modülü eklendi.`);
-          }}
-          onApplyFurniturePanel={(item) => {
-            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
-            const targetObj = selection?.type === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
-            if (!targetObj) {
-              showToast('Önce 3B sahneden bir mobilyaya (dolap, kitaplık, masa, koltuk vb.) tıklayın.');
-              return;
-            }
-            setProject((p) => ({
-              ...p,
-              objects: p.objects.map((o) =>
-                o.id === targetObj.id
-                  ? o.parametricKind
-                    ? {
-                        ...o,
-                        parametricColorHex: item.hex,
-                        parametricAccentHex: item.accentHex,
-                        materialBrandLabel: label,
-                      }
-                    : { ...o, tintHex: item.hex, materialBrandLabel: label }
-                  : o
-              ),
-            }));
-            showToast(`${targetObj.name} → ${label}`);
-          }}
+          onApplyDoorPanel={applyDoorPanelItem}
+          onApplyCountertop={applyCountertopItem}
+          onApplyFurniturePanel={applyFurniturePanelItem}
         />
       );
     }
@@ -2029,121 +2442,235 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 MekanAR <span className="font-normal text-stone-500 hidden xs:inline sm:inline">Mimari</span>
               </p>
               <p className="text-[10px] font-mono text-stone-500 whitespace-nowrap mt-0.5">
-                {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {solar.formattedTime} ({bearingToShortCode(project.sun.northAngleDeg)})
+                {totalRoomCount > 1
+                  ? `${totalRoomCount} Oda · ${Math.round(houseBounds.totalAreaM2)} m² · ${solar.formattedTime}`
+                  : `${project.widthM.toFixed(1)}×${project.depthM.toFixed(1)} m · ${solar.formattedTime} (${bearingToShortCode(project.sun.northAngleDeg)})`}
               </p>
             </div>
           </div>
 
-          {/* Center: Smart Turkish Quick-Add Bar on iPad Landscape/Desktop/TV (collapsible on Phone & Portrait Tablet!) */}
-          <div className="relative flex-1 min-w-0 max-w-xl hidden lg:block">
+          {/* Center: Universal Smart Search Bar (Colors, codes, nearest shades, 3D furniture, windows, doors, 3+1 rooms!) */}
+          <div className="relative flex-1 min-w-0 max-w-2xl hidden lg:block">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                executeQuickAdd();
+                if (parsedQuick && !quickQuery.trim().startsWith('#') && universalSearch.results[0]?.group !== 'material') {
+                  executeQuickAdd();
+                } else if (universalSearch.results[0]) {
+                  executeUniversalResult(universalSearch.results[0]);
+                } else {
+                  executeQuickAdd();
+                }
               }}
               className="flex items-center border border-stone-300 focus-within:border-stone-950 bg-[#faf9f6] transition"
             >
-              <Search className="w-3.5 h-3.5 text-stone-400 ml-2.5 shrink-0" />
+              <Search className="w-3.5 h-3.5 text-stone-500 ml-2.5 shrink-0" />
               <input
                 type="text"
                 value={quickQuery}
                 onFocus={() => setQuickFocused(true)}
-                onBlur={() => setTimeout(() => setQuickFocused(false), 180)}
+                onBlur={() => setTimeout(() => setQuickFocused(false), 220)}
                 onChange={(e) => setQuickQuery(e.target.value)}
-                placeholder='Ne eklemek istersin? Örn: "televizyon 160x90", "gardırop", "şömine", "oval pencere"'
+                placeholder='Her şeyi ara: renk/kod ("kaşmir", "PRK901", "10678", "#3f4247"), eşya ("klozet", "koltuk"), pencere, 3+1...'
                 className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-xs text-stone-950 placeholder:text-stone-400 focus:outline-none"
               />
+              {quickQuery && (
+                <button
+                  type="button"
+                  onClick={() => setQuickQuery('')}
+                  className="p-1 text-stone-400 hover:text-stone-900"
+                  aria-label="Temizle"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
               <button
                 type="submit"
                 className="px-3 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 flex items-center gap-1"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Ekle</span>
+                <Search className="w-3 h-3" />
+                <span>Bul &amp; Ekle</span>
               </button>
             </form>
 
             {quickFocused && (
               <div
                 onMouseDown={(e) => e.preventDefault()}
-                className="absolute left-0 right-0 top-full mt-1 bg-white border border-stone-300 shadow-xl p-2.5 z-50 text-xs space-y-2"
+                className="absolute left-0 right-0 top-full mt-1 bg-white border border-stone-300 shadow-2xl p-2.5 z-50 text-xs space-y-2 max-h-[70vh] flex flex-col"
               >
-                {parsedQuick ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-stone-950">
-                        {parsedQuick.kind === 'parametric'
-                          ? parsedQuick.name
-                          : parsedQuick.kind === 'catalog'
-                          ? parsedQuick.product.name
-                          : parsedQuick.kind === 'window'
-                          ? WINDOW_KIND_LABELS[parsedQuick.windowKind]
-                          : parsedQuick.kind === 'door'
-                          ? DOOR_KIND_LABELS[parsedQuick.doorKind]
-                          : parsedQuick.kind === 'wallZone'
-                          ? `Kısmi Duvar Paneli (${parsedQuick.pattern})`
-                          : parsedQuick.kind === 'cove'
-                          ? 'Perde Havuzu & LED'
-                          : parsedQuick.kind === 'column'
-                          ? 'Taşıyıcı Kolon'
-                          : 'Tavan Kirişi'}
-                      </span>
-                      <span className="text-[10px] font-mono text-stone-500">Enter ile hemen ekle</span>
-                    </div>
-                    {(parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
-                      <div className="flex items-center gap-2">
-                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                          En
-                          <input
-                            type="number"
-                            value={quickW}
-                            onChange={(e) => setQuickW(e.target.value)}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                          />
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                          Der.
-                          <input
-                            type="number"
-                            value={quickD}
-                            onChange={(e) => setQuickD(e.target.value)}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                          />
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                          Yük.
-                          <input
-                            type="number"
-                            value={quickH}
-                            onChange={(e) => setQuickH(e.target.value)}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            className="w-14 px-1.5 py-0.5 border border-stone-300 font-mono text-stone-950"
-                          />
-                        </label>
-                        <span className="text-[10px] font-mono text-stone-400">cm</span>
-                        <button
-                          type="button"
-                          onClick={() => executeQuickAdd()}
-                          className="ml-auto px-3 py-1 bg-stone-950 text-white text-[11px] font-semibold"
-                        >
-                          Odaya Koy
-                        </button>
-                      </div>
-                    )}
+                {/* Category Filter Tabs inside Universal Search */}
+                <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-stone-200 shrink-0">
+                  <div className="flex flex-wrap gap-1">
+                    {(
+                      [
+                        { id: 'all', lbl: 'Tümü' },
+                        { id: 'material', lbl: 'Renk & Malzeme' },
+                        { id: 'furniture', lbl: 'Eşya & 3B' },
+                        { id: 'opening', lbl: 'Pencere & Kapı' },
+                        { id: 'room', lbl: 'Oda & 3+1 Ev' },
+                      ] as const
+                    ).map((g) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => setSearchFilterGroup(g.id)}
+                        className={`px-2 py-0.5 border text-[10px] font-semibold transition ${
+                          searchFilterGroup === g.id
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-500'
+                        }`}
+                      >
+                        {g.lbl}
+                      </button>
+                    ))}
                   </div>
+                  {universalSearch.detectedColor && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-stone-700 shrink-0">
+                      <span
+                        className="w-3.5 h-3.5 border border-black/25"
+                        style={{ backgroundColor: universalSearch.detectedColor.hex }}
+                      />
+                      <span className="font-semibold">{universalSearch.detectedColor.label}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Custom cm sizing strip when user types explicit parametric item like "televizyon 180x100" */}
+                {parsedQuick && (parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
+                  <div className="bg-[#faf9f6] border border-stone-200 p-2 flex flex-wrap items-center gap-2 shrink-0">
+                    <span className="font-semibold text-stone-950 text-[11px]">
+                      Özel Ölçüyle Hemen Ekle: {parsedQuick.kind === 'parametric' ? parsedQuick.name : 'Duvar Paneli'}
+                    </span>
+                    <div className="flex items-center gap-1.5 ml-auto">
+                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                        En
+                        <input
+                          type="number"
+                          value={quickW}
+                          onChange={(e) => setQuickW(e.target.value)}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                        />
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                        Der.
+                        <input
+                          type="number"
+                          value={quickD}
+                          onChange={(e) => setQuickD(e.target.value)}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                        />
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                        Yük.
+                        <input
+                          type="number"
+                          value={quickH}
+                          onChange={(e) => setQuickH(e.target.value)}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => executeQuickAdd()}
+                        className="px-2.5 py-1 bg-stone-950 text-white text-[10px] font-semibold"
+                      >
+                        + Ekle
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Search Results List OR Quick Suggestions when empty */}
+                {quickQuery.trim() ? (
+                  universalSearch.results.length > 0 ? (
+                    <div className="overflow-y-auto space-y-1 pr-0.5">
+                      {universalSearch.results.map((res) => (
+                        <button
+                          key={res.id}
+                          type="button"
+                          onClick={() => executeUniversalResult(res)}
+                          className="w-full px-2 py-1.5 border border-stone-200 hover:border-stone-950 hover:bg-[#faf9f6] flex items-center gap-2.5 text-left transition"
+                        >
+                          {'hex' in res && res.hex ? (
+                            <span
+                              className="w-7 h-7 border border-black/20 shrink-0"
+                              style={{ backgroundColor: res.hex }}
+                            />
+                          ) : 'thumbUrl' in res && res.thumbUrl ? (
+                            <img
+                              src={res.thumbUrl}
+                              alt={res.title}
+                              className="w-7 h-7 object-contain bg-[#f5f4f0] border border-stone-200 shrink-0"
+                            />
+                          ) : (
+                            <span className="w-7 h-7 bg-stone-950 text-white font-mono text-[9px] font-bold flex items-center justify-center shrink-0">
+                              {res.badge.slice(0, 3).toUpperCase()}
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-stone-950 truncate">{res.title}</span>
+                              {'similarityPct' in res && res.similarityPct && (
+                                <span className="text-[9px] font-mono font-bold px-1 bg-stone-200 text-stone-800 shrink-0">
+                                  %{res.similarityPct} yakın
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-stone-500 truncate">{res.subtitle}</p>
+                          </div>
+                          <span className="px-2 py-1 border border-stone-300 bg-white text-[10px] font-semibold text-stone-900 whitespace-nowrap shrink-0">
+                            {res.subKind === 'parquet'
+                              ? 'Zemine'
+                              : res.subKind === 'wall'
+                              ? res.item.isProfile
+                                ? 'Duvar Profili'
+                                : 'Duvarlara'
+                              : res.subKind === 'skirting'
+                              ? 'Süpürgelik'
+                              : res.subKind === 'doorPanel'
+                              ? 'Kapıya'
+                              : res.subKind === 'countertop'
+                              ? 'Tezgah Kur'
+                              : res.subKind === 'furniturePanel'
+                              ? 'Mobilyaya'
+                              : '+ Ekle'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-stone-500 py-3 text-center">
+                      Eşleşme bulunamadı — renk adı (örn. <strong>kaşmir</strong>, <strong>adaçayı</strong>), kod (<strong>PRK901</strong>, <strong>10678</strong>), eşya (<strong>klozet</strong>, <strong>koltuk</strong>) veya pencere yazabilirsiniz.
+                    </p>
+                  )
                 ) : (
-                  <div className="space-y-1.5">
-                    <p className="text-[10px] font-mono uppercase text-stone-500">Hızlı Ekle (Tıkla veya Ölçüsüyle Yaz)</p>
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-mono uppercase text-stone-500">
+                      Örnek Aramalar (Renk, Kod, Eşya, Pencere veya 3+1 Ev)
+                    </p>
                     <div className="flex flex-wrap gap-1">
-                      {QUICK_ADD_SUGGESTIONS.map((s) => (
+                      {[
+                        'kaşmir',
+                        'adaçayı yeşili',
+                        'PRK901',
+                        '10678 Space',
+                        'LB-2050',
+                        'oval pencere',
+                        'klozet',
+                        'laminat tezgah',
+                        '3+1 daire',
+                        ...QUICK_ADD_SUGGESTIONS.slice(0, 6),
+                      ].map((s) => (
                         <button
                           key={s}
                           type="button"
-                          onClick={() => executeQuickAdd(s)}
+                          onClick={() => setQuickQuery(s)}
                           className="px-2 py-1 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[11px] font-medium transition"
                         >
-                          + {s}
+                          {s}
                         </button>
                       ))}
                     </div>
@@ -2565,6 +3092,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
               onSnapObjectToWall={snapObjectToWall}
               onMoveOpeningToWall={moveOpeningToWall}
               onDuplicateObject={duplicateObject}
+              onAttachRoom={(parentRoomId, side, roomKind) =>
+                handleAttachAdjacentRoom({ parentRoomId, side, roomKind, autoFurnish: true })
+              }
               onToast={showToast}
             />
           </aside>

@@ -36,6 +36,97 @@ export type CurtainStyle = 'none' | 'sheer_and_drape' | 'sheer_only' | 'roman_bl
 
 export type DoorKind = 'single' | 'double' | 'sliding' | 'archway';
 
+export type RoomKind = 'living' | 'bedroom' | 'kitchen' | 'bathroom' | 'hallway' | 'office' | 'balcony';
+
+export type PassageStyle = 'door' | 'open_arch' | 'open_wide';
+
+export interface ArchAdjacentRoom {
+  id: string;
+  name: string;
+  roomKind: RoomKind;
+  /** World-space center X/Z in meters relative to primary room origin (0,0) */
+  centerXM: number;
+  centerZM: number;
+  widthM: number;
+  depthM: number;
+  /** Parent room id ('main' or another adjacentRoom.id) */
+  parentRoomId: string;
+  /** Which side of the parent room this room attaches to */
+  attachedSide: WallId;
+  passageStyle: PassageStyle;
+  passageWidthCm: number;
+  floorMaterial: FloorMaterialKind;
+  floorTintHex: string;
+  floorBrandLabel?: string;
+  wallColorHex: string;
+  wallPattern: WallPattern;
+  wallBrandLabel?: string;
+  baseboardColorHex: string;
+  hasWindow?: boolean;
+  windowWall?: WallId;
+}
+
+export interface HouseBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  totalW: number;
+  totalD: number;
+  centerX: number;
+  centerZ: number;
+  totalAreaM2: number;
+  roomCount: number;
+}
+
+export function getHouseBounds(project: {
+  widthM: number;
+  depthM: number;
+  adjacentRooms?: ArchAdjacentRoom[];
+}): HouseBounds {
+  let minX = -project.widthM * 0.5;
+  let maxX = project.widthM * 0.5;
+  let minZ = -project.depthM * 0.5;
+  let maxZ = project.depthM * 0.5;
+  let totalAreaM2 = project.widthM * project.depthM;
+  const rooms = project.adjacentRooms || [];
+  for (const r of rooms) {
+    minX = Math.min(minX, r.centerXM - r.widthM * 0.5);
+    maxX = Math.max(maxX, r.centerXM + r.widthM * 0.5);
+    minZ = Math.min(minZ, r.centerZM - r.depthM * 0.5);
+    maxZ = Math.max(maxZ, r.centerZM + r.depthM * 0.5);
+    totalAreaM2 += r.widthM * r.depthM;
+  }
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    totalW: maxX - minX,
+    totalD: maxZ - minZ,
+    centerX: (minX + maxX) * 0.5,
+    centerZ: (minZ + maxZ) * 0.5,
+    totalAreaM2,
+    roomCount: 1 + rooms.length,
+  };
+}
+
+export const ROOM_KIND_LABELS: Record<RoomKind, string> = {
+  living: 'Salon',
+  bedroom: 'Yatak Odası',
+  kitchen: 'Mutfak',
+  bathroom: 'Banyo / WC',
+  hallway: 'Koridor / Hol',
+  office: 'Çalışma Odası',
+  balcony: 'Balkon / Teras',
+};
+
+export const PASSAGE_STYLE_LABELS: Record<PassageStyle, string> = {
+  door: 'Kapılı Geçiş',
+  open_arch: 'Açık Kemer Geçiş',
+  open_wide: 'Geniş Açık Geçiş',
+};
+
 export type ParametricFurnitureKind =
   | 'fireplace_marble'
   | 'tv_wall_unit'
@@ -65,6 +156,12 @@ export type ParametricFurnitureKind =
   | 'floor_lamp'
   | 'console_table'
   | 'kitchen_counter'
+  | 'kitchen_upper_cabinet'
+  | 'fridge'
+  | 'toilet_wc'
+  | 'bathroom_vanity'
+  | 'shower_cabin'
+  | 'washer'
   | 'wall_art';
 
 export interface WallFinish {
@@ -308,6 +405,7 @@ export type ArchSelection =
   | { type: 'door'; id: string }
   | { type: 'column'; id: string }
   | { type: 'beam'; id: string }
+  | { type: 'adjacentRoom'; id: string }
   | null;
 
 export interface ArchRoomProject {
@@ -339,6 +437,7 @@ export interface ArchRoomProject {
   beams: ArchBeam[];
   curtainCoves: ArchCurtainCove[];
   mezzanine?: ArchMezzanine;
+  adjacentRooms?: ArchAdjacentRoom[];
   sun: SunConfig;
   objects: ArchPlacedObject[];
 }

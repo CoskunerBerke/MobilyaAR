@@ -8,7 +8,62 @@ import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
 import { computeSolarLighting } from './solarMath';
-import { getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
+import { getHouseBounds, getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
+
+interface RoomRect2D {
+  cx: number;
+  cz: number;
+  w: number;
+  d: number;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+function getAllRoomRects(p: ArchRoomProject): RoomRect2D[] {
+  const rects: RoomRect2D[] = [
+    {
+      cx: 0,
+      cz: 0,
+      w: p.widthM,
+      d: p.depthM,
+      minX: -p.widthM * 0.5,
+      maxX: p.widthM * 0.5,
+      minZ: -p.depthM * 0.5,
+      maxZ: p.depthM * 0.5,
+    },
+  ];
+  for (const r of p.adjacentRooms || []) {
+    rects.push({
+      cx: r.centerXM,
+      cz: r.centerZM,
+      w: r.widthM,
+      d: r.depthM,
+      minX: r.centerXM - r.widthM * 0.5,
+      maxX: r.centerXM + r.widthM * 0.5,
+      minZ: r.centerZM - r.depthM * 0.5,
+      maxZ: r.centerZM + r.depthM * 0.5,
+    });
+  }
+  return rects;
+}
+
+function findNearestRoomRect(rects: RoomRect2D[], x: number, z: number): RoomRect2D {
+  let best = rects[0];
+  let bestDistSq = Infinity;
+  for (const r of rects) {
+    const cx = Math.max(r.minX, Math.min(r.maxX, x));
+    const cz = Math.max(r.minZ, Math.min(r.maxZ, z));
+    const dSq = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+    if (dSq < bestDistSq) {
+      bestDistSq = dSq;
+      best = r;
+      if (dSq === 0) break;
+    }
+  }
+  return best;
+}
 
 export type ArchCameraMode = 'free' | 'plan' | 'inside';
 
@@ -186,7 +241,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       mountedObjects: Map<string, { sig: string; root: THREE.Group; dispose?: () => void }>;
       loadingKeys: Set<string>;
       shadowsDirty: boolean;
-      lastCutawayMask: number;
+      lastCutawayMask: string;
       rafScheduled: number;
       renderFrame: () => void;
       scheduleRender: (dirtyShadows?: boolean) => void;
@@ -211,11 +266,33 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const rx = Math.cos(yaw);
       const rz = -Math.sin(yaw);
 
-      const margin = 0.32;
-      const nx = Math.max(-p.widthM * 0.5 + margin, Math.min(p.widthM * 0.5 - margin, eng.camera.position.x + fx * forwardM + rx * rightM));
-      const nz = Math.max(-p.depthM * 0.5 + margin, Math.min(p.depthM * 0.5 - margin, eng.camera.position.z + fz * forwardM + rz * rightM));
-      eng.camera.position.x = nx;
-      eng.camera.position.z = nz;
+      const candX = eng.camera.position.x + fx * forwardM + rx * rightM;
+      const candZ = eng.camera.position.z + fz * forwardM + rz * rightM;
+      const margin = 0.28;
+
+      if ((p.adjacentRooms?.length || 0) > 0) {
+        const rects = getAllRoomRects(p);
+        const hb = getHouseBounds(p);
+        const pad = p.wallThicknessM * 0.65;
+        const inHouse = (x: number, z: number) =>
+          x >= hb.minX + margin &&
+          x <= hb.maxX - margin &&
+          z >= hb.minZ + margin &&
+          z <= hb.maxZ - margin &&
+          rects.some((r) => x >= r.minX - pad && x <= r.maxX + pad && z >= r.minZ - pad && z <= r.maxZ + pad);
+
+        if (inHouse(candX, candZ)) {
+          eng.camera.position.x = candX;
+          eng.camera.position.z = candZ;
+        } else if (inHouse(candX, eng.camera.position.z)) {
+          eng.camera.position.x = candX;
+        } else if (inHouse(eng.camera.position.x, candZ)) {
+          eng.camera.position.z = candZ;
+        }
+      } else {
+        eng.camera.position.x = Math.max(-p.widthM * 0.5 + margin, Math.min(p.widthM * 0.5 - margin, candX));
+        eng.camera.position.z = Math.max(-p.depthM * 0.5 + margin, Math.min(p.depthM * 0.5 - margin, candZ));
+      }
       eng.camera.position.y = Math.min(1.65, Math.max(1.2, p.ceilingM - 0.38));
       applyFpsCameraRotation();
       eng.scheduleRender(false);
@@ -277,7 +354,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         fpsRef.current.entryAnimRaf = 0;
       }
       const p = projectRef.current;
-      const maxSpan = Math.max(p.widthM, p.depthM);
+      const hb = getHouseBounds(p);
+      const maxSpan = Math.max(hb.totalW, hb.totalD);
+      const hasMulti = (p.adjacentRooms?.length || 0) > 0;
       if (mode === 'inside') {
         enterFromDoorway(true);
         return;
@@ -288,24 +367,28 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       if (mode === 'plan') {
         eng.camera.fov = 16;
-        eng.camera.far = 220;
+        eng.camera.far = Math.max(220, maxSpan * 18);
         eng.camera.updateProjectionMatrix();
         const aspect = Math.max(0.55, eng.camera.aspect || 1);
         const fitDiv = Math.min(1, aspect * 0.92);
-        eng.camera.position.set(0, (maxSpan * 5.25) / fitDiv, 0.01);
-        eng.controls.target.set(0, 0, 0);
+        eng.camera.position.set(hb.centerX, (maxSpan * (hasMulti ? 4.85 : 5.25)) / fitDiv, hb.centerZ + 0.01);
+        eng.controls.target.set(hb.centerX, 0, hb.centerZ);
         eng.controls.maxPolarAngle = Math.PI * 0.49;
         eng.controls.minDistance = 4.0;
-        eng.controls.maxDistance = 80;
+        eng.controls.maxDistance = Math.max(80, maxSpan * 8);
       } else {
         eng.camera.fov = 42;
-        eng.camera.far = 90;
+        eng.camera.far = Math.max(90, maxSpan * 10);
         eng.camera.updateProjectionMatrix();
-        eng.camera.position.set(p.widthM * 0.95, Math.max(4.0, maxSpan * 0.86), p.depthM * 1.05);
-        eng.controls.target.set(0, p.ceilingM * 0.34, 0);
+        eng.camera.position.set(
+          hb.centerX + hb.totalW * (hasMulti ? 0.72 : 0.95),
+          Math.max(4.0, maxSpan * (hasMulti ? 0.72 : 0.86)),
+          hb.centerZ + hb.totalD * (hasMulti ? 0.86 : 1.05)
+        );
+        eng.controls.target.set(hb.centerX, p.ceilingM * (hasMulti ? 0.22 : 0.34), hb.centerZ);
         eng.controls.maxPolarAngle = Math.PI * 0.495;
         eng.controls.minDistance = 1.2;
-        eng.controls.maxDistance = 24;
+        eng.controls.maxDistance = Math.max(24, maxSpan * 3.4);
       }
       eng.controls.update();
       eng.scheduleRender(true);
@@ -510,7 +593,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         mountedObjects: new Map<string, { sig: string; root: THREE.Group; dispose?: () => void }>(),
         loadingKeys: new Set<string>(),
         shadowsDirty: true,
-        lastCutawayMask: -1,
+        lastCutawayMask: '',
         rafScheduled: 0,
         renderFrame: () => {},
         scheduleRender: (_dirtyShadows = false) => {},
@@ -529,7 +612,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           br.compassRingGroup.visible = mode !== 'inside';
           br.compassRingGroup.rotation.y = (p.sun.northAngleDeg * Math.PI) / 180;
 
-          let mask = 0;
+          let mask = '';
           for (let wi = 0; wi < br.walls.length; wi++) {
             const wall = br.walls[wi];
             let showSolid = true;
@@ -539,20 +622,21 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
             }
             wall.visualGroup.visible = showSolid;
             wall.shadowGhost.visible = mode === 'free' && !showSolid;
-            if (showSolid) mask |= 1 << wi;
+            mask += showSolid ? '1' : '0';
           }
 
           if (mode === 'inside') {
             br.ceilingVisualGroup.visible = true;
             br.ceilingShadowGhost.visible = false;
-            mask |= 1 << 5;
+            mask += '|C1';
           } else if (mode === 'plan') {
             br.ceilingVisualGroup.visible = false;
             br.ceilingShadowGhost.visible = false;
+            mask += '|C0';
           } else {
             br.ceilingVisualGroup.visible = p.showCeiling;
             br.ceilingShadowGhost.visible = !p.showCeiling;
-            if (p.showCeiling) mask |= 1 << 5;
+            mask += p.showCeiling ? '|C1' : '|C0';
           }
 
           if (mask !== eng.lastCutawayMask) {
@@ -741,6 +825,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       beams: project.beams,
       coves: project.curtainCoves,
       mez: project.mezzanine,
+      adjacentRooms: project.adjacentRooms,
     });
 
     useEffect(() => {
@@ -757,7 +842,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const built = buildArchitecturalRoom(project, eng.roomRoot);
       eng.builtRoom = built;
-      eng.lastCutawayMask = -1;
+      eng.lastCutawayMask = '';
       eng.scheduleRender(true);
       onWarningsChange?.(built.warnings);
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -769,29 +854,33 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       if (!eng) return;
 
       const sol = computeSolarLighting(project.sun);
+      const hb = getHouseBounds(project);
       eng.scene.background = new THREE.Color(sol.backgroundHex);
 
-      eng.sunLight.position.copy(sol.sunPosition);
-      eng.sunLight.target.position.set(0, project.ceilingM * 0.2, 0);
+      eng.sunLight.position.set(hb.centerX + sol.sunPosition.x, sol.sunPosition.y, hb.centerZ + sol.sunPosition.z);
+      eng.sunLight.target.position.set(hb.centerX, project.ceilingM * 0.2, hb.centerZ);
       eng.sunLight.color.copy(sol.sunColor);
       eng.sunLight.intensity = sol.effectiveSunIntensity;
 
-      const span = Math.max(project.widthM, project.depthM) * 1.35 + 2.5;
+      const span = Math.max(hb.totalW, hb.totalD) * 0.95 + 3.2;
       eng.sunLight.shadow.camera.left = -span;
       eng.sunLight.shadow.camera.right = span;
       eng.sunLight.shadow.camera.top = span;
       eng.sunLight.shadow.camera.bottom = -span;
+      eng.sunLight.shadow.camera.far = Math.max(44, span * 4.5);
       eng.sunLight.shadow.camera.updateProjectionMatrix();
 
       eng.hemiLight.color.copy(sol.skyColor);
       eng.hemiLight.groundColor.copy(sol.groundColor);
       eng.hemiLight.intensity = sol.effectiveHemiIntensity;
 
-      eng.bounceLight.position.set(-sol.sunPosition.x * 0.5, 4.5, -sol.sunPosition.z * 0.5);
+      eng.bounceLight.position.set(hb.centerX - sol.sunPosition.x * 0.5, 4.5, hb.centerZ - sol.sunPosition.z * 0.5);
       eng.bounceLight.intensity = sol.isNight ? 0.14 : 0.34;
 
-      const orbDist = Math.max(project.widthM, project.depthM) * 0.85 + 2.2;
+      const orbDist = Math.max(hb.totalW, hb.totalD) * 0.76 + 2.4;
       const orbPos = sol.sunDirWorld.clone().multiplyScalar(orbDist);
+      orbPos.x += hb.centerX;
+      orbPos.z += hb.centerZ;
       orbPos.y = Math.max(0.6, orbPos.y);
       eng.sunOrbGroup.visible = showSunOrb && !sol.isNight && cameraMode !== 'inside';
       eng.sunOrbGroup.children[0].position.copy(orbPos);
@@ -799,7 +888,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const rayAttr = eng.sunRayLine.geometry.attributes.position as THREE.BufferAttribute;
       rayAttr.setXYZ(0, orbPos.x, orbPos.y, orbPos.z);
-      rayAttr.setXYZ(1, 0, Math.min(1.0, project.ceilingM * 0.35), 0);
+      rayAttr.setXYZ(1, hb.centerX, Math.min(1.0, project.ceilingM * 0.35), hb.centerZ);
       rayAttr.needsUpdate = true;
 
       if (eng.builtRoom?.interiorFillLight) {
@@ -1199,28 +1288,46 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       let nextX = targetX;
       let nextZ = targetZ;
 
+      const hasMulti = (p.adjacentRooms?.length || 0) > 0;
+      const activeRect = hasMulti
+        ? findNearestRoomRect(getAllRoomRects(p), targetX, targetZ)
+        : { cx: 0, cz: 0, w: p.widthM, d: p.depthM, minX: -p.widthM * 0.5, maxX: p.widthM * 0.5, minZ: -p.depthM * 0.5, maxZ: p.depthM * 0.5 };
+
       if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling' || obj.y >= 1.0) {
-        const c = clampToRoomWalls(targetX, targetZ, obj.rot, obj.widthM * 0.5, obj.depthM * 0.5, p.widthM, p.depthM, 0.015);
-        nextX = c.x;
-        nextZ = c.z;
+        const c = clampToRoomWalls(
+          targetX - activeRect.cx,
+          targetZ - activeRect.cz,
+          obj.rot,
+          obj.widthM * 0.5,
+          obj.depthM * 0.5,
+          activeRect.w,
+          activeRect.d,
+          0.015
+        );
+        nextX = c.x + activeRect.cx;
+        nextZ = c.z + activeRect.cz;
         hitObstacleRef.current = c.clamped;
       } else {
         const others: OBB2D[] = [
           ...p.objects
             .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 1.0)
-            .map(objectToOBB),
+            .map((o) => {
+              const obb = objectToOBB(o);
+              return { ...obb, x: obb.x - activeRect.cx, z: obb.z - activeRect.cz };
+            }),
           ...p.columns.map((col) => ({
             id: `col-${col.id}`,
-            x: col.xCm / 100,
-            z: col.zCm / 100,
+            x: col.xCm / 100 - activeRect.cx,
+            z: col.zCm / 100 - activeRect.cz,
             rot: 0,
             halfW: col.widthCm / 200,
             halfD: col.depthCm / 200,
           })),
         ];
-        const res = resolveMoveOBB(objectToOBB({ ...obj, x: d.liveX, z: d.liveZ }), targetX, targetZ, others, p.widthM, p.depthM);
-        nextX = res.x;
-        nextZ = res.z;
+        const curLocal = objectToOBB({ ...obj, x: d.liveX - activeRect.cx, z: d.liveZ - activeRect.cz });
+        const res = resolveMoveOBB(curLocal, targetX - activeRect.cx, targetZ - activeRect.cz, others, activeRect.w, activeRect.d);
+        nextX = res.x + activeRect.cx;
+        nextZ = res.z + activeRect.cz;
         hitObstacleRef.current = res.hitObstacle;
       }
 

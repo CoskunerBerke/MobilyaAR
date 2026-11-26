@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import {
   WALL_LABELS,
+  getHouseBounds,
   getMezzanineBounds,
   type ArchCurtainCove,
   type ArchDoor,
   type ArchRoomProject,
   type ArchSelection,
   type ArchWindow,
+  type PassageStyle,
   type WallId,
 } from './types';
 import { createFloorTexture, createWallTexture } from './textures';
@@ -22,7 +24,7 @@ export interface WallRuntimeRef {
 export interface BuiltRoomResult {
   walls: WallRuntimeRef[];
   ceilingVisualGroup: THREE.Group;
-  ceilingShadowGhost: THREE.Mesh;
+  ceilingShadowGhost: THREE.Object3D;
   gridHelper: THREE.LineSegments;
   compassRingGroup: THREE.Group;
   planOverlayGroup: THREE.Group;
@@ -706,6 +708,132 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     cornerTrimMat.dispose();
   });
 
+  const adjacentRooms = project.adjacentRooms || [];
+  const hasMultiRoom = adjacentRooms.length > 0;
+  const houseBounds = getHouseBounds(project);
+
+  // Unified room-rect list for automatic shared-wall partition detection & Sims-style doorway cutting
+  interface RoomBoxMeta {
+    id: string;
+    cx: number;
+    cz: number;
+    w: number;
+    d: number;
+  }
+  const allRoomBoxes: RoomBoxMeta[] = [
+    { id: 'main', cx: 0, cz: 0, w: W, d: D },
+    ...adjacentRooms.map((r) => ({ id: r.id, cx: r.centerXM, cz: r.centerZM, w: r.widthM, d: r.depthM })),
+  ];
+
+  const isWallSharedPartition = (roomId: string, side: WallId): boolean => {
+    if (!hasMultiRoom) return false;
+    const me = allRoomBoxes.find((b) => b.id === roomId);
+    if (!me) return false;
+    for (const other of allRoomBoxes) {
+      if (other.id === roomId) continue;
+      if (side === 'east') {
+        const gap = other.cx - other.w * 0.5 - (me.cx + me.w * 0.5);
+        const ov = Math.min(me.cz + me.d * 0.5, other.cz + other.d * 0.5) - Math.max(me.cz - me.d * 0.5, other.cz - other.d * 0.5);
+        if (Math.abs(gap - T) <= 0.08 && ov >= 0.15) return true;
+      } else if (side === 'west') {
+        const gap = me.cx - me.w * 0.5 - (other.cx + other.w * 0.5);
+        const ov = Math.min(me.cz + me.d * 0.5, other.cz + other.d * 0.5) - Math.max(me.cz - me.d * 0.5, other.cz - other.d * 0.5);
+        if (Math.abs(gap - T) <= 0.08 && ov >= 0.15) return true;
+      } else if (side === 'south') {
+        const gap = other.cz - other.d * 0.5 - (me.cz + me.d * 0.5);
+        const ov = Math.min(me.cx + me.w * 0.5, other.cx + other.w * 0.5) - Math.max(me.cx - me.w * 0.5, other.cx - other.w * 0.5);
+        if (Math.abs(gap - T) <= 0.08 && ov >= 0.15) return true;
+      } else {
+        const gap = me.cz - me.d * 0.5 - (other.cz + other.d * 0.5);
+        const ov = Math.min(me.cx + me.w * 0.5, other.cx + other.w * 0.5) - Math.max(me.cx - me.w * 0.5, other.cx - other.w * 0.5);
+        if (Math.abs(gap - T) <= 0.08 && ov >= 0.15) return true;
+      }
+    }
+    return false;
+  };
+
+  interface PassageCut {
+    roomId: string;
+    side: WallId;
+    localCx: number;
+    widthM: number;
+    heightM: number;
+    style: PassageStyle;
+    renderAssembly: boolean;
+    childRoomId: string;
+  }
+
+  const oppSide = (s: WallId): WallId =>
+    s === 'north' ? 'south' : s === 'south' ? 'north' : s === 'east' ? 'west' : 'east';
+
+  const worldCoordToWallLocal = (room: RoomBoxMeta, side: WallId, worldCoord: number): number => {
+    if (side === 'north') return worldCoord - room.cx;
+    if (side === 'south') return -(worldCoord - room.cx);
+    if (side === 'east') return worldCoord - room.cz;
+    return -(worldCoord - room.cz);
+  };
+
+  const passageCuts: PassageCut[] = [];
+  for (const child of adjacentRooms) {
+    const parentBox = allRoomBoxes.find((b) => b.id === child.parentRoomId) || allRoomBoxes[0];
+    const childBox = allRoomBoxes.find((b) => b.id === child.id);
+    if (!parentBox || !childBox) continue;
+    const pSide = child.attachedSide;
+    const cSide = oppSide(pSide);
+
+    const isNS = pSide === 'north' || pSide === 'south';
+    const pMin = isNS ? parentBox.cx - parentBox.w * 0.5 : parentBox.cz - parentBox.d * 0.5;
+    const pMax = isNS ? parentBox.cx + parentBox.w * 0.5 : parentBox.cz + parentBox.d * 0.5;
+    const cMin = isNS ? childBox.cx - childBox.w * 0.5 : childBox.cz - childBox.d * 0.5;
+    const cMax = isNS ? childBox.cx + childBox.w * 0.5 : childBox.cz + childBox.d * 0.5;
+    const ovMin = Math.max(pMin, cMin);
+    const ovMax = Math.min(pMax, cMax);
+    const ovLen = ovMax - ovMin;
+    if (ovLen < 0.72) continue;
+
+    const requestedW = Math.max(0.75, (child.passageWidthCm || 95) / 100);
+    const pW =
+      child.passageStyle === 'open_wide'
+        ? Math.max(1.2, Math.min(ovLen - 0.2, Math.max(requestedW, ovLen * 0.72)))
+        : Math.max(0.75, Math.min(ovLen - 0.18, requestedW));
+    const pH =
+      child.passageStyle === 'open_wide'
+        ? Math.max(2.15, H - 0.22)
+        : Math.min(2.14, H - 0.12);
+    const worldCenter = (ovMin + ovMax) * 0.5;
+
+    passageCuts.push(
+      {
+        roomId: parentBox.id,
+        side: pSide,
+        localCx: worldCoordToWallLocal(parentBox, pSide, worldCenter),
+        widthM: pW,
+        heightM: pH,
+        style: child.passageStyle,
+        renderAssembly: true,
+        childRoomId: child.id,
+      },
+      {
+        roomId: childBox.id,
+        side: cSide,
+        localCx: worldCoordToWallLocal(childBox, cSide, worldCenter),
+        widthM: pW,
+        heightM: pH,
+        style: child.passageStyle,
+        renderAssembly: false,
+        childRoomId: child.id,
+      }
+    );
+  }
+
+  const halfT = T * 0.495;
+  const primaryShared: Record<WallId, boolean> = {
+    north: isWallSharedPartition('main', 'north'),
+    south: isWallSharedPartition('main', 'south'),
+    east: isWallSharedPartition('main', 'east'),
+    west: isWallSharedPartition('main', 'west'),
+  };
+
   for (const ws of wallSpecs) {
     const wallHolder = new THREE.Group();
     wallHolder.position.set(...ws.pos);
@@ -720,9 +848,30 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     wallOverlay.rotation.y = ws.rotY;
     planOverlayGroup.add(wallOverlay);
 
+    const isShared = primaryShared[ws.side];
+    const wallDepth = isShared ? halfT : T;
+    const leftExt = ws.extendCorners
+      ? ws.side === 'north'
+        ? primaryShared.west
+          ? halfT
+          : T
+        : primaryShared.east
+        ? halfT
+        : T
+      : 0;
+    const rightExt = ws.extendCorners
+      ? ws.side === 'north'
+        ? primaryShared.east
+          ? halfT
+          : T
+        : primaryShared.west
+        ? halfT
+        : T
+      : 0;
+
     const wallShape = new THREE.Shape();
-    const xLeftExt = ws.extendCorners ? -ws.len * 0.5 - T : -ws.len * 0.5;
-    const xRightExt = ws.extendCorners ? ws.len * 0.5 + T : ws.len * 0.5;
+    const xLeftExt = -ws.len * 0.5 - leftExt;
+    const xRightExt = ws.len * 0.5 + rightExt;
     wallShape.moveTo(xLeftExt, 0);
     wallShape.lineTo(xRightExt, 0);
     wallShape.lineTo(xRightExt, H);
@@ -732,6 +881,39 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     const acceptedHoles: HoleBox2D[] = [];
     const floorBreakSpans: Array<[number, number]> = [];
     const coveOnWall = project.curtainCoves.find((c) => c.wall === ws.side);
+
+    // Sims-style shared passages to adjacent rooms on this primary wall (cut FIRST so doorways always open cleanly!)
+    for (const pc of passageCuts.filter((c) => c.roomId === 'main' && c.side === ws.side)) {
+      const x0 = Math.max(-ws.len * 0.5 + 0.06, pc.localCx - pc.widthM * 0.5);
+      const x1 = Math.min(ws.len * 0.5 - 0.06, pc.localCx + pc.widthM * 0.5);
+      if (x1 - x0 < 0.55) continue;
+      const cand: HoleBox2D = { x0, x1, y0: 0.005, y1: pc.heightM };
+      acceptedHoles.push(cand);
+      floorBreakSpans.push([x0 - 0.04, x1 + 0.04]);
+      if (pc.style === 'open_arch') addArchedHole(wallShape, x0, 0.005, x1, pc.heightM);
+      else addRectangularHole(wallShape, x0, 0.005, x1, pc.heightM);
+
+      if (pc.renderAssembly) {
+        const synDoor: ArchDoor = {
+          id: `passage-${pc.childRoomId}`,
+          wall: ws.side,
+          kind: pc.style === 'door' ? 'single' : 'archway',
+          offsetCm: Math.round(((x0 + x1) * 0.5 + ws.len * 0.5) * 100),
+          widthCm: Math.round((x1 - x0) * 100),
+          heightCm: Math.round(pc.heightM * 100),
+          swing: 'outward',
+          hinge: 'left',
+          openAngleDeg: 58,
+          colorHex: '#ede9e0',
+          handleColorHex: '#232325',
+          panelStyle: 'modern',
+        };
+        const { doorGroup, swingArcGroup } = createDoorAssembly(synDoor, (x0 + x1) * 0.5, x1 - x0, pc.heightM, T, disposables);
+        tagPickTarget(doorGroup, { type: 'adjacentRoom', id: pc.childRoomId });
+        visualGroup.add(doorGroup);
+        wallOverlay.add(swingArcGroup);
+      }
+    }
 
     for (const win of project.windows.filter((w) => w.wall === ws.side)) {
       const wM = Math.max(0.35, Math.min(ws.len - 0.16, win.widthCm / 100));
@@ -784,8 +966,8 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       wallOverlay.add(swingArcGroup);
     }
 
-    const wallGeo = new THREE.ExtrudeGeometry(wallShape, { depth: T, bevelEnabled: false, curveSegments: 24 });
-    wallGeo.translate(0, 0, -T);
+    const wallGeo = new THREE.ExtrudeGeometry(wallShape, { depth: wallDepth, bevelEnabled: false, curveSegments: 24 });
+    wallGeo.translate(0, 0, -wallDepth);
     disposables.push(() => wallGeo.dispose());
 
     const wFinish = project.walls[ws.side];
@@ -891,13 +1073,276 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       visualGroup.add(buildCurtainCoveOnWall(coveOnWall, ws.len, H, disposables));
     }
 
-    walls.push({
-      side: ws.side,
-      visualGroup,
-      shadowGhost,
-      inwardNormal: new THREE.Vector3(...ws.inward),
-      center: new THREE.Vector3(ws.pos[0], H * 0.5, ws.pos[2]),
+    // Only exterior perimeter walls auto-cutaway in 3D view; interior partition walls stay solid like an architectural dollhouse!
+    if (!isShared) {
+      walls.push({
+        side: ws.side,
+        visualGroup,
+        shadowGhost,
+        inwardNormal: new THREE.Vector3(...ws.inward),
+        center: new THREE.Vector3(ws.pos[0], H * 0.5, ws.pos[2]),
+      });
+    }
+  }
+
+  // 2.5) SIMS-STYLE ADJACENT CONNECTED ROOMS (3+1 / 2+1 / 1+1 & custom attached rooms!)
+  const ceilingVisualGroup = new THREE.Group();
+  roomRoot.add(ceilingVisualGroup);
+  const ceilingShadowGhost = new THREE.Group();
+  roomRoot.add(ceilingShadowGhost);
+
+  for (const adj of adjacentRooms) {
+    const rW = adj.widthM;
+    const rD = adj.depthM;
+    const rCx = adj.centerXM;
+    const rCz = adj.centerZM;
+
+    // Room-specific floor surface
+    const adjFloorTex = createFloorTexture(adj.floorMaterial, adj.floorTintHex, rW, rD);
+    const adjFloorRough =
+      adj.floorMaterial === 'marble'
+        ? 0.22
+        : adj.floorMaterial === 'travertine'
+        ? 0.44
+        : adj.floorMaterial === 'terrazzo'
+        ? 0.36
+        : 0.66;
+    const adjFloorGeo = new THREE.PlaneGeometry(rW, rD);
+    const adjFloorMat = new THREE.MeshStandardMaterial({ map: adjFloorTex, roughness: adjFloorRough, metalness: 0.04 });
+    const adjSlabGeo = new THREE.BoxGeometry(rW + T * 2 + 0.04, 0.14, rD + T * 2 + 0.04);
+    disposables.push(() => {
+      adjFloorGeo.dispose();
+      adjFloorMat.dispose();
+      adjSlabGeo.dispose();
     });
+
+    const adjFloor = new THREE.Mesh(adjFloorGeo, adjFloorMat);
+    adjFloor.rotation.x = -Math.PI / 2;
+    adjFloor.position.set(rCx, 0, rCz);
+    adjFloor.receiveShadow = true;
+    adjFloor.userData.pickTarget = { type: 'adjacentRoom', id: adj.id } satisfies ArchSelection;
+    roomRoot.add(adjFloor);
+
+    const adjSlab = new THREE.Mesh(adjSlabGeo, slabMat);
+    adjSlab.position.set(rCx, -0.072, rCz);
+    adjSlab.receiveShadow = true;
+    adjSlab.raycast = () => {};
+    roomRoot.add(adjSlab);
+
+    // Room-specific wall materials & baseboard
+    const adjWallTex = createWallTexture(adj.wallPattern, adj.wallColorHex);
+    const adjFaceMat = new THREE.MeshStandardMaterial({
+      map: adjWallTex,
+      roughness: adj.wallPattern === 'mirror' ? 0.1 : adj.wallPattern === 'marble' ? 0.28 : 0.86,
+      metalness: adj.wallPattern === 'mirror' ? 0.85 : 0.02,
+    });
+    const adjRevealMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(adj.wallColorHex).multiplyScalar(0.95),
+      roughness: 0.88,
+    });
+    const adjBbMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(adj.baseboardColorHex || project.baseboardColorHex),
+      roughness: 0.55,
+    });
+    disposables.push(() => {
+      adjFaceMat.dispose();
+      adjRevealMat.dispose();
+      adjBbMat.dispose();
+    });
+
+    const adjShared: Record<WallId, boolean> = {
+      north: isWallSharedPartition(adj.id, 'north'),
+      south: isWallSharedPartition(adj.id, 'south'),
+      east: isWallSharedPartition(adj.id, 'east'),
+      west: isWallSharedPartition(adj.id, 'west'),
+    };
+
+    const adjWallSpecs: Array<{
+      side: WallId;
+      len: number;
+      extendCorners: boolean;
+      pos: [number, number, number];
+      rotY: number;
+      inward: [number, number, number];
+    }> = [
+      { side: 'north', len: rW, extendCorners: true, pos: [rCx, 0, rCz - rD * 0.5], rotY: 0, inward: [0, 0, 1] },
+      { side: 'south', len: rW, extendCorners: true, pos: [rCx, 0, rCz + rD * 0.5], rotY: Math.PI, inward: [0, 0, -1] },
+      { side: 'west', len: rD, extendCorners: false, pos: [rCx - rW * 0.5, 0, rCz], rotY: Math.PI / 2, inward: [1, 0, 0] },
+      { side: 'east', len: rD, extendCorners: false, pos: [rCx + rW * 0.5, 0, rCz], rotY: -Math.PI / 2, inward: [-1, 0, 0] },
+    ];
+
+    for (const aws of adjWallSpecs) {
+      const aHolder = new THREE.Group();
+      aHolder.position.set(...aws.pos);
+      aHolder.rotation.y = aws.rotY;
+      roomRoot.add(aHolder);
+
+      const aVis = new THREE.Group();
+      aHolder.add(aVis);
+
+      const aOverlay = new THREE.Group();
+      aOverlay.position.set(...aws.pos);
+      aOverlay.rotation.y = aws.rotY;
+      planOverlayGroup.add(aOverlay);
+
+      const isShared = adjShared[aws.side];
+      const wDepth = isShared ? halfT : T;
+      const leftExt = aws.extendCorners
+        ? aws.side === 'north'
+          ? adjShared.west
+            ? halfT
+            : T
+          : adjShared.east
+          ? halfT
+          : T
+        : 0;
+      const rightExt = aws.extendCorners
+        ? aws.side === 'north'
+          ? adjShared.east
+            ? halfT
+            : T
+          : adjShared.west
+          ? halfT
+          : T
+        : 0;
+
+      const aShape = new THREE.Shape();
+      aShape.moveTo(-aws.len * 0.5 - leftExt, 0);
+      aShape.lineTo(aws.len * 0.5 + rightExt, 0);
+      aShape.lineTo(aws.len * 0.5 + rightExt, H);
+      aShape.lineTo(-aws.len * 0.5 - leftExt, H);
+      aShape.closePath();
+
+      const aBreaks: Array<[number, number]> = [];
+      const aHoles: HoleBox2D[] = [];
+
+      // Passages on this adjacent room wall
+      for (const pc of passageCuts.filter((c) => c.roomId === adj.id && c.side === aws.side)) {
+        const x0 = Math.max(-aws.len * 0.5 + 0.06, pc.localCx - pc.widthM * 0.5);
+        const x1 = Math.min(aws.len * 0.5 - 0.06, pc.localCx + pc.widthM * 0.5);
+        if (x1 - x0 < 0.55) continue;
+        aHoles.push({ x0, x1, y0: 0.005, y1: pc.heightM });
+        aBreaks.push([x0 - 0.04, x1 + 0.04]);
+        if (pc.style === 'open_arch') addArchedHole(aShape, x0, 0.005, x1, pc.heightM);
+        else addRectangularHole(aShape, x0, 0.005, x1, pc.heightM);
+
+        if (pc.renderAssembly) {
+          const synDoor: ArchDoor = {
+            id: `passage-${pc.childRoomId}`,
+            wall: aws.side,
+            kind: pc.style === 'door' ? 'single' : 'archway',
+            offsetCm: Math.round(((x0 + x1) * 0.5 + aws.len * 0.5) * 100),
+            widthCm: Math.round((x1 - x0) * 100),
+            heightCm: Math.round(pc.heightM * 100),
+            swing: 'outward',
+            hinge: 'left',
+            openAngleDeg: 58,
+            colorHex: '#ede9e0',
+            handleColorHex: '#232325',
+            panelStyle: 'modern',
+          };
+          const { doorGroup, swingArcGroup } = createDoorAssembly(synDoor, (x0 + x1) * 0.5, x1 - x0, pc.heightM, T, disposables);
+          tagPickTarget(doorGroup, { type: 'adjacentRoom', id: pc.childRoomId });
+          aVis.add(doorGroup);
+          aOverlay.add(swingArcGroup);
+        }
+      }
+
+      // Optional exterior facade window for bedroom / kitchen / office / balcony
+      if (adj.hasWindow && !isShared && adj.windowWall === aws.side && aws.len >= 1.6) {
+        const winW = Math.min(aws.len - 0.65, adj.roomKind === 'kitchen' ? 1.5 : 1.75);
+        const winH = Math.min(1.5, H - 0.95);
+        const sillY = adj.roomKind === 'kitchen' ? 1.05 : 0.85;
+        const cand: HoleBox2D = { x0: -winW * 0.5, x1: winW * 0.5, y0: sillY, y1: sillY + winH };
+        if (!aHoles.some((h) => boxesOverlap(cand, h, 0.05))) {
+          addRectangularHole(aShape, cand.x0, cand.y0, cand.x1, cand.y1);
+          const synWin: ArchWindow = {
+            id: `win-${adj.id}`,
+            wall: aws.side,
+            kind: 'double',
+            offsetCm: Math.round(aws.len * 50),
+            widthCm: Math.round(winW * 100),
+            heightCm: Math.round(winH * 100),
+            sillHeightCm: Math.round(sillY * 100),
+            frameColorHex: '#26282c',
+            hasSill: true,
+            curtainStyle: adj.roomKind === 'bedroom' ? 'sheer_and_drape' : 'none',
+            curtainColorHex: '#dfd8cc',
+            curtainOpenRatio: 0.75,
+          };
+          const winGrp = createWindowAssembly(synWin, 0, sillY, winW, winH, T, H, undefined, glassMat, disposables);
+          tagPickTarget(winGrp, { type: 'adjacentRoom', id: adj.id });
+          aVis.add(winGrp);
+        }
+      }
+
+      const aWallGeo = new THREE.ExtrudeGeometry(aShape, { depth: wDepth, bevelEnabled: false, curveSegments: 20 });
+      aWallGeo.translate(0, 0, -wDepth);
+      disposables.push(() => aWallGeo.dispose());
+
+      const aWallMesh = new THREE.Mesh(aWallGeo, [adjFaceMat, adjRevealMat]);
+      aWallMesh.castShadow = true;
+      aWallMesh.receiveShadow = true;
+      aWallMesh.userData.pickTarget = { type: 'adjacentRoom', id: adj.id } satisfies ArchSelection;
+      aVis.add(aWallMesh);
+
+      const aGhost = new THREE.Mesh(aWallGeo, shadowOnlyMat);
+      aGhost.castShadow = true;
+      aGhost.visible = false;
+      aGhost.raycast = () => {};
+      aHolder.add(aGhost);
+
+      if (project.showBaseboard && adj.roomKind !== 'bathroom') {
+        aBreaks.sort((a, b) => a[0] - b[0]);
+        let cur = -aws.len * 0.5;
+        const addAdjBb = (a: number, b: number) => {
+          if (b - a < 0.04) return;
+          const bg = new THREE.BoxGeometry(b - a, baseboardH, 0.016);
+          disposables.push(() => bg.dispose());
+          const bm = new THREE.Mesh(bg, adjBbMat);
+          bm.position.set((a + b) * 0.5, baseboardH * 0.5, 0.008);
+          bm.receiveShadow = true;
+          bm.raycast = () => {};
+          aVis.add(bm);
+        };
+        for (const [bx0, bx1] of aBreaks) {
+          if (bx0 > cur) addAdjBb(cur, Math.min(bx0, aws.len * 0.5));
+          cur = Math.max(cur, bx1);
+        }
+        if (cur < aws.len * 0.5) addAdjBb(cur, aws.len * 0.5);
+      }
+
+      // Exterior walls of adjacent rooms also cutaway dynamically so every room in a 3+1 opens cleanly toward camera!
+      if (!isShared) {
+        walls.push({
+          side: aws.side,
+          visualGroup: aVis,
+          shadowGhost: aGhost,
+          inwardNormal: new THREE.Vector3(...aws.inward),
+          center: new THREE.Vector3(aws.pos[0], H * 0.5, aws.pos[2]),
+        });
+      }
+    }
+
+    // Room ceiling panel & shadow blocker
+    const adjCeilGeo = new THREE.BoxGeometry(rW + T * 2, 0.08, rD + T * 2);
+    const adjCeilMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(project.ceilingColorHex), roughness: 0.9 });
+    disposables.push(() => {
+      adjCeilGeo.dispose();
+      adjCeilMat.dispose();
+    });
+    const adjCeil = new THREE.Mesh(adjCeilGeo, adjCeilMat);
+    adjCeil.position.set(rCx, H + 0.04, rCz);
+    adjCeil.castShadow = true;
+    adjCeil.receiveShadow = true;
+    adjCeil.raycast = () => {};
+    ceilingVisualGroup.add(adjCeil);
+
+    const adjCeilGhost = new THREE.Mesh(adjCeilGeo, shadowOnlyMat);
+    adjCeilGhost.position.set(rCx, H + 0.04, rCz);
+    adjCeilGhost.castShadow = true;
+    adjCeilGhost.raycast = () => {};
+    ceilingShadowGhost.add(adjCeilGhost);
   }
 
   // 3) Columns
@@ -1110,9 +1555,6 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   }
 
   // 5) Ceiling + Shadow Roof Blocker + Single Balanced Interior Fill Light (60 FPS friendly!)
-  const ceilingVisualGroup = new THREE.Group();
-  roomRoot.add(ceilingVisualGroup);
-
   const ceilGeo = new THREE.BoxGeometry(W + T * 2, 0.08, D + T * 2);
   const ceilMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(project.ceilingColorHex), roughness: 0.9 });
   disposables.push(() => {
@@ -1126,11 +1568,11 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   ceilMesh.raycast = () => {};
   ceilingVisualGroup.add(ceilMesh);
 
-  const ceilingShadowGhost = new THREE.Mesh(ceilGeo, shadowOnlyMat);
-  ceilingShadowGhost.position.y = H + 0.04;
-  ceilingShadowGhost.castShadow = true;
-  ceilingShadowGhost.raycast = () => {};
-  roomRoot.add(ceilingShadowGhost);
+  const primaryCeilShadowGhost = new THREE.Mesh(ceilGeo, shadowOnlyMat);
+  primaryCeilShadowGhost.position.y = H + 0.04;
+  primaryCeilShadowGhost.castShadow = true;
+  primaryCeilShadowGhost.raycast = () => {};
+  ceilingShadowGhost.add(primaryCeilShadowGhost);
 
   let interiorFillLight: THREE.PointLight | null = null;
   const hasCoveLed = project.curtainCoves.some((c) => c.ledEnabled);
@@ -1172,12 +1614,16 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     }
   }
 
-  // 6) 50cm Architectural Floor Grid
+  // 6) 50cm Architectural Floor Grid (covers primary + all connected rooms!)
   const gridVerts: number[] = [];
-  const halfW = W * 0.5;
-  const halfD = D * 0.5;
-  for (let x = -Math.floor(halfW / 0.5) * 0.5; x <= halfW + 1e-4; x += 0.5) gridVerts.push(x, 0.004, -halfD, x, 0.004, halfD);
-  for (let z = -Math.floor(halfD / 0.5) * 0.5; z <= halfD + 1e-4; z += 0.5) gridVerts.push(-halfW, 0.004, z, halfW, 0.004, z);
+  for (const box of allRoomBoxes) {
+    const x0 = box.cx - box.w * 0.5;
+    const x1 = box.cx + box.w * 0.5;
+    const z0 = box.cz - box.d * 0.5;
+    const z1 = box.cz + box.d * 0.5;
+    for (let x = Math.ceil(x0 / 0.5) * 0.5; x <= x1 + 1e-4; x += 0.5) gridVerts.push(x, 0.004, z0, x, 0.004, z1);
+    for (let z = Math.ceil(z0 / 0.5) * 0.5; z <= z1 + 1e-4; z += 0.5) gridVerts.push(x0, 0.004, z, x1, 0.004, z);
+  }
   const gridGeo = new THREE.BufferGeometry();
   gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridVerts, 3));
   const gridMat = new THREE.LineBasicMaterial({ color: 0x3b3832, transparent: true, opacity: 0.13 });
@@ -1189,9 +1635,10 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   gridHelper.raycast = () => {};
   roomRoot.add(gridHelper);
 
-  // 7) Exterior Compass Ring & 2D Plan Dimension Badges
+  // 7) Exterior Compass Ring & 2D Plan Dimension Badges (scales cleanly to full multi-room apartment!)
   const compassRingGroup = new THREE.Group();
-  const compassR = Math.max(W, D) * 0.68 + 0.7;
+  compassRingGroup.position.set(houseBounds.centerX, 0, houseBounds.centerZ);
+  const compassR = Math.max(houseBounds.totalW, houseBounds.totalD) * 0.64 + 0.85;
   const ringPts: THREE.Vector3[] = [];
   for (let i = 0; i <= 64; i++) {
     const a = (i / 64) * Math.PI * 2;
@@ -1199,7 +1646,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   }
   const cRingGeo = new THREE.BufferGeometry().setFromPoints(ringPts);
   const cRingMat = new THREE.LineBasicMaterial({ color: 0x78716c, transparent: true, opacity: 0.28 });
-  const northConeGeo = new THREE.ConeGeometry(0.16, 0.42, 4);
+  const northConeGeo = new THREE.ConeGeometry(0.18, 0.46, 4);
   northConeGeo.rotateX(-Math.PI / 2);
   const northConeMat = new THREE.MeshBasicMaterial({ color: 0xdc2626 });
   disposables.push(() => {
@@ -1212,12 +1659,12 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   cLine.raycast = () => {};
   compassRingGroup.add(cLine);
   const northArrow = new THREE.Mesh(northConeGeo, northConeMat);
-  northArrow.position.set(0, -0.03, -compassR - 0.14);
+  northArrow.position.set(0, -0.03, -compassR - 0.16);
   northArrow.raycast = () => {};
   compassRingGroup.add(northArrow);
   roomRoot.add(compassRingGroup);
 
-  const makeWallBadge = (text: string, px: number, pz: number, rotZ: number) => {
+  const makeWallBadge = (text: string, px: number, pz: number, rotZ: number, planeW = 1.55, planeH = 0.29) => {
     const cv = document.createElement('canvas');
     cv.width = 512;
     cv.height = 96;
@@ -1229,7 +1676,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       ctx.lineWidth = 3;
       ctx.strokeRect(10, 12, 492, 72);
       ctx.fillStyle = '#1c1917';
-      ctx.font = '700 34px "JetBrains Mono", monospace';
+      ctx.font = '700 32px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(text, 256, 50);
@@ -1237,7 +1684,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
-    const geo = new THREE.PlaneGeometry(1.55, 0.29);
+    const geo = new THREE.PlaneGeometry(planeW, planeH);
     disposables.push(() => {
       tex.dispose();
       mat.dispose();
@@ -1251,11 +1698,82 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     planLabelsGroup.add(m);
   };
 
-  const apronOff = T + 0.44;
-  makeWallBadge(`A · ÜST (${Math.round(W * 100)} cm)`, 0, -D * 0.5 - apronOff, 0);
-  makeWallBadge(`C · ALT (${Math.round(W * 100)} cm)`, 0, D * 0.5 + apronOff, 0);
-  makeWallBadge(`D · SOL (${Math.round(D * 100)} cm)`, -W * 0.5 - apronOff, 0, Math.PI / 2);
-  makeWallBadge(`B · SAĞ (${Math.round(D * 100)} cm)`, W * 0.5 + apronOff, 0, -Math.PI / 2);
+  const apronOff = T + 0.5;
+  makeWallBadge(
+    `A · ÜST (${Math.round(houseBounds.totalW * 100)} cm)`,
+    houseBounds.centerX,
+    houseBounds.minZ - apronOff,
+    0,
+    hasMultiRoom ? 2.2 : 1.55,
+    hasMultiRoom ? 0.42 : 0.29
+  );
+  makeWallBadge(
+    `C · ALT (${Math.round(houseBounds.totalW * 100)} cm)`,
+    houseBounds.centerX,
+    houseBounds.maxZ + apronOff,
+    0,
+    hasMultiRoom ? 2.2 : 1.55,
+    hasMultiRoom ? 0.42 : 0.29
+  );
+  makeWallBadge(
+    `D · SOL (${Math.round(houseBounds.totalD * 100)} cm)`,
+    houseBounds.minX - apronOff,
+    houseBounds.centerZ,
+    Math.PI / 2,
+    hasMultiRoom ? 2.2 : 1.55,
+    hasMultiRoom ? 0.42 : 0.29
+  );
+  makeWallBadge(
+    `B · SAĞ (${Math.round(houseBounds.totalD * 100)} cm)`,
+    houseBounds.maxX + apronOff,
+    houseBounds.centerZ,
+    -Math.PI / 2,
+    hasMultiRoom ? 2.2 : 1.55,
+    hasMultiRoom ? 0.42 : 0.29
+  );
+
+  // Room interior name + m² tags in 2D Plan view when multi-room apartment is active!
+  if (hasMultiRoom) {
+    const makeRoomPlanTag = (title: string, areaM2: number, rx: number, rz: number, maxW: number) => {
+      const cv = document.createElement('canvas');
+      cv.width = 512;
+      cv.height = 128;
+      const ctx = cv.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'rgba(28,25,23,0.88)';
+        ctx.fillRect(8, 12, 496, 104);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '700 34px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title.toUpperCase().slice(0, 18), 256, 48);
+        ctx.fillStyle = '#d6d3d1';
+        ctx.font = '600 26px "JetBrains Mono", monospace';
+        ctx.fillText(`${areaM2.toFixed(1)} m²`, 256, 88);
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+      const pw = Math.min(maxW - 0.25, 1.95);
+      const ph = pw * 0.25;
+      const geo = new THREE.PlaneGeometry(pw, ph);
+      disposables.push(() => {
+        tex.dispose();
+        mat.dispose();
+        geo.dispose();
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(rx, H + 0.05, rz);
+      m.raycast = () => {};
+      planLabelsGroup.add(m);
+    };
+
+    makeRoomPlanTag('Ana Salon', W * D, 0, 0, W);
+    for (const adj of adjacentRooms) {
+      makeRoomPlanTag(adj.name, adj.widthM * adj.depthM, adj.centerXM, adj.centerZM, adj.widthM);
+    }
+  }
 
   return {
     walls,

@@ -26,10 +26,13 @@ import {
   DOOR_KIND_LABELS,
   FLOOR_MATERIAL_LABELS,
   FRAME_COLOR_SWATCHES,
+  PASSAGE_STYLE_LABELS,
+  ROOM_KIND_LABELS,
   WALL_LABELS,
   WALL_PATTERN_LABELS,
   WINDOW_KIND_LABELS,
   getWallLengthM,
+  type ArchAdjacentRoom,
   type ArchBeam,
   type ArchColumn,
   type ArchDoor,
@@ -41,6 +44,8 @@ import {
   type CurtainStyle,
   type DoorKind,
   type FloorMaterialKind,
+  type PassageStyle,
+  type RoomKind,
   type WallId,
   type WallPattern,
   type WindowKind,
@@ -60,6 +65,7 @@ interface Props {
   onSnapObjectToWall: (objId: string, wall: WallId) => void;
   onMoveOpeningToWall: (kind: 'window' | 'door' | 'wallZone', id: string, wall: WallId) => void;
   onDuplicateObject: (objId: string) => void;
+  onAttachRoom?: (parentRoomId: string, side: WallId, roomKind: RoomKind) => void;
   onToast: (msg: string) => void;
 }
 
@@ -99,6 +105,7 @@ export const SelectionInspector: React.FC<Props> = ({
   onSnapObjectToWall,
   onMoveOpeningToWall,
   onDuplicateObject,
+  onAttachRoom,
   onToast,
 }) => {
   const headerBar = (title: string, subtitle: string, onDelete?: () => void) => (
@@ -1166,6 +1173,219 @@ export const SelectionInspector: React.FC<Props> = ({
               className="w-7 h-6 border border-stone-300 cursor-pointer"
             />
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 7.5) SELECTED ADJACENT ROOM (Sims-style connected room)
+  if (selection.type === 'adjacentRoom') {
+    const room = (project.adjacentRooms || []).find((r) => r.id === selection.id);
+    if (!room) return null;
+
+    const patchRoom = (patch: Partial<ArchAdjacentRoom>) =>
+      onUpdateProject((p) => ({
+        ...p,
+        adjacentRooms: (p.adjacentRooms || []).map((r) => {
+          if (r.id !== room.id) return r;
+          let nextCx = patch.centerXM ?? r.centerXM;
+          let nextCz = patch.centerZM ?? r.centerZM;
+          if (typeof patch.widthM === 'number' && patch.widthM !== r.widthM) {
+            const dw = patch.widthM - r.widthM;
+            if (r.attachedSide === 'east') nextCx = Number((r.centerXM + dw * 0.5).toFixed(2));
+            else if (r.attachedSide === 'west') nextCx = Number((r.centerXM - dw * 0.5).toFixed(2));
+          }
+          if (typeof patch.depthM === 'number' && patch.depthM !== r.depthM) {
+            const dd = patch.depthM - r.depthM;
+            if (r.attachedSide === 'south') nextCz = Number((r.centerZM + dd * 0.5).toFixed(2));
+            else if (r.attachedSide === 'north') nextCz = Number((r.centerZM - dd * 0.5).toFixed(2));
+          }
+          return { ...r, ...patch, centerXM: nextCx, centerZM: nextCz };
+        }),
+      }));
+
+    const deleteRoom = () => {
+      const minX = room.centerXM - room.widthM * 0.5;
+      const maxX = room.centerXM + room.widthM * 0.5;
+      const minZ = room.centerZM - room.depthM * 0.5;
+      const maxZ = room.centerZM + room.depthM * 0.5;
+      onUpdateProject((p) => ({
+        ...p,
+        adjacentRooms: (p.adjacentRooms || []).filter((r) => r.id !== room.id),
+        objects: p.objects.filter((o) => !(o.x >= minX && o.x <= maxX && o.z >= minZ && o.z <= maxZ)),
+      }));
+      onClose();
+      onToast(`${room.name} kaldırıldı.`);
+    };
+
+    const areaM2 = (room.widthM * room.depthM).toFixed(1);
+
+    return (
+      <div className="flex flex-col h-full text-xs">
+        {headerBar(room.name, `${ROOM_KIND_LABELS[room.roomKind]} · ${room.widthM.toFixed(1)}×${room.depthM.toFixed(1)} m (${areaM2} m²)`, deleteRoom)}
+        <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
+          <div className="space-y-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Oda Adı &amp; Ölçüleri</span>
+            <input
+              type="text"
+              value={room.name}
+              onChange={(e) => patchRoom({ name: e.target.value })}
+              className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-xs font-semibold"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[10px] text-stone-600">
+                En (m)
+                <NumericInput
+                  min={1.4}
+                  max={10}
+                  step={0.2}
+                  decimals={2}
+                  value={room.widthM}
+                  onChange={(v) => patchRoom({ widthM: v })}
+                  className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
+                />
+              </label>
+              <label className="text-[10px] text-stone-600">
+                Derinlik (m)
+                <NumericInput
+                  min={1.4}
+                  max={10}
+                  step={0.2}
+                  decimals={2}
+                  value={room.depthM}
+                  onChange={(v) => patchRoom({ depthM: v })}
+                  className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="border-t border-stone-200 pt-3 space-y-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Bağlantı Geçişi &amp; Pencere</span>
+            <div className="grid grid-cols-3 gap-1">
+              {(['door', 'open_arch', 'open_wide'] as PassageStyle[]).map((ps) => (
+                <button
+                  key={ps}
+                  type="button"
+                  onClick={() => patchRoom({ passageStyle: ps })}
+                  className={`py-1.5 px-1 border text-[10px] font-semibold truncate ${
+                    room.passageStyle === ps ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
+                  }`}
+                >
+                  {PASSAGE_STYLE_LABELS[ps].split(' ')[0]}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-[11px] cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={room.hasWindow}
+                onChange={(e) => patchRoom({ hasWindow: e.target.checked })}
+                className="accent-stone-950"
+              />
+              <span>Dış cephede pencere aç</span>
+            </label>
+          </div>
+
+          <div className="border-t border-stone-200 pt-3 space-y-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              Zemin Parke / Seramik (10 Marka)
+            </span>
+            {room.floorBrandLabel && <p className="text-[10px] font-semibold text-stone-900 truncate">{room.floorBrandLabel}</p>}
+            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
+              {PARQUET_CATALOG.slice(0, 24).map((pq) => {
+                const active = room.floorBrandLabel?.includes(pq.code);
+                return (
+                  <button
+                    key={pq.id}
+                    type="button"
+                    onClick={() => {
+                      patchRoom({
+                        floorMaterial: pq.floorMaterial,
+                        floorTintHex: pq.hex,
+                        floorBrandLabel: `${SUPPLIER_SHORT[pq.brand]} ${pq.code} · ${pq.name}`,
+                      });
+                      onToast(`${room.name} zemini: ${pq.name}`);
+                    }}
+                    className={`px-1.5 py-1 border flex items-center gap-1.5 text-left ${
+                      active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                    }`}
+                  >
+                    <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: pq.hex }} />
+                    <span className="truncate text-[10px]">{pq.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="border-t border-stone-200 pt-3 space-y-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              Duvar Boya / Panel (Filli · Jotun · VitrA · AGT)
+            </span>
+            {room.wallBrandLabel && <p className="text-[10px] font-semibold text-stone-900 truncate">{room.wallBrandLabel}</p>}
+            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
+              {WALL_PANEL_CATALOG.slice(0, 24).map((wp) => {
+                const active = room.wallBrandLabel?.includes(wp.code);
+                return (
+                  <button
+                    key={wp.id}
+                    type="button"
+                    onClick={() => {
+                      patchRoom({
+                        wallColorHex: wp.hex,
+                        wallPattern: wp.pattern,
+                        wallBrandLabel: `${SUPPLIER_SHORT[wp.brand]} ${wp.code} · ${wp.name}`,
+                      });
+                      onToast(`${room.name} duvarı: ${wp.name}`);
+                    }}
+                    className={`px-1.5 py-1 border flex items-center gap-1.5 text-left ${
+                      active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                    }`}
+                  >
+                    <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: wp.hex }} />
+                    <span className="truncate text-[10px]">{wp.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {onAttachRoom && (
+            <div className="border-t border-stone-200 pt-3 space-y-1.5">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                Bu Odanın Yanına Oda Bağla
+              </span>
+              <div className="grid grid-cols-2 gap-1">
+                {(
+                  [
+                    { kind: 'bedroom' as RoomKind, lbl: '+ Yatak Odası' },
+                    { kind: 'bathroom' as RoomKind, lbl: '+ Banyo / WC' },
+                    { kind: 'kitchen' as RoomKind, lbl: '+ Mutfak' },
+                    { kind: 'balcony' as RoomKind, lbl: '+ Balkon' },
+                  ]
+                ).map((btn) => (
+                  <button
+                    key={btn.kind}
+                    type="button"
+                    onClick={() => onAttachRoom(room.id, room.attachedSide, btn.kind)}
+                    className="py-1.5 px-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[10px] font-semibold transition"
+                  >
+                    {btn.lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={deleteRoom}
+            className="w-full py-2 border border-red-200 text-red-700 hover:bg-red-50 font-semibold text-[11px] flex items-center justify-center gap-1.5"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Bu Odayı Kaldır</span>
+          </button>
         </div>
       </div>
     );

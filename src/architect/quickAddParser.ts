@@ -236,7 +236,22 @@ export function parseQuickAddQuery(raw: string, catalog: Product[], ceilingM = 2
     };
   }
 
-  // 3.5) Laminat Tezgah / Mutfak Tezgahı / Ada
+  // 3.5) Laminat Tezgah / Mutfak / Banyo & WC Modülleri
+  if (norm.includes('ust dolap') || norm.includes('mutfak dolap')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'kitchen_upper_cabinet',
+      name: 'Üst Mutfak Dolabı',
+      category: 'Tezgah & Mutfak',
+      widthCm: dims.w || 220,
+      depthCm: dims.d && dims.d <= 55 ? dims.d : 36,
+      heightCm: dims.h && dims.h >= 40 ? dims.h : 72,
+      yCm: 148,
+      mountMode: 'wall',
+      colorHex: color || '#f3f1eb',
+      accentHex: '#262628',
+    };
+  }
   if (norm.includes('tezgah') || norm.includes('mutfak') || norm.includes('ada')) {
     return {
       kind: 'parametric',
@@ -250,6 +265,81 @@ export function parseQuickAddQuery(raw: string, catalog: Product[], ceilingM = 2
       mountMode: 'wall',
       colorHex: color || '#efede7',
       accentHex: '#3f4247',
+    };
+  }
+  if (norm.includes('buzdolab')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'fridge',
+      name: 'Ankastre Inox Buzdolabı',
+      category: 'Mutfak',
+      widthCm: dims.w || 75,
+      depthCm: dims.d || 70,
+      heightCm: dims.h || 192,
+      yCm: 0,
+      mountMode: 'wall',
+      colorHex: color || '#c6c9ce',
+      accentHex: '#2b2d31',
+    };
+  }
+  if (norm.includes('klozet') || norm.includes('tuvalet') || /\bwc\b/.test(norm)) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'toilet_wc',
+      name: 'VitrA Asma Klozet (WC)',
+      category: 'Banyo & WC',
+      widthCm: dims.w || 42,
+      depthCm: dims.d || 68,
+      heightCm: dims.h || 110,
+      yCm: 0,
+      mountMode: 'wall',
+      colorHex: color || '#f7f6f2',
+      accentHex: '#c8cdd4',
+    };
+  }
+  if (norm.includes('lavabo') || norm.includes('banyo dolab')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'bathroom_vanity',
+      name: 'VitrA Aynalı Banyo Lavabo',
+      category: 'Banyo & WC',
+      widthCm: dims.w || 100,
+      depthCm: dims.d || 48,
+      heightCm: dims.h || 195,
+      yCm: 0,
+      mountMode: 'wall',
+      colorHex: color || '#b99268',
+      accentHex: '#c8cdd4',
+    };
+  }
+  if (norm.includes('dusakabin') || norm.includes('dus')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'shower_cabin',
+      name: 'Cam Duşakabin (90×90)',
+      category: 'Banyo & WC',
+      widthCm: dims.w || 95,
+      depthCm: dims.d || 95,
+      heightCm: dims.h || 205,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#242528',
+      accentHex: '#cfd4da',
+    };
+  }
+  if (norm.includes('camasir')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'washer',
+      name: 'Çamaşır Makinesi',
+      category: 'Banyo & WC',
+      widthCm: dims.w || 60,
+      depthCm: dims.d || 60,
+      heightCm: dims.h || 85,
+      yCm: 0,
+      mountMode: 'floor',
+      colorHex: color || '#f4f4f2',
+      accentHex: '#2c2e33',
     };
   }
 

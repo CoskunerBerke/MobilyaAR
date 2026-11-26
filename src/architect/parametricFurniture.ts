@@ -869,6 +869,144 @@ export function buildParametricObject3D(
       addBox(0.026, 0.24, 0.026, sinkX, H + 0.12, -0.2, steelMat, false);
       addBox(0.022, 0.022, 0.16, sinkX, H + 0.23, -0.13, steelMat, false);
     }
+  } else if (obj.parametricKind === 'kitchen_upper_cabinet') {
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.48, metalness: 0.05 });
+    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex).multiplyScalar(0.78), roughness: 0.65 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe4b8 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      seamMat.dispose();
+      ledMat.dispose();
+    });
+    addBox(W, H, D - 0.02, 0, H * 0.5, -0.01, bodyMat);
+    const doors = Math.max(2, Math.min(6, Math.round(W / 0.52)));
+    const dw = (W - 0.02) / doors;
+    for (let i = 0; i < doors; i++) {
+      const dx = -W * 0.5 + 0.01 + dw * (i + 0.5);
+      addBox(dw - 0.01, H - 0.02, 0.022, dx, H * 0.5, D * 0.5 - 0.01, bodyMat);
+      if (i > 0) addBox(0.008, H - 0.02, 0.01, dx - dw * 0.5, H * 0.5, D * 0.5 - 0.012, seamMat, false);
+    }
+    addBox(W - 0.06, 0.012, 0.022, 0, 0.006, -D * 0.2, ledMat, false);
+  } else if (obj.parametricKind === 'fridge') {
+    const steelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.26, metalness: 0.62 });
+    const trimMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.35, metalness: 0.72 });
+    disposables.push(() => {
+      steelMat.dispose();
+      trimMat.dispose();
+    });
+    addBox(W, H, D - 0.04, 0, H * 0.5, -0.02, steelMat);
+    // Upper fridge door + lower freezer door + sleek vertical handles
+    addBox(W - 0.015, H * 0.63, 0.04, 0, H * 0.675, D * 0.5 - 0.02, steelMat);
+    addBox(W - 0.015, H * 0.33, 0.04, 0, H * 0.175, D * 0.5 - 0.02, steelMat);
+    addBox(W - 0.02, 0.014, 0.02, 0, H * 0.35, D * 0.5 - 0.015, trimMat, false);
+    addBox(0.02, H * 0.34, 0.032, -W * 0.4, H * 0.58, D * 0.5 + 0.012, trimMat, false);
+    addBox(0.02, H * 0.2, 0.032, -W * 0.4, H * 0.2, D * 0.5 + 0.012, trimMat, false);
+  } else if (obj.parametricKind === 'toilet_wc') {
+    // VitrA Wall-Hung Toilet + Concealed Cistern Panel
+    const ceramicMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.16, metalness: 0.04 });
+    const chromeMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.22, metalness: 0.85 });
+    const wallBoxMat = new THREE.MeshStandardMaterial({ color: 0xeae7e0, roughness: 0.75 });
+    disposables.push(() => {
+      ceramicMat.dispose();
+      chromeMat.dispose();
+      wallBoxMat.dispose();
+    });
+    // Concealed flush cistern box against wall
+    addBox(W + 0.16, Math.max(1.05, H), 0.16, 0, Math.max(1.05, H) * 0.5, -D * 0.5 + 0.08, wallBoxMat);
+    // Chrome dual-flush actuator plate
+    addBox(0.22, 0.14, 0.012, 0, 0.92, -D * 0.5 + 0.165, chromeMat, false);
+    // Wall-hung ceramic bowl + seat lid
+    const bowlGeo = new THREE.CylinderGeometry(W * 0.44, W * 0.32, 0.32, 24);
+    disposables.push(() => bowlGeo.dispose());
+    const bowl = new THREE.Mesh(bowlGeo, ceramicMat);
+    bowl.position.set(0, 0.28, 0.04);
+    bowl.scale.set(1, 1, 1.32);
+    bowl.castShadow = true;
+    bowl.receiveShadow = true;
+    grp.add(bowl);
+    addBox(W * 0.86, 0.036, D * 0.72, 0, 0.45, 0.05, ceramicMat);
+  } else if (obj.parametricKind === 'bathroom_vanity') {
+    const cabMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.48 });
+    const basinMat = new THREE.MeshStandardMaterial({ color: 0xf7f6f2, roughness: 0.16, metalness: 0.05 });
+    const chromeMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.24, metalness: 0.85 });
+    const mirrorMat = new THREE.MeshStandardMaterial({ color: 0xe3ecf4, roughness: 0.1, metalness: 0.65 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xfff0d4 });
+    disposables.push(() => {
+      cabMat.dispose();
+      basinMat.dispose();
+      chromeMat.dispose();
+      mirrorMat.dispose();
+      ledMat.dispose();
+    });
+    // Floating vanity cabinet
+    addBox(W, 0.52, D - 0.02, 0, 0.54, 0, cabMat);
+    addBox(W * 0.44, 0.016, 0.022, 0, 0.72, D * 0.5 + 0.004, chromeMat, false);
+    // White ceramic countertop basin + recessed sink + faucet
+    addBox(W + 0.02, 0.05, D + 0.02, 0, 0.825, 0.01, basinMat);
+    addBox(Math.min(0.5, W * 0.56), 0.02, D * 0.6, 0, 0.855, 0.02, chromeMat, false);
+    addBox(0.024, 0.18, 0.024, 0, 0.94, -D * 0.34, chromeMat, false);
+    addBox(0.02, 0.02, 0.12, 0, 1.02, -D * 0.28, chromeMat, false);
+    // Backlit bathroom mirror above basin
+    addBox(W * 0.92, 0.78, 0.024, 0, 1.56, -D * 0.5 + 0.02, ledMat, false);
+    addBox(W * 0.88, 0.74, 0.016, 0, 1.56, -D * 0.5 + 0.036, mirrorMat, false);
+  } else if (obj.parametricKind === 'shower_cabin') {
+    const trayMat = new THREE.MeshStandardMaterial({ color: 0xf4f2ec, roughness: 0.28 });
+    const frameMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.72 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xdcf0ff,
+      transparent: true,
+      opacity: 0.26,
+      roughness: 0.08,
+      metalness: 0.18,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const chromeMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.22, metalness: 0.86 });
+    disposables.push(() => {
+      trayMat.dispose();
+      frameMat.dispose();
+      glassMat.dispose();
+      chromeMat.dispose();
+    });
+    // Low-profile architectural shower tray
+    addBox(W, 0.06, D, 0, 0.03, 0, trayMat);
+    // Matte-black/chrome corner profiles + 2 glass enclosure walls (front & right)
+    const gh = Math.max(1.85, H - 0.06);
+    addBox(W, gh, 0.012, 0, 0.06 + gh * 0.5, D * 0.5 - 0.01, glassMat, false);
+    addBox(0.012, gh, D, W * 0.5 - 0.01, 0.06 + gh * 0.5, 0, glassMat, false);
+    addBox(W, 0.028, 0.028, 0, 0.06 + gh, D * 0.5 - 0.01, frameMat);
+    addBox(0.028, 0.028, D, W * 0.5 - 0.01, 0.06 + gh, 0, frameMat);
+    addBox(0.028, gh, 0.028, W * 0.5 - 0.01, 0.06 + gh * 0.5, D * 0.5 - 0.01, frameMat);
+    addBox(0.028, gh, 0.028, -W * 0.5 + 0.01, 0.06 + gh * 0.5, D * 0.5 - 0.01, frameMat);
+    addBox(0.028, gh, 0.028, W * 0.5 - 0.01, 0.06 + gh * 0.5, -D * 0.5 + 0.01, frameMat);
+    // Rain shower riser column & overhead head
+    addBox(0.024, 1.35, 0.024, 0, 1.35, -D * 0.5 + 0.05, chromeMat, false);
+    addBox(0.24, 0.022, 0.24, 0, 2.02, -D * 0.5 + 0.26, chromeMat, false);
+  } else if (obj.parametricKind === 'washer') {
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.28, metalness: 0.18 });
+    const drumMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.2, metalness: 0.72 });
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0x1e2228, roughness: 0.12, metalness: 0.55 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      drumMat.dispose();
+      glassMat.dispose();
+    });
+    addBox(W, H, D, 0, H * 0.5, 0, bodyMat);
+    addBox(W - 0.04, 0.12, 0.02, 0, H - 0.09, D * 0.5 + 0.005, drumMat, false);
+    const doorGeo = new THREE.CylinderGeometry(W * 0.34, W * 0.34, 0.035, 28);
+    doorGeo.rotateX(Math.PI / 2);
+    const innerGeo = new THREE.CylinderGeometry(W * 0.24, W * 0.24, 0.04, 24);
+    innerGeo.rotateX(Math.PI / 2);
+    disposables.push(() => {
+      doorGeo.dispose();
+      innerGeo.dispose();
+    });
+    const dRing = new THREE.Mesh(doorGeo, drumMat);
+    dRing.position.set(0, H * 0.45, D * 0.5 + 0.012);
+    grp.add(dRing);
+    const dGlass = new THREE.Mesh(innerGeo, glassMat);
+    dGlass.position.set(0, H * 0.45, D * 0.5 + 0.015);
+    grp.add(dGlass);
   } else if (obj.parametricKind === 'console_table') {
     const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.54 });
     const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.65 });

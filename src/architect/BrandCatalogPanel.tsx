@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Check, Search } from 'lucide-react';
+import { colorSimilarityPct, detectQueryColorHex, normalizeSearchTr } from './universalSearch';
 import {
   COUNTERTOP_CATALOG,
   DOOR_PANEL_CATALOG,
@@ -37,12 +38,12 @@ interface Props {
 }
 
 const CATEGORIES: Array<{ id: CatalogCategory; label: string }> = [
-  { id: 'parquet', label: 'Parke' },
-  { id: 'wall', label: 'Duvar & Profil' },
+  { id: 'parquet', label: 'Parke & Seramik' },
+  { id: 'wall', label: 'Duvar Boya & Profil' },
   { id: 'skirting', label: 'Süpürgelik & Köşelik' },
   { id: 'door', label: 'Kapı Paneli' },
-  { id: 'countertop', label: 'Laminat Tezgah' },
-  { id: 'furniture', label: 'Mobilya & Panel' },
+  { id: 'countertop', label: 'Laminat & Kuvars Tezgah' },
+  { id: 'furniture', label: 'Mobilya & MDF-Lam' },
 ];
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
@@ -105,37 +106,58 @@ export const BrandCatalogPanel: React.FC<Props> = ({
   const [wallApplyMode, setWallApplyMode] = useState<'full' | 'all' | 'zone'>('zone');
   const [trimTarget, setTrimTarget] = useState<'both' | 'baseboard' | 'corner'>('both');
 
-  const normQ = query.trim().toLowerCase();
+  const normQ = normalizeSearchTr(query);
+  const queryColor = useMemo(() => detectQueryColorHex(query), [query]);
 
-  const matchesFilter = (itemBrand: SupplierBrand, text: string) => {
-    if (brand !== 'ALL' && itemBrand !== brand) return false;
-    if (!normQ) return true;
-    return text.toLowerCase().includes(normQ);
+  const filterAndRank = <T extends { brand: SupplierBrand; hex: string }>(
+    list: T[],
+    textOf: (i: T) => string
+  ): Array<{ item: T; simPct?: number }> => {
+    const out: Array<{ item: T; score: number; simPct?: number }> = [];
+    for (const item of list) {
+      if (brand !== 'ALL' && item.brand !== brand) continue;
+      if (!normQ) {
+        out.push({ item, score: 1 });
+        continue;
+      }
+      const hay = normalizeSearchTr(textOf(item));
+      const textHit = hay.includes(normQ) || normQ.split(/\s+/).filter((t) => t.length >= 2).some((t) => hay.includes(t));
+      const sim = queryColor ? colorSimilarityPct(queryColor.hex, item.hex) : 0;
+      if (textHit || sim >= 78) {
+        out.push({
+          item,
+          score: (hay.includes(normQ) ? 100 : textHit ? 50 : 0) + sim,
+          simPct: !textHit && sim >= 78 ? sim : undefined,
+        });
+      }
+    }
+    if (normQ) out.sort((a, b) => b.score - a.score);
+    return out.map(({ item, simPct }) => ({ item, simPct }));
   };
 
   const filteredParquet = useMemo(
-    () => PARQUET_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`)),
-    [brand, normQ]
+    () => filterAndRank(PARQUET_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`),
+    [brand, normQ, queryColor]
   );
   const filteredWall = useMemo(
-    () => WALL_PANEL_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`)),
-    [brand, normQ]
+    () => filterAndRank(WALL_PANEL_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`),
+    [brand, normQ, queryColor]
   );
   const filteredSkirting = useMemo(
-    () => SKIRTING_TRIM_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name}`)),
-    [brand, normQ]
+    () => filterAndRank(SKIRTING_TRIM_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name}`),
+    [brand, normQ, queryColor]
   );
   const filteredDoors = useMemo(
-    () => DOOR_PANEL_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`)),
-    [brand, normQ]
+    () => filterAndRank(DOOR_PANEL_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`),
+    [brand, normQ, queryColor]
   );
   const filteredCountertops = useMemo(
-    () => COUNTERTOP_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`)),
-    [brand, normQ]
+    () => filterAndRank(COUNTERTOP_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`),
+    [brand, normQ, queryColor]
   );
   const filteredFurniture = useMemo(
-    () => FURNITURE_PANEL_CATALOG.filter((i) => matchesFilter(i.brand, `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`)),
-    [brand, normQ]
+    () => filterAndRank(FURNITURE_PANEL_CATALOG, (i) => `${i.brand} ${i.series} ${i.code} ${i.name} ${i.finish}`),
+    [brand, normQ, queryColor]
   );
 
   const selectedObj = selection?.type === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
@@ -150,7 +172,7 @@ export const BrandCatalogPanel: React.FC<Props> = ({
           <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-900">
             Resmi Marka Kartelaları
           </span>
-          <span className="text-[9px] font-mono text-stone-500">4 Tedarikçi · Canlı 3B</span>
+          <span className="text-[9px] font-mono text-stone-500">10 Büyük Marka · 150+ Kod</span>
         </div>
         <div className="flex flex-wrap gap-1">
           <button
@@ -354,9 +376,17 @@ export const BrandCatalogPanel: React.FC<Props> = ({
       )}
 
       {/* Swatch Cards Grid */}
+      {queryColor && (
+        <div className="flex items-center gap-2 px-2 py-1 border border-stone-300 bg-[#faf9f6] text-[10px]">
+          <span className="w-3.5 h-3.5 border border-black/25 shrink-0" style={{ backgroundColor: queryColor.hex }} />
+          <span className="text-stone-700 truncate">
+            <strong>{queryColor.label}</strong> ve yakın renk tonları sıralandı
+          </span>
+        </div>
+      )}
       <div className="space-y-1.5">
         {category === 'parquet' &&
-          filteredParquet.map((item) => {
+          filteredParquet.map(({ item, simPct }) => {
             const active = project.floorBrandLabel?.includes(item.code);
             return (
               <button
@@ -373,15 +403,18 @@ export const BrandCatalogPanel: React.FC<Props> = ({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className={`text-[9px] font-mono uppercase ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    <span className={`text-[9px] font-mono uppercase truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
                       {SUPPLIER_SHORT[item.brand]} · {item.series}
                     </span>
-                    <span className={`text-[9px] font-mono font-bold px-1 border ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
+                    <span className={`text-[9px] font-mono font-bold px-1 border shrink-0 ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
                       {item.code}
                     </span>
                   </div>
                   <p className="text-[11px] font-semibold truncate">{item.name}</p>
-                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>{item.finish}</p>
+                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    {simPct ? `%${simPct} yakın ton · ` : ''}
+                    {item.finish}
+                  </p>
                 </div>
                 {active && <Check className="w-3.5 h-3.5 shrink-0" />}
               </button>
@@ -389,7 +422,7 @@ export const BrandCatalogPanel: React.FC<Props> = ({
           })}
 
         {category === 'wall' &&
-          filteredWall.map((item) => {
+          filteredWall.map(({ item, simPct }) => {
             const active = project.walls[activeWall]?.brandLabel?.includes(item.code);
             return (
               <button
@@ -414,14 +447,17 @@ export const BrandCatalogPanel: React.FC<Props> = ({
                     </span>
                   </div>
                   <p className="text-[11px] font-semibold truncate">{item.name}</p>
-                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>{item.finish}</p>
+                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    {simPct ? `%${simPct} yakın ton · ` : ''}
+                    {item.finish}
+                  </p>
                 </div>
               </button>
             );
           })}
 
         {category === 'skirting' &&
-          filteredSkirting.map((item) => {
+          filteredSkirting.map(({ item, simPct }) => {
             const active = project.baseboardBrandLabel?.includes(item.code) || project.cornerTrimBrandLabel?.includes(item.code);
             return (
               <button
@@ -435,22 +471,24 @@ export const BrandCatalogPanel: React.FC<Props> = ({
                 <div className="w-10 h-10 border border-black/20 shrink-0" style={{ backgroundColor: item.hex }} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className={`text-[9px] font-mono uppercase ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    <span className={`text-[9px] font-mono uppercase truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
                       {SUPPLIER_SHORT[item.brand]} · {item.series}
                     </span>
-                    <span className={`text-[9px] font-mono font-bold px-1 border ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
+                    <span className={`text-[9px] font-mono font-bold px-1 border shrink-0 ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
                       {item.code}
                     </span>
                   </div>
                   <p className="text-[11px] font-semibold truncate">{item.name}</p>
-                  <p className={`text-[9px] ${active ? 'text-stone-300' : 'text-stone-500'}`}>Standart {item.defaultHeightCm} cm profil</p>
+                  <p className={`text-[9px] ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    {simPct ? `%${simPct} yakın ton · ` : ''}Standart {item.defaultHeightCm} cm profil
+                  </p>
                 </div>
               </button>
             );
           })}
 
         {category === 'door' &&
-          filteredDoors.map((item) => {
+          filteredDoors.map(({ item, simPct }) => {
             const active = activeDoor?.brandLabel?.includes(item.code);
             return (
               <button
@@ -467,22 +505,25 @@ export const BrandCatalogPanel: React.FC<Props> = ({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className={`text-[9px] font-mono uppercase ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    <span className={`text-[9px] font-mono uppercase truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
                       {SUPPLIER_SHORT[item.brand]} · {item.series}
                     </span>
-                    <span className={`text-[9px] font-mono font-bold px-1 border ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
+                    <span className={`text-[9px] font-mono font-bold px-1 border shrink-0 ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
                       {item.code}
                     </span>
                   </div>
                   <p className="text-[11px] font-semibold truncate">{item.name}</p>
-                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>{item.finish}</p>
+                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    {simPct ? `%${simPct} yakın ton · ` : ''}
+                    {item.finish}
+                  </p>
                 </div>
               </button>
             );
           })}
 
         {category === 'countertop' &&
-          filteredCountertops.map((item) => (
+          filteredCountertops.map(({ item, simPct }) => (
             <button
               key={item.id}
               type="button"
@@ -495,21 +536,24 @@ export const BrandCatalogPanel: React.FC<Props> = ({
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-1">
-                  <span className="text-[9px] font-mono uppercase text-stone-500">
+                  <span className="text-[9px] font-mono uppercase text-stone-500 truncate">
                     {SUPPLIER_SHORT[item.brand]} · {item.series}
                   </span>
-                  <span className="text-[9px] font-mono font-bold px-1 border border-stone-300 text-stone-700 bg-[#faf9f6]">
+                  <span className="text-[9px] font-mono font-bold px-1 border border-stone-300 text-stone-700 bg-[#faf9f6] shrink-0">
                     {item.code}
                   </span>
                 </div>
                 <p className="text-[11px] font-semibold text-stone-950 truncate">{item.name}</p>
-                <p className="text-[9px] text-stone-500 truncate">{item.finish}</p>
+                <p className="text-[9px] text-stone-500 truncate">
+                  {simPct ? `%${simPct} yakın ton · ` : ''}
+                  {item.finish}
+                </p>
               </div>
             </button>
           ))}
 
         {category === 'furniture' &&
-          filteredFurniture.map((item) => {
+          filteredFurniture.map(({ item, simPct }) => {
             const active = selectedObj?.materialBrandLabel?.includes(item.code);
             return (
               <button
@@ -523,15 +567,18 @@ export const BrandCatalogPanel: React.FC<Props> = ({
                 <div className="w-10 h-10 border border-black/20 shrink-0" style={{ backgroundColor: item.hex }} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className={`text-[9px] font-mono uppercase ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    <span className={`text-[9px] font-mono uppercase truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
                       {SUPPLIER_SHORT[item.brand]} · {item.series}
                     </span>
-                    <span className={`text-[9px] font-mono font-bold px-1 border ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
+                    <span className={`text-[9px] font-mono font-bold px-1 border shrink-0 ${active ? 'border-white/30 text-white' : 'border-stone-300 text-stone-700 bg-[#faf9f6]'}`}>
                       {item.code}
                     </span>
                   </div>
                   <p className="text-[11px] font-semibold truncate">{item.name}</p>
-                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>{item.finish}</p>
+                  <p className={`text-[9px] truncate ${active ? 'text-stone-300' : 'text-stone-500'}`}>
+                    {simPct ? `%${simPct} yakın ton · ` : ''}
+                    {item.finish}
+                  </p>
                 </div>
               </button>
             );
