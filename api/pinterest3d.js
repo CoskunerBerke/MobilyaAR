@@ -437,14 +437,19 @@ export default async function handler(req, res) {
 
   try {
     if (action === 'analyze') {
-      const { imageDataUrl, roomWidthM = 5.4, roomDepthM = 4.8, roomCeilingM = 2.85 } = req.body || {};
+      const { imageDataUrl, roomWidthM = 5.4, roomDepthM = 4.8, roomCeilingM = 2.85, userPrompt = '' } = req.body || {};
       const img = splitDataUrl(imageDataUrl);
       if (!img) {
         return res.status(400).json({ ok: false, error: 'Geçerli bir oda fotoğrafı gönderin.' });
       }
 
-      const prompt = `You are a senior interior architect and precision 3D spatial layout reconstruction expert.
-Analyze this interior room photo carefully and reconstruct EVERY architectural layer (including 2nd-floor mezzanines / lofts if present!) and EVERY visible piece of furniture, lighting, rug, plant, mirror, artwork, and staircase with ACCURATE 3D floor-plan coordinates for a ${roomWidthM}m × ${roomDepthM}m room.
+      const cleanFocus = String(userPrompt || '').trim();
+      const focusDirective = cleanFocus
+        ? `\nCRITICAL USER FOCUS & EXCLUSION INSTRUCTION (HIGHEST PRIORITY — OBEY STRICTLY, OVERRIDES ITEM COUNT RULES):\n"${cleanFocus}"\n- Detect ONLY the furniture/items requested by the user above (even if that means returning only 1, 2, or 3 items!).\n- STRICTLY EXCLUDE any clutter, flowers, vases, tabletop lamps, frames, rugs, or walls/items the user asked NOT to model.\n`
+        : '';
+
+      const prompt = `You are a senior interior architect and precision 3D spatial layout reconstruction expert.${focusDirective}
+Analyze this interior room photo carefully and reconstruct EVERY architectural layer (including 2nd-floor mezzanines / lofts if present!) and ${cleanFocus ? 'ONLY the requested' : 'EVERY visible'} piece of furniture, lighting, rug, plant, mirror, artwork, and staircase with ACCURATE 3D floor-plan coordinates for a ${roomWidthM}m × ${roomDepthM}m room.
 
 COORDINATE SYSTEM (CRITICAL — match the photo's spatial layout faithfully!):
 - Imagine looking into the room from the front-open viewer side:
@@ -512,7 +517,7 @@ Return ONLY valid JSON with this exact schema:
 }
 
 RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
-- Detect 8 to 15 distinct REAL visible items in the room (NEVER invent items that aren't there, and DO NOT confuse objects seen ONLY inside a mirror reflection as being on the same wall as the mirror — either skip faint reflection-only clutter or place clearly reflected opposite-wall items on the OPPOSITE wall like "south" or "west"!).
+- ${cleanFocus ? 'STRICTLY follow the USER FOCUS & EXCLUSION INSTRUCTION above: return ONLY the requested item(s) (1..12 items) and NEVER include excluded decor/clutter.' : 'Detect 8 to 15 distinct REAL visible items in the room (NEVER invent items that aren\'t there, and DO NOT confuse objects seen ONLY inside a mirror reflection as being on the same wall as the mirror — either skip faint reflection-only clutter or place clearly reflected opposite-wall items on the OPPOSITE wall like "south" or "west"!).'}
 - SAME-WALL ADJACENCY (CRITICAL!): If multiple items appear side-by-side on the SAME primary photographed wall (for example: full-length mirror on left + framed board directly above mirror + hanging ivy/art on right + bed pushed against that wall), they MUST ALL share the EXACT SAME suggestedWall ("north") with matching left-to-right relativeX (-0.75 left -> +0.75 right)!
 - VERTICAL STACKING:
   * Tall full-length floor-standing mirror ("Boy Aynası", heightCm 150..190): mountMode="wall", elevationCm=0!
@@ -559,6 +564,7 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
         roomDepthM = 4.8,
         roomCeilingM = 2.85,
         placedObjects = [],
+        userPrompt = '',
       } = req.body || {};
 
       const origImg = splitDataUrl(originalPhotoDataUrl);
@@ -566,6 +572,11 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
       if (!origImg || !renImg) {
         return res.status(400).json({ ok: false, error: 'Doğrulama için orijinal fotoğraf ve 3B sahne görüntüsü gerekli.' });
       }
+
+      const cleanFocus = String(userPrompt || '').trim();
+      const focusVerifyRule = cleanFocus
+        ? `\nCRITICAL USER FOCUS CONSTRAINT (OBEY STRICTLY):\n"${cleanFocus}"\n- Score matchScore ONLY on how accurately the requested target item(s) match Image 1.\n- NEVER add excluded decor/clutter (flowers, lamps, frames, rugs, etc.) into missingObjects and NEVER penalize matchScore for items the user intentionally excluded!\n`
+        : '';
 
       const compactList = Array.isArray(placedObjects)
         ? placedObjects.slice(0, 24).map((o) => {
@@ -591,20 +602,20 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
           })
         : [];
 
-      const refinePrompt = `You are a strict Senior Interior Architecture QA Inspector.
-Compare Image 1 (the TARGET Pinterest inspiration room photo) with Image 2 (our CURRENT 3D studio reconstruction).
+      const refinePrompt = `You are a strict Senior Interior Architecture QA Inspector.${focusVerifyRule}
+Compare Image 1 (the TARGET inspiration room photo) with Image 2 (our CURRENT 3D studio reconstruction).
 Current room metadata: ${roomSummary} (${roomWidthM}m × ${roomDepthM}m × ${roomCeilingM}m).
 Current placed 3D objects JSON:
 ${JSON.stringify(compactList)}
 
-YOUR JOB — Audit Image 2 strictly against Image 1 and fix EVERY noticeable layout, wall, floor-level, rotation, proportion, window, or color mismatch:
+YOUR JOB — Audit Image 2 strictly against Image 1 and make SURGICAL, NON-DESTRUCTIVE fixes for real layout, wall, floor-level, rotation, proportion, window, or color mismatches:
 - Check if a stale window/curtain is blocking wall art or shouldn't exist -> set roomFixes.removeWindows = true.
 - Check if Image 1 is a 2-story loft/mezzanine but Image 2 missed the 2nd floor -> set roomFixes.enableMezzanine = true.
 - Check EVERY placed object in the JSON list:
   * Is any object on the WRONG wall, floating off the floor when it should sit on the floor (e.g. full-length mirror -> elevationCm: 0), facing backwards, overlapping badly, wrong floorLevel (0 vs 1), wrong proportion, or wrong main color? Add an "update" entry in objectFixes with its EXACT existing "id"!
   * Is any object a hallucination (e.g. mirror reflection artifact or nonexistent piece)? Add { "id": "...", "action": "remove", "reasonTr": "..." }!
-- Check if up to 3 MAJOR clearly visible hero items from Image 1 (like an armchair, coffee table, rug, lamp, plant, nightstand, bookcase, framed art) are completely missing from Image 2 -> add them to missingObjects!
-- If an object already looks accurate in Image 2, DO NOT touch it.
+- ${cleanFocus ? 'ONLY add missingObjects if a piece EXPLICITLY requested by the user prompt is missing; otherwise keep missingObjects as [].' : 'Check if up to 3 MAJOR clearly visible hero items from Image 1 (like an armchair, coffee table, rug, lamp, plant, nightstand, bookcase, framed art) are completely missing from Image 2 -> add them to missingObjects!'}
+- STABILITY RULE (CRITICAL): If an object is ALREADY reasonably placed on the right wall/zone in Image 2, DO NOT move, flip, or remove it — preserve good placements so visual accuracy strictly improves!
 
 Return ONLY valid JSON:
 {

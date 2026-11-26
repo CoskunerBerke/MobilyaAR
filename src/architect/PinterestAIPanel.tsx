@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  BookmarkPlus,
   Camera,
   Check,
   Crop,
@@ -59,19 +60,45 @@ import {
 
 interface Props {
   project: ArchRoomProject;
-  onApplyRoomStyle: (style: PinterestRoomStyle) => void;
+  activeTargetRoomId?: string;
+  onApplyRoomStyle: (style: PinterestRoomStyle, targetRoomId?: string) => void;
   onApplyPinterestScene: (
     objects: ArchPlacedObject[],
     style: PinterestRoomStyle | null,
-    replaceExisting: boolean
+    replaceExisting: boolean,
+    targetRoomId?: string
   ) => void;
-  onRefinePinterestScene?: (objects: ArchPlacedObject[], roomFixes: VisualRefineRoomFix | null) => void;
+  onRefinePinterestScene?: (
+    objects: ArchPlacedObject[],
+    roomFixes: VisualRefineRoomFix | null,
+    targetRoomId?: string
+  ) => void;
   onAddGeneratedObject: (obj: ArchPlacedObject) => void;
   onSelectObjectInRoom: (objId: string) => void;
   onRemoveObjectInRoom: (objId: string) => void;
+  onSaveToCatalog?: (obj: ArchPlacedObject, thumbDataUrl?: string) => Promise<boolean>;
   onCaptureViewport: () => string | null;
   onToast: (msg: string) => void;
 }
+
+const FOCUS_PROMPT_PRESETS: Array<{ label: string; prompt: string }> = [
+  { label: 'Tüm Oda', prompt: '' },
+  {
+    label: 'Sadece Ana Mobilyalar',
+    prompt:
+      'Sadece ana mobilyaları (koltuk, sehpa, masa, dolap, gardırop, yatak, TV ünitesi) modelle; çiçek, vazo, çerçeve, tablo, küçük lamba ve halı gibi aksesuarları kesinlikle modelleme.',
+  },
+  {
+    label: 'Sadece Masa / Sehpa',
+    prompt:
+      'Fotoğraftaki sadece ana sehpa veya masayı modelle; üstündeki çiçek, vazo, lamba, çerçeve ve altındaki halıyı kesinlikle alma.',
+  },
+  {
+    label: 'Sadece Dolap / Ünite',
+    prompt:
+      'Sadece dolap, gardırop, kitaplık veya TV ünitesini modelle; etraftaki küçük dekorları, bitkileri, tabloları ve halıyı alma.',
+  },
+];
 
 interface ItemJobState {
   selected: boolean;
@@ -166,12 +193,14 @@ const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
 
 export const PinterestAIPanel: React.FC<Props> = ({
   project,
+  activeTargetRoomId,
   onApplyRoomStyle,
   onApplyPinterestScene,
   onRefinePinterestScene,
   onAddGeneratedObject,
   onSelectObjectInRoom,
   onRemoveObjectInRoom,
+  onSaveToCatalog,
   onCaptureViewport,
   onToast,
 }) => {
@@ -188,10 +217,13 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [keyTestResult, setKeyTestResult] = useState<string | null>(null);
 
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
+  const [userFocusPrompt, setUserFocusPrompt] = useState<string>('');
+  const [targetRoomId, setTargetRoomId] = useState<string>(activeTargetRoomId || 'main');
   const [analyzing, setAnalyzing] = useState(false);
   const [refining, setRefining] = useState(false);
   const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
-  const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(true);
+  // Default FALSE so adding a second Pinterest piece NEVER wipes previously built cabinets/furniture!
+  const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(false);
   const [autoVerifyAfterBuild, setAutoVerifyAfterBuild] = useState(true);
   const [qaResult, setQaResult] = useState<{
     matchScore: number;
@@ -199,7 +231,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
     fixedCount: number;
     addedCount: number;
     model: string;
+    passesRun?: number;
   } | null>(null);
+  // Monotonic best-state memory so iterative verification can NEVER drop a score backwards (e.g. 52% -> 28%)!
+  const bestQaRef = useRef<{
+    score: number;
+    objects: ArchPlacedObject[];
+    roomFixes: VisualRefineRoomFix | null;
+    critiqueTr: string;
+    model: string;
+    photoSig: string;
+  } | null>(null);
+  const [savingCatalogId, setSavingCatalogId] = useState<string | null>(null);
+  const [savedCatalogIds, setSavedCatalogIds] = useState<Record<string, boolean>>({});
   const [roomStyle, setRoomStyle] = useState<PinterestRoomStyle | null>(null);
   const [detected, setDetected] = useState<PinterestDetectedObject[]>([]);
   const [jobs, setJobs] = useState<Record<string, ItemJobState>>({});
@@ -208,6 +252,55 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [geminiImageQuotaNote, setGeminiImageQuotaNote] = useState(false);
   const geminiImageQuotaBlockedRef = useRef(false);
+
+  // Auto-sync target room when user selects an adjacent room in 3D or sidebar
+  useEffect(() => {
+    if (activeTargetRoomId) {
+      const exists =
+        activeTargetRoomId === 'main' ||
+        (project.adjacentRooms || []).some((r) => r.id === activeTargetRoomId);
+      if (exists) setTargetRoomId(activeTargetRoomId);
+    }
+  }, [activeTargetRoomId, project.adjacentRooms]);
+
+  // If the selected targetRoomId was deleted, fall back cleanly to 'main'
+  useEffect(() => {
+    if (targetRoomId !== 'main' && !(project.adjacentRooms || []).some((r) => r.id === targetRoomId)) {
+      setTargetRoomId('main');
+    }
+  }, [targetRoomId, project.adjacentRooms]);
+
+  const getTargetRoomRect = (rid = targetRoomId) => {
+    if (rid !== 'main') {
+      const adj = (project.adjacentRooms || []).find((r) => r.id === rid);
+      if (adj) {
+        return {
+          id: adj.id,
+          name: adj.name,
+          cx: adj.centerXM,
+          cz: adj.centerZM,
+          w: adj.widthM,
+          d: adj.depthM,
+          isMain: false,
+        };
+      }
+    }
+    return {
+      id: 'main',
+      name: 'Ana Salon',
+      cx: 0,
+      cz: 0,
+      w: project.widthM,
+      d: project.depthM,
+      isMain: true,
+    };
+  };
+
+  const isObjInRoomRect = (o: ArchPlacedObject, r: { cx: number; cz: number; w: number; d: number }) =>
+    o.x >= r.cx - r.w * 0.5 - 0.1 &&
+    o.x <= r.cx + r.w * 0.5 + 0.1 &&
+    o.z >= r.cz - r.d * 0.5 - 0.1 &&
+    o.z <= r.cz + r.d * 0.5 + 0.1;
 
   // Interactive photo box drawing (new item OR redrawing an existing item's crop box!)
   const [drawMode, setDrawMode] = useState<'off' | 'new' | string>('off');
@@ -265,7 +358,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   /**
    * Builds a clean, collision-free, editable 3D ArchPlacedObject from ANY Pinterest item
-   * in < 5ms, preserving exact Pinterest color, silhouette, dimensions, and 1st/2nd-floor placement!
+   * in < 5ms, preserving exact Pinterest color, silhouette, dimensions, 1st/2nd-floor placement,
+   * AND target room coordinates (Ana Salon or any attached multi-room!).
    */
   const buildInstant3DObject = async (
     item: PinterestDetectedObject,
@@ -276,8 +370,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
     wallCursorsUpper: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] },
     effectiveCeilingM: number = project.ceilingM,
     mezBounds: MezzanineBounds | null = getMezzanineBounds(project),
-    mezSpec: ArchMezzanine | null = project.mezzanine?.enabled ? project.mezzanine : null
+    mezSpec: ArchMezzanine | null = project.mezzanine?.enabled ? project.mezzanine : null,
+    targetRoomOverride?: { cx: number; cz: number; w: number; d: number; isMain: boolean }
   ): Promise<{ obj: ArchPlacedObject; cropPreview?: string; rawCrop?: string }> => {
+    const tRoom = targetRoomOverride || getTargetRoomRect();
+    const roomW = tRoom.w;
+    const roomD = tRoom.d;
+    const activeMezBounds = tRoom.isMain ? mezBounds : null;
+    const activeMezSpec = tRoom.isMain ? mezSpec : null;
     const archetype = resolvePinterestArchetype(item);
     const defaults = DEFAULT_COLORS_BY_ARCHETYPE[archetype] || { c1: '#b8aea0', c2: '#2c2b29' };
 
@@ -292,21 +392,21 @@ export const PinterestAIPanel: React.FC<Props> = ({
     if (!primaryHex) primaryHex = defaults.c1;
     const accentHex = isValidHexColor(item.accentColorHex) ? item.accentColorHex : defaults.c2;
 
-    const isUpper = Boolean(mezBounds && item.floorLevel === 1 && archetype !== 'stairs');
-    const baseFloorY = isUpper && mezBounds ? mezBounds.topY : 0;
-    const headroomM = isUpper && mezBounds ? Math.max(1.2, effectiveCeilingM - mezBounds.topY) : effectiveCeilingM;
+    const isUpper = Boolean(activeMezBounds && item.floorLevel === 1 && archetype !== 'stairs');
+    const baseFloorY = isUpper && activeMezBounds ? activeMezBounds.topY : 0;
+    const headroomM = isUpper && activeMezBounds ? Math.max(1.2, effectiveCeilingM - activeMezBounds.topY) : effectiveCeilingM;
     const activeOccupied = isUpper ? occupiedUpper : occupiedGround;
     const activeWallCursors = isUpper ? wallCursorsUpper : wallCursorsGround;
 
     // Realistic clamped dimensions (protects against outlier AI estimates)
-    let wM = Math.max(0.25, Math.min(project.widthM * 0.78, (Number(item.widthCm) || 90) / 100));
-    let dM = Math.max(0.04, Math.min(project.depthM * 0.78, (Number(item.depthCm) || 60) / 100));
+    let wM = Math.max(0.25, Math.min(roomW * 0.78, (Number(item.widthCm) || 90) / 100));
+    let dM = Math.max(0.04, Math.min(roomD * 0.78, (Number(item.depthCm) || 60) / 100));
     let hM = Math.max(0.015, Math.min(headroomM - 0.1, (Number(item.heightCm) || 85) / 100));
 
     if (archetype === 'rug_custom') {
       hM = 0.016;
-      const maxRW = isUpper && mezBounds ? mezBounds.widthM * 0.88 : project.widthM * 0.82;
-      const maxRD = isUpper && mezBounds ? mezBounds.depthM * 0.88 : project.depthM * 0.82;
+      const maxRW = isUpper && activeMezBounds ? activeMezBounds.widthM * 0.88 : roomW * 0.82;
+      const maxRD = isUpper && activeMezBounds ? activeMezBounds.depthM * 0.88 : roomD * 0.82;
       wM = Math.max(0.85, Math.min(maxRW, wM));
       dM = Math.max(0.85, Math.min(maxRD, dM));
     } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
@@ -315,15 +415,15 @@ export const PinterestAIPanel: React.FC<Props> = ({
       wM = Math.max(0.45, Math.min(1.2, wM));
       dM = Math.max(0.45, Math.min(1.2, dM));
       hM = Math.max(0.7, Math.min(headroomM - 0.15, hM));
-    } else if (archetype === 'stairs' && mezBounds) {
+    } else if (archetype === 'stairs' && activeMezBounds) {
       // Snap stairs height flush to the 2nd floor mezzanine deck!
-      hM = mezBounds.topY;
+      hM = activeMezBounds.topY;
       wM = Math.max(0.75, Math.min(1.15, wM));
       dM = Math.max(1.35, Math.min(2.2, dM));
-    } else if (isUpper && mezBounds) {
+    } else if (isUpper && activeMezBounds) {
       // Keep upstairs furniture comfortably within the mezzanine slab depth/width
-      wM = Math.min(wM, mezBounds.widthM * 0.78);
-      dM = Math.min(dM, mezBounds.depthM * 0.85);
+      wM = Math.min(wM, activeMezBounds.widthM * 0.78);
+      dM = Math.min(dM, activeMezBounds.depthM * 0.85);
     }
 
     const isRug = archetype === 'rug_custom';
@@ -346,44 +446,44 @@ export const PinterestAIPanel: React.FC<Props> = ({
       ? 'wall'
       : 'floor';
 
-    let x = Math.max(-project.widthM * 0.44, Math.min(project.widthM * 0.44, (item.relativeX || 0) * (project.widthM * 0.45)));
-    let z = Math.max(-project.depthM * 0.44, Math.min(project.depthM * 0.44, (item.relativeZ || 0) * (project.depthM * 0.45)));
+    let x = Math.max(-roomW * 0.44, Math.min(roomW * 0.44, (item.relativeX || 0) * (roomW * 0.45)));
+    let z = Math.max(-roomD * 0.44, Math.min(roomD * 0.44, (item.relativeZ || 0) * (roomD * 0.45)));
     let rot = ((item.facingDeg || 0) * Math.PI) / 180;
     let y = baseFloorY;
     let attachedWall: WallId | undefined;
 
     // Clamp upstairs coordinates onto the mezzanine deck bounds
     const clampToMez = (cx: number, cz: number, hw: number, hd: number) => {
-      if (!isUpper || !mezBounds) return { cx, cz };
+      if (!isUpper || !activeMezBounds) return { cx, cz };
       const pad = 0.06;
-      const nx = Math.max(mezBounds.minX + hw + pad, Math.min(mezBounds.maxX - hw - pad, cx));
-      const nz = Math.max(mezBounds.minZ + hd + pad, Math.min(mezBounds.maxZ - hd - pad, cz));
+      const nx = Math.max(activeMezBounds.minX + hw + pad, Math.min(activeMezBounds.maxX - hw - pad, cx));
+      const nz = Math.max(activeMezBounds.minZ + hd + pad, Math.min(activeMezBounds.maxZ - hd - pad, cz));
       return { cx: nx, cz: nz };
     };
 
-    if (archetype === 'stairs' && mezBounds && mezSpec) {
+    if (archetype === 'stairs' && activeMezBounds && activeMezSpec) {
       y = 0;
-      if (mezSpec.anchorWall === 'north') {
+      if (activeMezSpec.anchorWall === 'north') {
         rot = 0;
-        if (mezSpec.stairGapSide === 'west') {
-          x = Math.max(-project.widthM * 0.5 + wM * 0.5 + 0.08, mezBounds.minX - wM * 0.5 - 0.04);
-          z = mezBounds.maxZ - dM * 0.15;
-        } else if (mezSpec.stairGapSide === 'east') {
-          x = Math.min(project.widthM * 0.5 - wM * 0.5 - 0.08, mezBounds.maxX + wM * 0.5 + 0.04);
-          z = mezBounds.maxZ - dM * 0.15;
+        if (activeMezSpec.stairGapSide === 'west') {
+          x = Math.max(-roomW * 0.5 + wM * 0.5 + 0.08, activeMezBounds.minX - wM * 0.5 - 0.04);
+          z = activeMezBounds.maxZ - dM * 0.15;
+        } else if (activeMezSpec.stairGapSide === 'east') {
+          x = Math.min(roomW * 0.5 - wM * 0.5 - 0.08, activeMezBounds.maxX + wM * 0.5 + 0.04);
+          z = activeMezBounds.maxZ - dM * 0.15;
         } else {
-          x = -project.widthM * 0.5 + wM * 0.5 + 0.12;
-          z = mezBounds.maxZ + dM * 0.5;
+          x = -roomW * 0.5 + wM * 0.5 + 0.12;
+          z = activeMezBounds.maxZ + dM * 0.5;
         }
       } else {
-        x = Math.max(-project.widthM * 0.42, Math.min(project.widthM * 0.42, x));
-        z = Math.max(-project.depthM * 0.42, Math.min(project.depthM * 0.42, z));
+        x = Math.max(-roomW * 0.42, Math.min(roomW * 0.42, x));
+        z = Math.max(-roomD * 0.42, Math.min(roomD * 0.42, z));
       }
       occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     } else if (isCeiling) {
       y = Math.max(baseFloorY + 1.65, effectiveCeilingM - hM);
-      x = Math.max(-project.widthM * 0.25, Math.min(project.widthM * 0.25, x));
-      z = Math.max(-project.depthM * 0.25, Math.min(project.depthM * 0.25, z));
+      x = Math.max(-roomW * 0.25, Math.min(roomW * 0.25, x));
+      z = Math.max(-roomD * 0.25, Math.min(roomD * 0.25, z));
     } else if (isRug) {
       y = baseFloorY + 0.004;
       rot = 0;
@@ -403,7 +503,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
           : 'south';
       attachedWall = targetWall;
 
-      // Determine vertical span [y0, y1] FIRST so items stacked vertically (e.g. memo board ABOVE floor mirror, ivy ABOVE bed!) never push each other sideways!
+      // Determine vertical span [y0, y1] FIRST so items stacked vertically never push each other sideways!
       if (isHighWall) {
         const relElev =
           archetype === 'ac_unit'
@@ -418,13 +518,13 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
       const isHoriz = targetWall === 'north' || targetWall === 'south';
       const spanMin =
-        isUpper && mezBounds
-          ? (isHoriz ? mezBounds.minX : mezBounds.minZ) + wM * 0.5 + 0.1
-          : -(isHoriz ? project.widthM : project.depthM) * 0.5 + wM * 0.5 + 0.1;
+        isUpper && activeMezBounds
+          ? (isHoriz ? activeMezBounds.minX : activeMezBounds.minZ) + wM * 0.5 + 0.1
+          : -(isHoriz ? roomW : roomD) * 0.5 + wM * 0.5 + 0.1;
       const spanMax =
-        isUpper && mezBounds
-          ? (isHoriz ? mezBounds.maxX : mezBounds.maxZ) - wM * 0.5 - 0.1
-          : (isHoriz ? project.widthM : project.depthM) * 0.5 - wM * 0.5 - 0.1;
+        isUpper && activeMezBounds
+          ? (isHoriz ? activeMezBounds.maxX : activeMezBounds.maxZ) - wM * 0.5 - 0.1
+          : (isHoriz ? roomW : roomD) * 0.5 - wM * 0.5 - 0.1;
       let along = Math.max(spanMin, Math.min(spanMax, isHoriz ? x : z));
 
       // True 2D wall collision (horizontal AND vertical overlap check!)
@@ -437,7 +537,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
         });
 
       if (collides2D(along) && spanMax > spanMin + 0.15) {
-        // Nudge gently outward from desired position instead of teleporting across the room!
         const steps = [0.25, -0.25, 0.55, -0.55, 0.9, -0.9, 1.3, -1.3, 1.8, -1.8];
         const freeShift = steps.find((d) => {
           const cand = along + d;
@@ -446,36 +545,35 @@ export const PinterestAIPanel: React.FC<Props> = ({
         if (freeShift !== undefined) along = Math.max(spanMin, Math.min(spanMax, along + freeShift));
       }
 
-      // Wall art/ivy behind bed shouldn't block floor furniture; floor items register their exact height band!
       used.push({ along, halfW: wM * 0.5, y0: myY0, y1: myY1 });
 
       const wallInset = isWallAnchoredFloor ? 0.03 : 0.02;
       if (targetWall === 'north') {
         x = along;
-        z = -project.depthM * 0.5 + dM * 0.5 + wallInset;
+        z = -roomD * 0.5 + dM * 0.5 + wallInset;
         rot = 0;
       } else if (targetWall === 'south') {
         x = along;
-        z = project.depthM * 0.5 - dM * 0.5 - wallInset;
+        z = roomD * 0.5 - dM * 0.5 - wallInset;
         rot = Math.PI;
       } else if (targetWall === 'west') {
         z = along;
-        x = -project.widthM * 0.5 + dM * 0.5 + wallInset;
+        x = -roomW * 0.5 + dM * 0.5 + wallInset;
         rot = Math.PI / 2;
       } else {
         z = along;
-        x = project.widthM * 0.5 - dM * 0.5 - wallInset;
+        x = roomW * 0.5 - dM * 0.5 - wallInset;
         rot = -Math.PI / 2;
       }
 
       if (!isHighWall) {
         activeOccupied.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
       }
-    } else if (isUpper && mezBounds) {
-      const localW = mezBounds.widthM;
-      const localD = mezBounds.depthM;
-      const mezCx = (mezBounds.minX + mezBounds.maxX) * 0.5;
-      const mezCz = (mezBounds.minZ + mezBounds.maxZ) * 0.5;
+    } else if (isUpper && activeMezBounds) {
+      const localW = activeMezBounds.widthM;
+      const localD = activeMezBounds.depthM;
+      const mezCx = (activeMezBounds.minX + activeMezBounds.maxX) * 0.5;
+      const mezCz = (activeMezBounds.minZ + activeMezBounds.maxZ) * 0.5;
       const cl = clampToMez(x, z, wM * 0.5, dM * 0.5);
       const localOccupied: OBB2D[] = occupiedUpper.map((o) => ({ ...o, x: o.x - mezCx, z: o.z - mezCz }));
       const pos = findOpenSpawnPosition(
@@ -497,16 +595,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       y = baseFloorY;
       occupiedUpper.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     } else {
-      // Ground-floor free furniture: anchor cleanly near Pinterest (x,z) while PRESERVING intended facingDeg!
-      const pos = findOpenSpawnPosition(
-        wM * 0.5,
-        dM * 0.5,
-        rot,
-        occupiedGround,
-        project.widthM,
-        project.depthM,
-        [x, z]
-      );
+      const pos = findOpenSpawnPosition(wM * 0.5, dM * 0.5, rot, occupiedGround, roomW, roomD, [x, z]);
       if (pos) {
         x = pos.x;
         z = pos.z;
@@ -514,6 +603,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
       y = 0;
       occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     }
+
+    // Translate local target-room coordinates into world space!
+    const worldX = Number((x + tRoom.cx).toFixed(3));
+    const worldZ = Number((z + tRoom.cz).toFixed(3));
 
     const obj: ArchPlacedObject = {
       id: `pin-inst-${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -525,9 +618,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
       parametricColorHex: primaryHex,
       parametricAccentHex: accentHex,
       floorLevel: isUpper ? 1 : 0,
-      x,
+      x: worldX,
       y,
-      z,
+      z: worldZ,
       rot,
       widthM: wM,
       depthM: dM,
@@ -543,7 +636,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   /**
    * 1-CLICK FULL PINTEREST ROOM ASSEMBLY (< 0.3 seconds!):
-   * Places ALL selected detected Pinterest items into the 3D room (1st & 2nd floor!) with exact colors & archetypes.
+   * Places ALL selected detected Pinterest items into the chosen target room (Ana Salon or any attached room)
+   * without wiping previously added items unless the user explicitly enables reset!
    */
   const assembleAllInstantIn3D = async (
     itemsToPlace: PinterestDetectedObject[],
@@ -552,31 +646,33 @@ export const PinterestAIPanel: React.FC<Props> = ({
     replaceExisting: boolean
   ) => {
     if (itemsToPlace.length === 0) return;
+    const tRoom = getTargetRoomRect();
 
     // Resolve target ceiling & 2nd-floor mezzanine geometry BEFORE laying out objects!
     const effectiveCeilingM =
-      styleToApply?.hasMezzanine
+      tRoom.isMain && styleToApply?.hasMezzanine
         ? Math.max(3.85, Math.min(4.8, (styleToApply.suggestedCeilingCm || 410) / 100))
-        : styleToApply?.suggestedCeilingCm
+        : tRoom.isMain && styleToApply?.suggestedCeilingCm && replaceExisting
         ? Math.max(2.5, Math.min(4.5, styleToApply.suggestedCeilingCm / 100))
         : project.ceilingM;
 
-    const mezSpec: ArchMezzanine | null = styleToApply?.hasMezzanine
-      ? {
-          enabled: true,
-          anchorWall: styleToApply.mezzanine?.anchorWall || 'north',
-          heightM: Math.max(1.85, Math.min(effectiveCeilingM - 1.5, (styleToApply.mezzanine?.heightCm || 205) / 100)),
-          depthM: Math.max(1.6, Math.min(project.depthM * 0.65, (styleToApply.mezzanine?.depthRatio || 0.52) * project.depthM)),
-          widthRatio: Math.max(0.55, Math.min(1.0, styleToApply.mezzanine?.widthRatio || 0.78)),
-          stairGapSide: styleToApply.mezzanine?.stairGapSide || 'west',
-          thicknessM: 0.16,
-          deckColorHex: styleToApply.mezzanine?.deckColorHex || styleToApply.floorTintHex || '#c9b092',
-          railingStyle: styleToApply.mezzanine?.railingStyle || 'none',
-          underLed: true,
-        }
-      : project.mezzanine?.enabled && !replaceExisting
-      ? project.mezzanine
-      : null;
+    const mezSpec: ArchMezzanine | null =
+      tRoom.isMain && styleToApply?.hasMezzanine
+        ? {
+            enabled: true,
+            anchorWall: styleToApply.mezzanine?.anchorWall || 'north',
+            heightM: Math.max(1.85, Math.min(effectiveCeilingM - 1.5, (styleToApply.mezzanine?.heightCm || 205) / 100)),
+            depthM: Math.max(1.6, Math.min(project.depthM * 0.65, (styleToApply.mezzanine?.depthRatio || 0.52) * project.depthM)),
+            widthRatio: Math.max(0.55, Math.min(1.0, styleToApply.mezzanine?.widthRatio || 0.78)),
+            stairGapSide: styleToApply.mezzanine?.stairGapSide || 'west',
+            thicknessM: 0.16,
+            deckColorHex: styleToApply.mezzanine?.deckColorHex || styleToApply.floorTintHex || '#c9b092',
+            railingStyle: styleToApply.mezzanine?.railingStyle || 'none',
+            underLed: true,
+          }
+        : tRoom.isMain && project.mezzanine?.enabled && !replaceExisting
+        ? project.mezzanine
+        : null;
 
     const mezBounds = mezSpec
       ? getMezzanineBounds({
@@ -587,7 +683,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
         })
       : null;
 
-    // Sort so stairs, rugs & wall-backed furniture anchor first, then beds/sofas/desks, then accent items
     const priority = (it: PinterestDetectedObject) => {
       const k = resolvePinterestArchetype(it);
       if (k === 'stairs') return 0;
@@ -598,19 +693,26 @@ export const PinterestAIPanel: React.FC<Props> = ({
     };
     const ordered = [...itemsToPlace].sort((a, b) => priority(a) - priority(b));
 
+    // Only consider existing floor objects inside THIS target room (in target-room local coordinates!)
     const occupiedGround: OBB2D[] = replaceExisting
       ? []
       : project.objects
-          .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8)
-          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+          .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && isObjInRoomRect(o, tRoom))
+          .map((o) => ({
+            id: o.id,
+            x: o.x - tRoom.cx,
+            z: o.z - tRoom.cz,
+            rot: o.rot,
+            halfW: o.widthM * 0.5,
+            halfD: o.depthM * 0.5,
+          }));
     const occupiedUpper: OBB2D[] = [];
 
     const wallCursorsGround: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
     const wallCursorsUpper: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
-    // Reserve active window openings so wall art/mirrors/shelves NEVER clip through windows!
-    if (styleToApply?.hasVisibleWindow && styleToApply.primaryWindowWall) {
+    if (tRoom.isMain && styleToApply?.hasVisibleWindow && styleToApply.primaryWindowWall) {
       const ww = styleToApply.primaryWindowWall;
-      const winSpan = ww === 'north' || ww === 'south' ? project.widthM : project.depthM;
+      const winSpan = ww === 'north' || ww === 'south' ? tRoom.w : tRoom.d;
       const winAlong = styleToApply.hasMezzanine ? -winSpan * 0.18 : 0;
       wallCursorsGround[ww].push({ along: winAlong, halfW: 0.9, y0: 0.2, y1: effectiveCeilingM });
       wallCursorsUpper[ww].push({ along: winAlong, halfW: 0.9, y0: 0.2, y1: effectiveCeilingM });
@@ -628,7 +730,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
         wallCursorsUpper,
         effectiveCeilingM,
         mezBounds,
-        mezSpec
+        mezSpec,
+        tRoom
       );
       builtObjects.push(res.obj);
       jobPatches[item.id] = {
@@ -636,23 +739,31 @@ export const PinterestAIPanel: React.FC<Props> = ({
         status: 'done',
         cropPreviewUrl: res.cropPreview,
         rawCropUrl: res.rawCrop,
-        progressText: res.obj.floorLevel === 1 ? '2. Kat (Asma Kat) — tıklayıp düzenle' : '3B odada — tıklayıp rengini/yerini değiştir',
+        progressText: res.obj.floorLevel === 1 ? '2. Kat (Asma Kat) — tıklayıp düzenle' : `${tRoom.name} içinde — tıklayıp düzenle`,
       };
     }
 
     const sourceMap = new Map<string, PinterestDetectedObject>();
     ordered.forEach((it) => sourceMap.set(it.id, it));
 
-    // Stage 2: Enforce universal architectural parent-child physics (lamps on tables, nightstands beside beds, chairs facing desks/tables, etc.)
-    const solvedObjects = applyArchitecturalRelationships(
-      builtObjects,
+    // Stage 2: Enforce architectural parent-child physics inside target room's local coordinates
+    const localBuilt = builtObjects.map((o) => ({ ...o, x: o.x - tRoom.cx, z: o.z - tRoom.cz }));
+    const localSolved = applyArchitecturalRelationships(
+      localBuilt,
       sourceMap,
-      project,
+      { ...project, widthM: tRoom.w, depthM: tRoom.d },
       effectiveCeilingM,
-      mezBounds
+      tRoom.isMain ? mezBounds : null
     );
+    const solvedObjects = localSolved.map((o) => ({
+      ...o,
+      x: Number((o.x + tRoom.cx).toFixed(3)),
+      z: Number((o.z + tRoom.cz).toFixed(3)),
+    }));
 
-    onApplyPinterestScene(solvedObjects, styleToApply, replaceExisting);
+    // When focus prompt targets specific items only OR non-destructive append mode is active, don't overwrite room finishes blindly
+    const styleForScene = userFocusPrompt.trim() && !replaceExisting ? null : styleToApply;
+    onApplyPinterestScene(solvedObjects, styleForScene, replaceExisting, tRoom.id);
     setJobs((prev) => {
       const next = { ...prev };
       for (const [id, patch] of Object.entries(jobPatches)) {
@@ -661,20 +772,28 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return next;
     });
 
-    if (autoVerifyAfterBuild) {
-      await runVisualSelfCritique(solvedObjects, styleToApply, imgUrl, sourceMap, effectiveCeilingM, mezSpec);
+    // Build combined room object list for Stage 3 verification (preserving kept objects from non-destructive mode!)
+    const otherRoomObjs = project.objects.filter((o) => !isObjInRoomRect(o, tRoom));
+    const keptTargetObjs = replaceExisting ? [] : project.objects.filter((o) => isObjInRoomRect(o, tRoom));
+    const fullSceneObjs = [...otherRoomObjs, ...keptTargetObjs, ...solvedObjects];
+
+    if (autoVerifyAfterBuild && tRoom.isMain) {
+      // Reset monotonic memory for this fresh build, then auto-optimize silently until >= 75%!
+      bestQaRef.current = null;
+      await runVisualSelfCritique(fullSceneObjs, styleForScene, imgUrl, sourceMap, effectiveCeilingM, mezSpec, true);
     } else {
       setStatusBanner(
-        `${solvedObjects.length} Pinterest parçası${mezSpec ? ' (2 katlı asma kat dahil!)' : ''} gerçek renk ve konumlarıyla 3B odaya kuruldu!`
+        `${solvedObjects.length} parça ${tRoom.name} içine yerleştirildi${mezSpec ? ' (2 katlı asma kat dahil!)' : ''}!`
       );
-      onToast(`Pinterest odası ${solvedObjects.length} parçayla 3B olarak kuruldu!`);
+      onToast(`${solvedObjects.length} parça ${tRoom.name} içine eklendi!`);
     }
   };
 
   /**
-   * STAGE 3 — Visual Self-Critique & Auto-Correction Loop:
-   * Captures our live 3D rendered room, sends [Original Pinterest Photo + Rendered 3D Screenshot + Placed Object JSON]
-   * to Vision AI, and automatically applies every position/wall/floor/color/window correction!
+   * STAGE 3 — Silent Self-Healing Multi-Pass Verification Loop (Items #1 & #6):
+   * Automatically runs background verify+refine passes until matchScore >= 75% (up to 3 passes)
+   * WITHOUT showing ugly low intermediate scores, AND strictly enforces a Monotonic Best-State
+   * Rollback Guard so the visual accuracy can NEVER regress backwards (e.g., 52% -> 28%)!
    */
   const runVisualSelfCritique = async (
     currentObjs: ArchPlacedObject[],
@@ -682,149 +801,258 @@ export const PinterestAIPanel: React.FC<Props> = ({
     origImgUrl: string,
     sourceMapInput?: Map<string, PinterestDetectedObject>,
     ceilingOverride?: number,
-    mezOverride?: ArchMezzanine | null
+    mezOverride?: ArchMezzanine | null,
+    isAutoPipeline = false
   ) => {
     setRefining(true);
-    setStatusBanner('Adım 3/3 · Görsel Kalite Kontrolü: 3B oda orijinal fotoğrafla karşılaştırılıp hatalı yerleşimler düzeltiliyor...');
+    const TARGET_SCORE = 75;
+    const MAX_PASSES = isAutoPipeline ? 3 : 2;
+    const photoSig = origImgUrl.slice(0, 120);
+
+    // Preserve previous monotonic best score if user clicked manual re-verify on the same photo!
+    const priorBest =
+      bestQaRef.current && bestQaRef.current.photoSig === photoSig
+        ? bestQaRef.current
+        : null;
+
+    let bestScore = priorBest ? priorBest.score : -1;
+    let bestObjects: ArchPlacedObject[] = priorBest ? [...priorBest.objects] : [...currentObjs];
+    let bestRoomFixes: VisualRefineRoomFix | null = priorBest ? priorBest.roomFixes : null;
+    let bestCritique = priorBest?.critiqueTr || '';
+    let bestModel = priorBest?.model || '';
+
+    let workingObjs = [...currentObjs];
+    let workingCeil = ceilingOverride || project.ceilingM;
+    let workingMez: ArchMezzanine | null = mezOverride !== undefined ? mezOverride : project.mezzanine || null;
+    let totalApplied = 0;
+    let totalAdded = 0;
+    let passesRun = 0;
+
+    setStatusBanner('MekanAR Mimari Motoru yerleşimi ve oranları otomatik kalibre ediyor...');
+
     try {
-      // Wait for Three.js WebGL camera reset & geometry rebuild to finish drawing a fresh clean frame
-      await new Promise((r) => setTimeout(r, 700));
-      const snap3d = onCaptureViewport();
-      if (!snap3d) {
-        setStatusBanner(`${currentObjs.length} Pinterest parçası 3B odaya kuruldu!`);
-        return;
-      }
+      for (let pass = 1; pass <= MAX_PASSES; pass++) {
+        passesRun = pass;
+        if (pass > 1) {
+          setStatusBanner(`Otomatik hassas hizalama yapılıyor (Tur ${pass}/${MAX_PASSES})...`);
+        }
 
-      const effCeil = ceilingOverride || project.ceilingM;
-      const effMez = mezOverride !== undefined ? mezOverride : project.mezzanine || null;
-      const summary = `${styleCtx?.styleNameTr || 'Mimari Oda'} · Tavan ${effCeil.toFixed(2)}m · ${
-        effMez?.enabled ? `2 Katlı Asma Kat (${Math.round(effMez.heightM * 100)}cm)` : 'Tek Kat'
-      }`;
+        // Wait for Three.js WebGL camera & geometry rebuild to draw a fresh clean frame
+        await new Promise((r) => setTimeout(r, 750));
+        const snap3d = onCaptureViewport();
+        if (!snap3d) break;
 
-      const qa = await verifyAndRefinePinterestRoom({
-        originalPhotoDataUrl: origImgUrl,
-        rendered3dDataUrl: snap3d,
-        roomSummary: summary,
-        roomWidthM: project.widthM,
-        roomDepthM: project.depthM,
-        roomCeilingM: effCeil,
-        placedObjects: currentObjs as unknown as Array<Record<string, unknown>>,
-        geminiKey,
-      });
+        const summary = `${styleCtx?.styleNameTr || 'Mimari Oda'} · Tavan ${workingCeil.toFixed(2)}m · ${
+          workingMez?.enabled ? `2 Katlı Asma Kat (${Math.round(workingMez.heightM * 100)}cm)` : 'Tek Kat'
+        }`;
 
-      const updatedCeil =
-        qa.roomFixes?.enableMezzanine && effCeil < 3.85 ? 4.1 : effCeil;
-      const updatedMez: ArchMezzanine | undefined =
-        qa.roomFixes?.enableMezzanine
+        const qa = await verifyAndRefinePinterestRoom({
+          originalPhotoDataUrl: origImgUrl,
+          rendered3dDataUrl: snap3d,
+          roomSummary: summary,
+          roomWidthM: project.widthM,
+          roomDepthM: project.depthM,
+          roomCeilingM: workingCeil,
+          placedObjects: workingObjs as unknown as Array<Record<string, unknown>>,
+          userPrompt: userFocusPrompt,
+          geminiKey,
+        });
+
+        // MONOTONIC NON-REGRESSION CHECK (Item #6 fix!):
+        // Never allow a refinement pass to make the 3D scene WORSE than our best verified state!
+        if (qa.matchScore >= bestScore) {
+          bestScore = qa.matchScore;
+          bestObjects = workingObjs.map((o) => ({ ...o }));
+          bestRoomFixes = workingMez?.enabled
+            ? { ...(bestRoomFixes || {}), enableMezzanine: true, mezzanineHeightCm: Math.round(workingMez.heightM * 100) }
+            : bestRoomFixes;
+          bestCritique = qa.critiqueTr;
+          bestModel = qa.model;
+        } else {
+          // Score dropped (e.g. 52% -> 28%)! Immediately roll back to the highest-scoring layout and stop!
+          if (onRefinePinterestScene) {
+            onRefinePinterestScene(bestObjects, bestRoomFixes, 'main');
+          } else {
+            onApplyPinterestScene(bestObjects, styleCtx, true, 'main');
+          }
+          break;
+        }
+
+        // Reached >= 75% threshold OR no more fixes suggested -> lock in best state and stop!
+        const hasActionableFixes =
+          (qa.objectFixes && qa.objectFixes.length > 0) ||
+          (qa.missingObjects && qa.missingObjects.length > 0) ||
+          Boolean(qa.roomFixes?.removeWindows || qa.roomFixes?.enableMezzanine);
+
+        if (qa.matchScore >= TARGET_SCORE || !hasActionableFixes) {
+          break;
+        }
+
+        // Apply surgical fixes to produce next candidate scene for the next verification pass
+        const updatedCeil = qa.roomFixes?.enableMezzanine && workingCeil < 3.85 ? 4.1 : workingCeil;
+        const updatedMez: ArchMezzanine | undefined = qa.roomFixes?.enableMezzanine
           ? {
               enabled: true,
-              anchorWall: effMez?.anchorWall || 'north',
+              anchorWall: workingMez?.anchorWall || 'north',
               heightM: (qa.roomFixes.mezzanineHeightCm || 205) / 100,
-              depthM: effMez?.depthM || Math.round(project.depthM * 52) / 100,
-              widthRatio: effMez?.widthRatio || 0.78,
-              stairGapSide: effMez?.stairGapSide || 'west',
+              depthM: workingMez?.depthM || Math.round(project.depthM * 52) / 100,
+              widthRatio: workingMez?.widthRatio || 0.78,
+              stairGapSide: workingMez?.stairGapSide || 'west',
               thicknessM: 0.16,
-              deckColorHex: effMez?.deckColorHex || styleCtx?.floorTintHex || '#c9b092',
-              railingStyle: effMez?.railingStyle || 'none',
+              deckColorHex: workingMez?.deckColorHex || styleCtx?.floorTintHex || '#c9b092',
+              railingStyle: workingMez?.railingStyle || 'none',
               underLed: true,
             }
-          : effMez || undefined;
+          : workingMez || undefined;
 
-      const { objects: refinedObjs, appliedCount } = applyVisualCritiqueFixes(currentObjs, qa.objectFixes, {
-        widthM: project.widthM,
-        depthM: project.depthM,
-        ceilingM: updatedCeil,
-        mezzanine: updatedMez,
-      });
-
-      // Spawn any obvious missed hero items reported by QA (capped to 3)
-      const addedObjs: ArchPlacedObject[] = [];
-      const addedDetected: PinterestDetectedObject[] = [];
-      if (qa.missingObjects && qa.missingObjects.length > 0) {
-        const mezB = getMezzanineBounds({
+        const { objects: refinedObjs, appliedCount } = applyVisualCritiqueFixes(workingObjs, qa.objectFixes, {
           widthM: project.widthM,
           depthM: project.depthM,
           ceilingM: updatedCeil,
           mezzanine: updatedMez,
         });
-        const occG: OBB2D[] = refinedObjs
-          .filter((o) => (o.floorLevel || 0) === 0 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
-          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
-        const occU: OBB2D[] = refinedObjs
-          .filter((o) => o.floorLevel === 1 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
-          .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
-        const wcG: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
-        const wcU: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
-        for (const miss of qa.missingObjects.slice(0, 3)) {
-          const built = await buildInstant3DObject(
-            miss,
-            origImgUrl,
-            occG,
-            wcG,
-            occU,
-            wcU,
-            updatedCeil,
-            mezB,
-            updatedMez || null
-          );
-          addedObjs.push(built.obj);
-          addedDetected.push(miss);
+
+        const addedObjs: ArchPlacedObject[] = [];
+        const addedDetected: PinterestDetectedObject[] = [];
+        if (qa.missingObjects && qa.missingObjects.length > 0 && !userFocusPrompt.trim()) {
+          const mezB = getMezzanineBounds({
+            widthM: project.widthM,
+            depthM: project.depthM,
+            ceilingM: updatedCeil,
+            mezzanine: updatedMez,
+          });
+          const occG: OBB2D[] = refinedObjs
+            .filter((o) => (o.floorLevel || 0) === 0 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
+            .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+          const occU: OBB2D[] = refinedObjs
+            .filter((o) => o.floorLevel === 1 && o.mountMode !== 'rug' && o.mountMode !== 'ceiling')
+            .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
+          const wcG: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+          const wcU: Record<WallId, WallSlot[]> = { north: [], east: [], south: [], west: [] };
+          for (const miss of qa.missingObjects.slice(0, 2)) {
+            const built = await buildInstant3DObject(
+              miss,
+              origImgUrl,
+              occG,
+              wcG,
+              occU,
+              wcU,
+              updatedCeil,
+              mezB,
+              updatedMez || null
+            );
+            addedObjs.push(built.obj);
+            addedDetected.push(miss);
+          }
+        }
+
+        const combined = [...refinedObjs, ...addedObjs];
+        const srcMap = new Map<string, PinterestDetectedObject>(sourceMapInput || []);
+        detected.forEach((d) => srcMap.set(d.id, d));
+        addedDetected.forEach((d) => srcMap.set(d.id, d));
+
+        const nextCandidate = applyArchitecturalRelationships(
+          combined,
+          srcMap,
+          project,
+          updatedCeil,
+          getMezzanineBounds({
+            widthM: project.widthM,
+            depthM: project.depthM,
+            ceilingM: updatedCeil,
+            mezzanine: updatedMez,
+          })
+        );
+
+        totalApplied += appliedCount;
+        totalAdded += addedObjs.length;
+        workingObjs = nextCandidate;
+        workingCeil = updatedCeil;
+        workingMez = updatedMez || null;
+
+        if (addedDetected.length > 0) {
+          setDetected((prev) => [...prev, ...addedDetected]);
+          setJobs((prev) => {
+            const next = { ...prev };
+            addedDetected.forEach((d) => {
+              next[d.id] = { selected: true, status: 'done', progressText: 'Otomatik kontrol ile eklendi' };
+            });
+            return next;
+          });
+        }
+
+        if (onRefinePinterestScene) {
+          onRefinePinterestScene(workingObjs, qa.roomFixes, 'main');
+        } else {
+          onApplyPinterestScene(workingObjs, styleCtx, true, 'main');
+        }
+
+        // If this was the LAST pass and we applied edits, run one quick final verification score
+        // so we can guarantee the final edits didn't regress below bestScore!
+        if (pass === MAX_PASSES && (appliedCount > 0 || addedObjs.length > 0)) {
+          await new Promise((r) => setTimeout(r, 700));
+          const finalSnap = onCaptureViewport();
+          if (finalSnap) {
+            const finalCheck = await verifyAndRefinePinterestRoom({
+              originalPhotoDataUrl: origImgUrl,
+              rendered3dDataUrl: finalSnap,
+              roomSummary: summary,
+              roomWidthM: project.widthM,
+              roomDepthM: project.depthM,
+              roomCeilingM: workingCeil,
+              placedObjects: workingObjs as unknown as Array<Record<string, unknown>>,
+              userPrompt: userFocusPrompt,
+              geminiKey,
+            }).catch(() => null);
+
+            if (finalCheck) {
+              if (finalCheck.matchScore >= bestScore) {
+                bestScore = finalCheck.matchScore;
+                bestObjects = workingObjs.map((o) => ({ ...o }));
+                bestRoomFixes = qa.roomFixes;
+                bestCritique = finalCheck.critiqueTr;
+                bestModel = finalCheck.model;
+              } else {
+                // Roll back final edits that hurt the score!
+                if (onRefinePinterestScene) {
+                  onRefinePinterestScene(bestObjects, bestRoomFixes, 'main');
+                } else {
+                  onApplyPinterestScene(bestObjects, styleCtx, true, 'main');
+                }
+              }
+            }
+          }
         }
       }
 
-      const combined = [...refinedObjs, ...addedObjs];
-      const srcMap = new Map<string, PinterestDetectedObject>(sourceMapInput || []);
-      detected.forEach((d) => srcMap.set(d.id, d));
-      addedDetected.forEach((d) => srcMap.set(d.id, d));
-
-      const finalObjects = applyArchitecturalRelationships(
-        combined,
-        srcMap,
-        project,
-        updatedCeil,
-        getMezzanineBounds({
-          widthM: project.widthM,
-          depthM: project.depthM,
-          ceilingM: updatedCeil,
-          mezzanine: updatedMez,
-        })
-      );
-
-      if (addedDetected.length > 0) {
-        setDetected((prev) => [...prev, ...addedDetected]);
-        setJobs((prev) => {
-          const next = { ...prev };
-          addedDetected.forEach((d) => {
-            next[d.id] = { selected: true, status: 'done', progressText: 'Görsel kontrol ile eklendi' };
-          });
-          return next;
+      if (bestScore >= 0) {
+        bestQaRef.current = {
+          score: bestScore,
+          objects: bestObjects,
+          roomFixes: bestRoomFixes,
+          critiqueTr: bestCritique,
+          model: bestModel,
+          photoSig,
+        };
+        setQaResult({
+          matchScore: bestScore,
+          critiqueTr: bestCritique,
+          fixedCount: totalApplied,
+          addedCount: totalAdded,
+          model: bestModel,
+          passesRun,
         });
+        setStatusBanner(
+          `✓ Mimari kalibrasyon tamamlandı (${bestObjects.length} parça · Uyum %${bestScore}${
+            totalApplied > 0 ? ` · ${totalApplied} iyileştirme` : ''
+          }).`
+        );
+        onToast(`3B oda otomatik kalibre edildi (Uyum %${bestScore})!`);
       }
-
-      if (onRefinePinterestScene) {
-        onRefinePinterestScene(finalObjects, qa.roomFixes);
-      } else {
-        onApplyPinterestScene(finalObjects, styleCtx, true);
-      }
-
-      setQaResult({
-        matchScore: qa.matchScore,
-        critiqueTr: qa.critiqueTr,
-        fixedCount: appliedCount,
-        addedCount: addedObjs.length,
-        model: qa.model,
-      });
-      setStatusBanner(
-        `✓ 3 Aşamalı Doğrulama Tamamlandı (${finalObjects.length} parça · ${appliedCount} düzeltme${
-          addedObjs.length > 0 ? `, +${addedObjs.length} eksik parça eklendi` : ''
-        }).`
-      );
-      onToast(`3B oda görsel olarak doğrulandı (${appliedCount} otomatik düzeltme)!`);
     } catch (err) {
-      // Initial Stage-2 scene is already cleanly built; surface non-fatal QA note gracefully
       setStatusBanner(
-        `${currentObjs.length} Pinterest parçası 3B odaya kuruldu (Görsel doğrulama atlandı: ${
-          err instanceof Error ? err.message.slice(0, 90) : 'tekrar deneyebilirsiniz'
+        `${currentObjs.length} parça 3B odaya kuruldu (${
+          err instanceof Error ? err.message.slice(0, 90) : 'ince ayar yapılabilir'
         }).`
       );
     } finally {
@@ -841,6 +1069,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       setDetected([]);
       setJobs({});
       setQaResult(null);
+      bestQaRef.current = null;
       setDrawMode('off');
       setDraftBox(null);
       setStatusBanner(null);
@@ -853,19 +1082,22 @@ export const PinterestAIPanel: React.FC<Props> = ({
     if (!photoDataUrl) return;
     if (!hasGeminiAccess) {
       setShowKeyBox(true);
-      onToast('Önce Google Gemini API anahtarınızı girin.');
+      onToast('Önce motor bağlantı anahtarını girin.');
       return;
     }
+    const tRoom = getTargetRoomRect();
     setAnalyzing(true);
     setQaResult(null);
+    bestQaRef.current = null;
     setDrawMode('off');
-    setStatusBanner('Adım 1/3 · Mimari Analiz: Duvarlar, kat yapısı, renkler ve tüm eşyalar okunuyor...');
+    setStatusBanner(`Adım 1/3 · MekanAR Mimari Motoru (${tRoom.name}) görseli analiz ediyor...`);
     try {
       const res = await analyzePinterestRoom({
         imageDataUrl: photoDataUrl,
-        roomWidthM: project.widthM,
-        roomDepthM: project.depthM,
+        roomWidthM: tRoom.w,
+        roomDepthM: tRoom.d,
         roomCeilingM: project.ceilingM,
+        userPrompt: userFocusPrompt,
         geminiKey,
       });
       setRoomStyle(res.roomStyle);
@@ -1034,11 +1266,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
         : { ...placeholder, nameTr: 'Özel Seçilen Parça' };
 
       updateDetectedItem(newId, finalItem);
-      // Place immediately in 3D room!
+      // Place immediately in active target 3D room!
+      const tRoom = getTargetRoomRect();
       const occupied: OBB2D[] = project.objects
-        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8)
-        .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
-      const built = await buildInstant3DObject(finalItem, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && isObjInRoomRect(o, tRoom))
+        .map((o) => ({
+          id: o.id,
+          x: o.x - tRoom.cx,
+          z: o.z - tRoom.cz,
+          rot: o.rot,
+          halfW: o.widthM * 0.5,
+          halfD: o.depthM * 0.5,
+        }));
+      const built = await buildInstant3DObject(finalItem, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
       onAddGeneratedObject(built.obj);
       setJobs((prev) => ({
         ...prev,
@@ -1046,24 +1286,32 @@ export const PinterestAIPanel: React.FC<Props> = ({
           ...(prev[newId] || { selected: true }),
           status: 'done',
           cropPreviewUrl: built.cropPreview,
-          progressText: '3B odaya eklendi',
+          progressText: `${tRoom.name} içine eklendi`,
         },
       }));
-      onToast(`"${finalItem.nameTr}" fotoğraftan tanınıp anında 3B odaya eklendi!`);
+      onToast(`"${finalItem.nameTr}" ${tRoom.name} içine eklendi!`);
     } else {
       updateDetectedItem(newId, { nameTr: 'Özel Seçilen Parça' });
     }
   };
 
   /**
-   * Instant 0.1s placement of a single item into the 3D room (with its exact Pinterest color & type!)
+   * Instant 0.1s placement of a single item into the chosen target 3D room!
    */
   const placeSingleInstantIn3D = async (item: PinterestDetectedObject) => {
     if (!photoDataUrl) return;
+    const tRoom = getTargetRoomRect();
     const occupied: OBB2D[] = project.objects
-      .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id)
-      .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
-    const built = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+      .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
+      .map((o) => ({
+        id: o.id,
+        x: o.x - tRoom.cx,
+        z: o.z - tRoom.cz,
+        rot: o.rot,
+        halfW: o.widthM * 0.5,
+        halfD: o.depthM * 0.5,
+      }));
+    const built = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
     onAddGeneratedObject(built.obj);
     setJobs((prev) => ({
       ...prev,
@@ -1072,10 +1320,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
         status: 'done',
         cropPreviewUrl: built.cropPreview,
         rawCropUrl: built.rawCrop,
-        progressText: '3B odada — tıklayıp düzenle',
+        progressText: `${tRoom.name} içinde — tıklayıp düzenle`,
       },
     }));
-    onToast(`"${item.nameTr}" 3B odaya yerleştirildi! Tıklayıp rengini/yerini değiştirebilirsin.`);
+    onToast(`"${item.nameTr}" ${tRoom.name} içine yerleştirildi!`);
   };
 
   /**
@@ -1166,10 +1414,18 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
 
       const glbUrl = gen.remoteGlbUrl || gen.localBlobUrl;
+      const tRoom = getTargetRoomRect();
       const occupied: OBB2D[] = project.objects
-        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id)
-        .map((o) => ({ id: o.id, x: o.x, z: o.z, rot: o.rot, halfW: o.widthM * 0.5, halfD: o.depthM * 0.5 }));
-      const base = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] });
+        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
+        .map((o) => ({
+          id: o.id,
+          x: o.x - tRoom.cx,
+          z: o.z - tRoom.cz,
+          rot: o.rot,
+          halfW: o.widthM * 0.5,
+          halfD: o.depthM * 0.5,
+        }));
+      const base = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
       const upgradedObj: ArchPlacedObject = {
         ...base.obj,
         glbUrl,
@@ -1431,22 +1687,38 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
 
         {!photoDataUrl ? (
-          <label className="block border border-dashed border-stone-400 hover:border-stone-950 bg-white p-5 text-center cursor-pointer transition">
-            <Upload className="w-5 h-5 mx-auto text-stone-500 mb-1.5" />
-            <p className="font-semibold text-stone-900">Pinterest Oda Görseli Yükle veya Ctrl+V Yapıştır</p>
-            <p className="text-[11px] text-stone-500 mt-0.5">
-              Rastgele herhangi bir Pinterest odasını saniyeler içinde düzenlenebilir 3B odaya dönüştürür
-            </p>
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                handleUploadInspiration(e.target.files?.[0] || null);
-                e.currentTarget.value = '';
-              }}
-            />
-          </label>
+          <div className="space-y-2">
+            <label className="block border border-dashed border-stone-400 hover:border-stone-950 bg-white p-5 text-center cursor-pointer transition">
+              <Upload className="w-5 h-5 mx-auto text-stone-500 mb-1.5" />
+              <p className="font-semibold text-stone-900">Oda / Ürün Fotoğrafı Yükle veya Ctrl+V</p>
+              <p className="text-[11px] text-stone-500 mt-0.5">
+                Referans görseli saniyeler içinde seçtiğin odaya 3B olarak kurar
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  handleUploadInspiration(e.target.files?.[0] || null);
+                  e.currentTarget.value = '';
+                }}
+              />
+            </label>
+            <label className="w-full py-2 border border-stone-950 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition">
+              <Camera className="w-3.5 h-3.5" />
+              <span>Tablet / Telefon Kamerasıyla Fotoğraf Çek</span>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => {
+                  handleUploadInspiration(e.target.files?.[0] || null);
+                  e.currentTarget.value = '';
+                }}
+              />
+            </label>
+          </div>
         ) : (
           <div className="space-y-2">
             {drawMode !== 'off' && (
@@ -1554,7 +1826,95 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             )}
 
-            <div className="flex flex-col gap-1.5 text-[11px] text-stone-700 bg-[#faf9f6] border border-stone-200 px-2.5 py-2">
+            {/* Item #2: Pre-Analysis Focus / Exclusion Prompt Box */}
+            <div className="border border-stone-300 bg-white p-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono uppercase font-bold text-stone-800">
+                  Odak &amp; Yönlendirme Notu (Opsiyonel)
+                </span>
+                {userFocusPrompt && (
+                  <button
+                    type="button"
+                    onClick={() => setUserFocusPrompt('')}
+                    className="text-[10px] text-stone-500 hover:text-stone-950 underline"
+                  >
+                    Temizle
+                  </button>
+                )}
+              </div>
+              <textarea
+                rows={2}
+                value={userFocusPrompt}
+                onChange={(e) => setUserFocusPrompt(e.target.value)}
+                placeholder='Örn: "Sadece ortadaki sehpayı al; çiçek, lamba, tablo ve halıyı modelleme"'
+                className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] text-stone-950 placeholder:text-stone-400 resize-none leading-snug focus:border-stone-950 focus:outline-none"
+              />
+              <div className="flex flex-wrap gap-1">
+                {FOCUS_PROMPT_PRESETS.map((pr) => {
+                  const active = userFocusPrompt.trim() === pr.prompt.trim();
+                  return (
+                    <button
+                      key={pr.label}
+                      type="button"
+                      onClick={() => setUserFocusPrompt(pr.prompt)}
+                      className={`px-1.5 py-0.5 border text-[10px] font-medium transition ${
+                        active
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-950'
+                      }`}
+                    >
+                      {pr.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Item #3A: Target Room Picker + Non-Destructive Mode Switch */}
+            <div className="flex flex-col gap-2 text-[11px] text-stone-700 bg-[#faf9f6] border border-stone-200 px-2.5 py-2.5">
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono uppercase text-stone-500 block">
+                  Hangi Odaya Yerleştirilsin?
+                </label>
+                <select
+                  value={targetRoomId}
+                  onChange={(e) => setTargetRoomId(e.target.value)}
+                  className="w-full px-2 py-1.5 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
+                >
+                  <option value="main">Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)</option>
+                  {(project.adjacentRooms || []).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setReplaceExistingOnBuild(false)}
+                  className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
+                    !replaceExistingOnBuild
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-300 bg-white text-stone-700'
+                  }`}
+                >
+                  Mevcut Odaya Ekle
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplaceExistingOnBuild(true)}
+                  className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
+                    replaceExistingOnBuild
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-300 bg-white text-stone-700'
+                  }`}
+                >
+                  Odayı Sıfırla &amp; Kur
+                </button>
+              </div>
+
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -1562,16 +1922,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   onChange={(e) => setAutoPopulateOnAnalyze(e.target.checked)}
                   className="accent-stone-950"
                 />
-                <span className="font-medium text-stone-900">Analiz bitince tüm eşyaları 3B odaya anında kur</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={replaceExistingOnBuild}
-                  onChange={(e) => setReplaceExistingOnBuild(e.target.checked)}
-                  className="accent-stone-950"
-                />
-                <span>Mevcut demo eşyalarını temizleyip yeni odayı kur</span>
+                <span className="font-medium text-stone-900">Analiz bitince seçili odaya anında kur</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -1581,7 +1932,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   className="accent-stone-950"
                 />
                 <span className="font-medium text-stone-900">
-                  Kurulum sonrası 3B sahneyi fotoğrafla doğrula &amp; otomatik düzelt
+                  Arka planda otomatik kalibre et (%75+ uyum, geri düşme korumalı)
                 </span>
               </label>
             </div>
@@ -1595,12 +1946,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
               {analyzing || refining ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               <span>
                 {refining
-                  ? '3/3 · Görsel Kontrol & Düzeltme Yapılıyor...'
+                  ? 'Yerleşim Otomatik Optimize Ediliyor...'
                   : analyzing
-                  ? '1/3 · Oda Analiz Ediliyor & 3B Kuruluyor...'
+                  ? 'Görsel Analiz Ediliyor & 3B Kuruluyor...'
                   : autoPopulateOnAnalyze
-                  ? "Pinterest Odasını Analiz Et & 3B'ye Kur"
-                  : 'Odayı & Tüm Eşyaları Tespit Et'}
+                  ? `${getTargetRoomRect().name} İçine Analiz Et & Kur`
+                  : 'Odayı & Eşyaları Tespit Et'}
               </span>
             </button>
           </div>
@@ -1613,12 +1964,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Stage 3 Visual QA Readout & On-Demand Re-Verify Button */}
-      {photoDataUrl && project.objects.length > 0 && (qaResult || detected.length > 0) && (
+      {/* Stage 3 Visual QA Readout (only shown AFTER silent auto-calibration finishes!) */}
+      {photoDataUrl && project.objects.length > 0 && !refining && (qaResult || detected.length > 0) && (
         <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-800">
-              Görsel Kalite Kontrolü (Aşama 3)
+              Mimari Kalibrasyon Durumu
             </span>
             {qaResult && (
               <span className="text-[10px] font-mono font-bold text-emerald-700">
@@ -1630,18 +1981,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
             <p className="text-[11px] text-stone-700 leading-snug">
               {qaResult.critiqueTr}{' '}
               <span className="font-mono text-[10px] text-stone-500">
-                ({qaResult.fixedCount} düzeltme{qaResult.addedCount > 0 ? `, +${qaResult.addedCount} ekleme` : ''})
+                ({qaResult.passesRun ? `${qaResult.passesRun} tur · ` : ''}
+                {qaResult.fixedCount} iyileştirme{qaResult.addedCount > 0 ? `, +${qaResult.addedCount} parça` : ''})
               </span>
             </p>
           )}
           <button
             type="button"
             disabled={analyzing || refining}
-            onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl)}
-            className="w-full py-1.5 border border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-950 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+            onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl, undefined, undefined, undefined, false)}
+            className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
           >
-            {refining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-            <span>{refining ? 'Fotoğrafla Karşılaştırılıyor...' : '3B Sahneyi Fotoğrafla Tekrar Doğrula & Düzelt'}</span>
+            <Check className="w-3.5 h-3.5" />
+            <span>İnce Ayar Tekrarla (Geri Düşme Korumalı)</span>
           </button>
         </div>
       )}
@@ -1673,12 +2025,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
-              onApplyRoomStyle(roomStyle);
-              onToast('Pinterest duvar, zemin ve perde tonları 3B odaya uygulandı.');
+              onApplyRoomStyle(roomStyle, targetRoomId);
+              onToast(`${getTargetRoomRect().name} duvar, zemin ve perde tonları güncellendi.`);
             }}
             className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-900 font-semibold transition"
           >
-            Duvar, Zemin &amp; Perde Stilini Yeniden Uygula
+            Duvar, Zemin &amp; Perde Stilini {getTargetRoomRect().name} İçin Uygula
           </button>
         </div>
       )}
@@ -1896,7 +2248,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                           disabled={st.status === 'isolating' || st.status === 'modeling' || batchRunning}
                           onClick={() => upgradeItemWithRunPod3D(item)}
                           className="px-2 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800 text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
-                          title="Opsiyonel: RunPod Hunyuan3D-2.1 ile tam heykelsi 2K PBR .GLB modele yükselt"
+                          title="Yüksek detaylı 2K PBR .GLB modele yükselt"
                         >
                           <Wand2 className="w-3 h-3" />
                           <span>2K PBR</span>
@@ -1904,6 +2256,44 @@ export const PinterestAIPanel: React.FC<Props> = ({
                       )}
                     </div>
                   </div>
+
+                  {/* Item #7B: Save Modeled / 2K PBR Product Permanently to Showroom Product Catalog! */}
+                  {placed && onSaveToCatalog && (
+                    <div className="pt-1 border-t border-stone-100 flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-stone-500 truncate">
+                        {placed.glbUrl ? '2K PBR .GLB hazır — kataloğa eklenebilir' : 'Kataloğa kaydet (önce 2K PBR önerilir)'}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={savingCatalogId === placed.id}
+                        onClick={async () => {
+                          setSavingCatalogId(placed.id);
+                          try {
+                            const ok = await onSaveToCatalog(placed, thumb);
+                            if (ok) setSavedCatalogIds((prev) => ({ ...prev, [placed.id]: true }));
+                          } finally {
+                            setSavingCatalogId(null);
+                          }
+                        }}
+                        className={`px-2 py-1 border text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
+                          savedCatalogIds[placed.id]
+                            ? 'border-emerald-700 bg-emerald-700 text-white'
+                            : placed.glbUrl
+                            ? 'border-stone-950 bg-stone-950 text-white hover:bg-stone-800'
+                            : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                        }`}
+                      >
+                        {savingCatalogId === placed.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : savedCatalogIds[placed.id] ? (
+                          <Check className="w-3 h-3" />
+                        ) : (
+                          <BookmarkPlus className="w-3 h-3" />
+                        )}
+                        <span>{savedCatalogIds[placed.id] ? 'Katalogda' : 'Kataloğa Kaydet'}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

@@ -12,6 +12,31 @@ export interface CloudStorageConfig {
 }
 
 const PIN_KEY = 'mekanar_storage_pin_v1';
+const LOCAL_CATALOG_KEY = 'mekanar_custom_catalog_v1';
+
+export function loadLocalCustomCatalog(): Product[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_CATALOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p) => p && typeof p.id === 'string' && typeof p.glbUrl === 'string' && !p.glbUrl.startsWith('blob:'));
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalCustomProduct(product: Product): void {
+  try {
+    // Only persist non-ephemeral (http/https/data/relative) GLB URLs so page reload never breaks
+    if (!product.glbUrl || product.glbUrl.startsWith('blob:')) return;
+    const prev = loadLocalCustomCatalog().filter((p) => p.id !== product.id);
+    const next = [product, ...prev].slice(0, 40);
+    localStorage.setItem(LOCAL_CATALOG_KEY, JSON.stringify(next));
+  } catch {
+    /* quota ignored */
+  }
+}
 
 export function getSavedStoragePin(): string {
   try {

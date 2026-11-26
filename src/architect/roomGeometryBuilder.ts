@@ -29,6 +29,7 @@ export interface BuiltRoomResult {
   compassRingGroup: THREE.Group;
   planOverlayGroup: THREE.Group;
   planLabelsGroup: THREE.Group;
+  room3dLabelsGroup: THREE.Group;
   interiorFillLight: THREE.PointLight | null;
   warnings: string[];
   dispose: () => void;
@@ -681,6 +682,8 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
   roomRoot.add(planOverlayGroup);
   const planLabelsGroup = new THREE.Group();
   roomRoot.add(planLabelsGroup);
+  const room3dLabelsGroup = new THREE.Group();
+  roomRoot.add(room3dLabelsGroup);
 
   const wallSpecs: Array<{
     side: WallId;
@@ -1773,6 +1776,43 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     for (const adj of adjacentRooms) {
       makeRoomPlanTag(adj.name, adj.widthM * adj.depthM, adj.centerXM, adj.centerZM, adj.widthM);
     }
+
+    // Subtle, clean 3D floating room badges visible while orbiting multi-room apartments in 3B mode!
+    const makeRoom3dSprite = (title: string, rx: number, rz: number) => {
+      const cv = document.createElement('canvas');
+      cv.width = 384;
+      cv.height = 84;
+      const ctx = cv.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'rgba(24, 24, 27, 0.78)';
+        ctx.fillRect(6, 10, 372, 64);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(6, 10, 372, 64);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '700 28px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title.slice(0, 18), 192, 43);
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+      disposables.push(() => {
+        tex.dispose();
+        mat.dispose();
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.position.set(rx, H + 0.24, rz);
+      sp.scale.set(1.55, 0.34, 1);
+      sp.raycast = () => {};
+      room3dLabelsGroup.add(sp);
+    };
+
+    makeRoom3dSprite('Ana Salon', 0, 0);
+    for (const adj of adjacentRooms) {
+      makeRoom3dSprite(adj.name, adj.centerXM, adj.centerZM);
+    }
   }
 
   return {
@@ -1783,6 +1823,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     compassRingGroup,
     planOverlayGroup,
     planLabelsGroup,
+    room3dLabelsGroup,
     interiorFillLight,
     warnings,
     dispose: () => disposables.forEach((fn) => fn()),

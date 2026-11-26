@@ -1,9 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
+  BookmarkPlus,
   Camera,
+  Check,
   CopyPlus,
   DoorOpen,
   Layers,
+  Loader2,
   Plus,
   RotateCcw,
   RotateCw,
@@ -66,6 +69,7 @@ interface Props {
   onMoveOpeningToWall: (kind: 'window' | 'door' | 'wallZone', id: string, wall: WallId) => void;
   onDuplicateObject: (objId: string) => void;
   onAttachRoom?: (parentRoomId: string, side: WallId, roomKind: RoomKind) => void;
+  onSaveToCatalog?: (obj: ArchPlacedObject, thumbDataUrl?: string) => Promise<boolean>;
   onToast: (msg: string) => void;
 }
 
@@ -106,8 +110,11 @@ export const SelectionInspector: React.FC<Props> = ({
   onMoveOpeningToWall,
   onDuplicateObject,
   onAttachRoom,
+  onSaveToCatalog,
   onToast,
 }) => {
+  const [savingToCatalog, setSavingToCatalog] = useState(false);
+  const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
   const headerBar = (title: string, subtitle: string, onDelete?: () => void) => (
     <div className="px-3.5 py-2.5 border-b border-stone-200 bg-[#faf9f6] flex items-center justify-between gap-2 shrink-0">
       <div className="min-w-0">
@@ -1704,6 +1711,42 @@ export const SelectionInspector: React.FC<Props> = ({
           <Trash2 className="w-3.5 h-3.5" />
           <span>Bu Eşyayı Odadan Kaldır</span>
         </button>
+
+        {onSaveToCatalog && (
+          <button
+            type="button"
+            disabled={savingToCatalog}
+            onClick={async () => {
+              setSavingToCatalog(true);
+              try {
+                const ok = await onSaveToCatalog(obj, obj.thumbUrl);
+                if (ok) setSavedIds((prev) => ({ ...prev, [obj.id]: true }));
+              } finally {
+                setSavingToCatalog(false);
+              }
+            }}
+            className={`w-full py-2 border font-semibold flex items-center justify-center gap-1.5 transition ${
+              savedIds[obj.id]
+                ? 'border-emerald-700 bg-emerald-700 text-white'
+                : 'border-stone-950 bg-white hover:bg-stone-950 text-stone-950 hover:text-white'
+            }`}
+          >
+            {savingToCatalog ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : savedIds[obj.id] ? (
+              <Check className="w-3.5 h-3.5" />
+            ) : (
+              <BookmarkPlus className="w-3.5 h-3.5" />
+            )}
+            <span>
+              {savedIds[obj.id]
+                ? 'Ürün Kataloğuna Kaydedildi'
+                : obj.glbUrl
+                ? '2K PBR Modeli Kataloğa Kaydet'
+                : 'Ürün Kataloğuna Kaydet (.GLB)'}
+            </span>
+          </button>
+        )}
 
         {obj.glbUrl && (
           <a

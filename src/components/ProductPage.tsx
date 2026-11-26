@@ -20,6 +20,7 @@ import {
   Ruler,
   Smartphone,
   Sun,
+  SwitchCamera,
   X,
 } from 'lucide-react';
 import type { Product } from '../lib/products';
@@ -129,9 +130,92 @@ export const ProductPage: React.FC<Props> = ({
     typeof window !== 'undefined' ? window.innerWidth > window.innerHeight : false
   );
 
+  // Item #8: Universal Built-In Live Camera AR Overlay (works on EVERY iPad, Samsung/Xiaomi/Huawei Tablet & Phone even without ARCore/Quick Look!)
+  const [liveCameraAr, setLiveCameraAr] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [liveCamYOffsetPx, setLiveCamYOffsetPx] = useState<number>(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
   const mvRef = useRef<ModelViewerEl | null>(null);
   const arBaseYRef = useRef<number | null>(null);
   const lastAppliedYCmRef = useRef<number>(0);
+
+  const stopLiveCamera = useCallback(() => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setLiveCameraAr(false);
+    setCameraError(null);
+    setLiveCamYOffsetPx(0);
+  }, []);
+
+  const startLiveCamera = useCallback(
+    async (facing: 'environment' | 'user' = cameraFacing) => {
+      setCameraError(null);
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+        setCameraError(
+          'Tarayıcı kamera API’sine erişemedi. Lütfen siteyi HTTPS üzerinden Safari (iPad) veya Chrome (Android Tablet) ile açın.'
+        );
+        setShowQrModal(true);
+        return;
+      }
+      try {
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+        }
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+            audio: false,
+          });
+        } catch {
+          // Fallback to any available tablet camera if exact facingMode constraint fails
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        mediaStreamRef.current = stream;
+        setCameraFacing(facing);
+        setLiveCameraAr(true);
+        setShowQrModal(false);
+        setTimeout(() => {
+          const vid = videoRef.current;
+          if (vid && mediaStreamRef.current) {
+            vid.srcObject = mediaStreamRef.current;
+            vid.play().catch(() => {});
+          }
+        }, 60);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (/NotAllowed|Permission/i.test(msg)) {
+          setCameraError(
+            'Kamera izni reddedildi. Tablet tarayıcısında adres çubuğundaki kilit/kamera simgesinden bu siteye Kamera İzni verip tekrar deneyin.'
+          );
+        } else if (/NotFound|DevicesNotFound/i.test(msg)) {
+          setCameraError('Bu cihazda kullanılabilir kamera bulunamadı — QR kod ile telefondan açabilirsiniz.');
+          setShowQrModal(true);
+        } else {
+          setCameraError('Kamera başlatılamadı — başka bir uygulama kamerayı kullanıyorsa kapatıp tekrar deneyin.');
+        }
+      }
+    },
+    [cameraFacing]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setActiveProduct(product);
@@ -355,15 +439,20 @@ export const ProductPage: React.FC<Props> = ({
     colorHex,
   });
 
-  const isMobileDevice =
-    typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const isIPad =
+    typeof navigator !== 'undefined' &&
+    (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1));
+  const isAndroidTablet = /Android/i.test(ua) && !/Mobile/i.test(ua);
+  const isTabletDevice = isIPad || isAndroidTablet;
+  const isMobileDevice = isIPad || /iPhone|iPod|Android/i.test(ua);
 
   // Ürünün gerçek boyutuna göre akıllı AR kadraj & mesafe rehberi
-  // Not: Android Scene Viewer ve iOS AR Quick Look her zaman DİKEY (Portrait) kilitli çalışır!
+  // Not: Tabletlerde yatay (showroom) kullanım serbesttir; dikey uyarısı sadece telefonlar içindir!
   const baseDims = measuredDims || parseDimsFromText(resolvedDims) || { w: 120, d: 85, h: 80 };
   const isWideProduct = baseDims.w >= 150;
   const recommendedDistanceLabel = isWideProduct ? '2.5–3 m Geriden' : '1.5–2 m Mesafe';
-  const orientationMatches = !isLandscape;
+  const orientationMatches = isTabletDevice || !isLandscape;
 
   const liveScaledDims = {
     w: Math.round((baseDims.w * scalePct) / 100),
@@ -372,9 +461,19 @@ export const ProductPage: React.FC<Props> = ({
   };
 
   const handleLaunchAR = () => {
+    if (liveCameraAr) {
+      stopLiveCamera();
+      return;
+    }
     const mv = mvRef.current;
+    // 1) Native WebXR / AR Quick Look / Scene Viewer when supported
     if (mv && mv.canActivateAR && typeof mv.activateAR === 'function') {
       mv.activateAR();
+      return;
+    }
+    // 2) On iPad, Android Tablets & Phones where ARCore / Quick Look isn't available -> IMMEDIATELY open real Live Camera AR Overlay!
+    if (isMobileDevice || isTabletDevice) {
+      void startLiveCamera('environment');
       return;
     }
     setShowQrModal(true);
@@ -449,8 +548,31 @@ export const ProductPage: React.FC<Props> = ({
         </div>
       </header>
 
-      {/* Canlı 3B & AR Sahnesi */}
-      <div className="relative flex-1 min-h-0 bg-gradient-to-b from-[#f5f2ec] to-[#e9e3d8]">
+      {/* Canlı 3B & AR Sahnesi (Tablet & Tüm Cihazlar İçin Canlı Arka Kamera AR Katmanı Destekli!) */}
+      <div
+        className={`relative flex-1 min-h-0 overflow-hidden ${
+          liveCameraAr ? 'bg-black' : 'bg-gradient-to-b from-[#f5f2ec] to-[#e9e3d8]'
+        }`}
+      >
+        {liveCameraAr && (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
+          />
+        )}
+
+        {cameraError && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-md w-[92%] bg-amber-50 border border-amber-400 text-amber-950 px-3.5 py-2.5 text-xs shadow-lg flex items-start justify-between gap-2">
+            <span>{cameraError}</span>
+            <button type="button" onClick={() => setCameraError(null)} className="shrink-0 text-amber-900">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {normalizingRemote && (
           <div className="absolute inset-0 z-20 bg-[#f5f2ec]/90 flex flex-col items-center justify-center gap-2.5 text-center p-4">
             <Loader2 className="w-7 h-7 animate-spin text-stone-950" />
@@ -476,7 +598,14 @@ export const ProductPage: React.FC<Props> = ({
           exposure="1.05"
           environment-image="neutral"
           camera-orbit="25deg 75deg auto"
-          style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+          style={{
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'transparent',
+            position: 'relative',
+            zIndex: 10,
+            transform: liveCameraAr ? `translateY(${liveCamYOffsetPx}px)` : undefined,
+          }}
         >
           {/* Varsayılan küçük model-viewer AR butonunu gizleyip kendi kurumsal kontrolümüzü kullanıyoruz */}
           <button slot="ar-button" style={{ display: 'none' }} aria-hidden="true" />
@@ -639,8 +768,54 @@ export const ProductPage: React.FC<Props> = ({
           )}
         </model-viewer>
 
-        {/* Sol Üst: 1:1 Ölçü + Akıllı Dikey Kadraj & Mesafe Rehberi */}
-        {showDimsBadge && arStatus === 'not-presenting' && (
+        {/* CANLI TABLET / UNIVERSAL KAMERA AR HUD KONTROLLERİ */}
+        {liveCameraAr && (
+          <div className="absolute inset-x-3 top-3 z-20 flex items-center justify-between gap-2 pointer-events-none">
+            <div className="bg-stone-950/88 backdrop-blur text-white px-3 py-2 border border-white/20 text-[11px] pointer-events-auto">
+              <p className="font-bold">Canlı Kamera AR · {activeProduct.name}</p>
+              <p className="text-[10px] text-stone-300">
+                Parmağınla döndür/yakınlaştır · {liveScaledDims.w}×{liveScaledDims.d}×{liveScaledDims.h} cm
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 pointer-events-auto">
+              <button
+                type="button"
+                onClick={() => setLiveCamYOffsetPx((v) => Math.max(-180, v - 18))}
+                className="p-2 bg-stone-950/88 text-white border border-white/20"
+                title="Yukarı Kaydır"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setLiveCamYOffsetPx((v) => Math.min(180, v + 18))}
+                className="p-2 bg-stone-950/88 text-white border border-white/20"
+                title="Aşağı Kaydır"
+              >
+                <ArrowDown className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void startLiveCamera(cameraFacing === 'environment' ? 'user' : 'environment')}
+                className="p-2 bg-stone-950/88 text-white border border-white/20"
+                title="Arka / Ön Kamera Değiştir"
+              >
+                <SwitchCamera className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={stopLiveCamera}
+                className="px-3 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-bold flex items-center gap-1"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Kamerayı Kapat</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Sol Üst: 1:1 Ölçü + Akıllı Kadraj & Mesafe Rehberi */}
+        {showDimsBadge && arStatus === 'not-presenting' && !liveCameraAr && (
           <div className="absolute top-3 left-3 right-3 sm:right-auto max-w-sm bg-white/95 backdrop-blur border border-stone-200 p-3 text-[11px] space-y-2 shadow-sm pointer-events-none">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -765,12 +940,14 @@ export const ProductPage: React.FC<Props> = ({
               disabled={normalizingRemote}
               className="w-full py-3.5 bg-stone-950 hover:bg-stone-800 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition disabled:opacity-50"
             >
-              {canAr ? <Camera className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
+              <Camera className="w-4 h-4" />
               <span>
-                {canAr
+                {liveCameraAr
+                  ? 'Canlı Kamerayı Kapat'
+                  : canAr
                   ? `Odanda Canlı Gör (AR · ${recommendedDistanceLabel})`
-                  : isMobileDevice
-                  ? 'Odanda Canlı Gör (AR)'
+                  : isMobileDevice || isTabletDevice
+                  ? 'Tablet / Telefon Canlı Kamera AR Aç'
                   : 'Telefonda Canlı AR Aç (QR)'}
               </span>
             </button>
@@ -778,6 +955,7 @@ export const ProductPage: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => {
+                if (liveCameraAr) stopLiveCamera();
                 setPlannerPreset('living');
                 setViewMode('planner');
               }}
@@ -837,6 +1015,14 @@ export const ProductPage: React.FC<Props> = ({
                     ? `Bu ürün ${baseDims.w} cm genişliğindedir. QR kodu okutup telefonu DİKEY tutun ve 2.5–3 m geriden aydınlık zemine yerleştirin.`
                     : `Bu ürün ${baseDims.w} cm enindedir. QR kodu okutup telefonu DİKEY tutun ve 1.5–2 m mesafeden aydınlık zemine yerleştirin.`}
                 </p>
+                <button
+                  type="button"
+                  onClick={() => void startLiveCamera('environment')}
+                  className="w-full py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>Bu Cihazın Kamerasıyla Canlı AR Aç</span>
+                </button>
                 <button
                   type="button"
                   onClick={copyArLink}

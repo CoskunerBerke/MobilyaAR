@@ -6,6 +6,12 @@
   },
   "headers": [
     {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Permissions-Policy", "value": "camera=(self), xr-spatial-tracking=(self), accelerometer=(self), gyroscope=(self)" }
+      ]
+    },
+    {
       "source": "/models/(.*)\\.glb",
       "headers": [
         { "key": "Content-Type", "value": "model/gltf-binary" },

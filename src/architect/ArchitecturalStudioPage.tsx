@@ -18,6 +18,10 @@ import {
   Maximize2,
   Menu,
   Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
   Play,
   Plus,
@@ -32,8 +36,16 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { PRODUCTS, type Product } from '../lib/products';
-import { fetchCloudCatalog } from '../lib/storageClient';
+import {
+  fetchCloudCatalog,
+  fetchStorageConfig,
+  loadLocalCustomCatalog,
+  saveLocalCustomProduct,
+  saveProductToCloudStorage,
+} from '../lib/storageClient';
+import { buildParametricObject3D } from './parametricFurniture';
 import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
@@ -153,6 +165,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [showSunOrb, setShowSunOrb] = useState(true);
   const [showDoorArcs, setShowDoorArcs] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [desktopLeftOpen, setDesktopLeftOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [tvPresentationMode, setTvPresentationMode] = useState(false);
   const [autoRotate360, setAutoRotate360] = useState(false);
@@ -184,6 +198,14 @@ export const ArchitecturalStudioPage: React.FC = () => {
 
   useEffect(() => {
     document.title = 'MekanAR · Mimari 3B Stüdyo';
+    // Hydrate locally saved custom 2K PBR catalog products immediately
+    const localSaved = loadLocalCustomCatalog();
+    if (localSaved.length > 0) {
+      setCatalog((prev) => {
+        const seen = new Set(localSaved.map((p) => p.id));
+        return [...localSaved, ...prev.filter((p) => !seen.has(p.id))];
+      });
+    }
     let cancelled = false;
     fetchCloudCatalog().then((cloudList) => {
       if (cancelled || cloudList.length === 0) return;
@@ -196,6 +218,116 @@ export const ArchitecturalStudioPage: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  // Re-open right inspector panel smoothly whenever user clicks a new element in 3D
+  useEffect(() => {
+    if (selection) setRightPanelOpen(true);
+  }, [selection]);
+
+  // Item #7B: Save any 2K PBR or modeled 3D furniture directly into the permanent Showroom Product Catalog!
+  const handleSaveObjectToCatalog = useCallback(
+    async (obj: ArchPlacedObject, thumbDataUrl?: string): Promise<boolean> => {
+      try {
+        showToast(`"${obj.name}" Ürün Kataloğuna kaydediliyor...`);
+        let glbBuffer: ArrayBuffer | null = null;
+
+        if (obj.glbUrl) {
+          try {
+            const resp = await fetch(obj.glbUrl);
+            if (resp.ok) glbBuffer = await resp.arrayBuffer();
+          } catch {
+            /* Remote CORS-restricted URL: fall back to direct URL registration below */
+          }
+        } else if (obj.parametricKind) {
+          const built = buildParametricObject3D(obj);
+          const exporter = new GLTFExporter();
+          glbBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+            exporter.parse(
+              built.group,
+              (res) => {
+                if (res instanceof ArrayBuffer) resolve(res);
+                else reject(new Error('GLB dışa aktarılamadı'));
+              },
+              (err) => reject(err),
+              { binary: true }
+            );
+          });
+          built.dispose();
+        }
+
+        const dimsTargetCm = {
+          w: Math.round(obj.widthM * 100),
+          d: Math.round(obj.depthM * 100),
+          h: Math.round(obj.heightM * 100),
+        };
+        const cleanDims = `${dimsTargetCm.w} × ${dimsTargetCm.d} × ${dimsTargetCm.h} cm`;
+
+        let savedProduct: Product | null = null;
+        const storageCfg = await fetchStorageConfig();
+
+        if (storageCfg.configured && glbBuffer) {
+          try {
+            savedProduct = await saveProductToCloudStorage({
+              name: obj.name,
+              category: obj.category || 'Özel Tasarım',
+              dimensionsCm: cleanDims,
+              dimsTargetCm,
+              glbBuffer,
+              thumbnailDataUrl: thumbDataUrl || obj.thumbUrl || null,
+              storageConfig: storageCfg,
+              onProgress: (m) => showToast(m),
+            });
+          } catch {
+            /* Fall back to local/session catalog save below */
+          }
+        }
+
+        if (!savedProduct) {
+          const fallbackUrl =
+            obj.glbUrl ||
+            (glbBuffer ? URL.createObjectURL(new Blob([glbBuffer], { type: 'model/gltf-binary' })) : '');
+          if (!fallbackUrl) {
+            showToast('Katalog kaydı için 3B model verisi oluşturulamadı.');
+            return false;
+          }
+          savedProduct = {
+            id: `pbr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: obj.name,
+            category: obj.category || 'Özel Tasarım',
+            dimensionsCm: cleanDims,
+            dimsTargetCm,
+            glbUrl: fallbackUrl,
+            remoteGlbUrl: fallbackUrl.startsWith('http') ? fallbackUrl : undefined,
+            thumbUrl: thumbDataUrl || obj.thumbUrl,
+            source: 'ozel-cad',
+            cloudStored: false,
+          };
+          saveLocalCustomProduct(savedProduct);
+        } else {
+          saveLocalCustomProduct(savedProduct);
+        }
+
+        const finalProd = savedProduct;
+        setCatalog((prev) => [finalProd, ...prev.filter((p) => p.id !== finalProd.id)]);
+        setProject((prev) => ({
+          ...prev,
+          objects: prev.objects.map((o) =>
+            o.id === obj.id
+              ? { ...o, glbUrl: finalProd.glbUrl, productRef: finalProd, thumbUrl: finalProd.thumbUrl || o.thumbUrl }
+              : o
+          ),
+        }));
+        showToast(
+          `✓ "${finalProd.name}" Ürün Kataloğuna kaydedildi! (Eşya sekmesinde ve Canlı AR'da kullanıma hazır)`
+        );
+        return true;
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Katalog kaydı sırasında hata oluştu.');
+        return false;
+      }
+    },
+    [showToast]
+  );
 
   useEffect(() => {
     if (!sunPlaying) return;
@@ -2212,222 +2344,296 @@ export const ArchitecturalStudioPage: React.FC = () => {
       );
     }
 
-    return (
-      <div className="p-3.5">
-        <PinterestAIPanel
-          project={project}
-          onApplyRoomStyle={(style) => {
-            setProject((prev) => ({
+    return null;
+  };
+
+  // Item #7A: Persistent always-mounted Pinterest panel so switching tabs (Katalog / Oda / Eşya) NEVER loses photo or 2K PBR state!
+  const renderPersistentPinterestPanel = () => (
+    <div className={activeTab === 'pinterest' ? 'p-3.5 block' : 'hidden'}>
+      <PinterestAIPanel
+        project={project}
+        activeTargetRoomId={selection?.type === 'adjacentRoom' ? selection.id : undefined}
+        onApplyRoomStyle={(style, targetRoomId) => {
+          setProject((prev) => {
+            if (targetRoomId && targetRoomId !== 'main') {
+              return {
+                ...prev,
+                adjacentRooms: (prev.adjacentRooms || []).map((r) =>
+                  r.id === targetRoomId
+                    ? {
+                        ...r,
+                        floorMaterial: style.floorMaterial || r.floorMaterial,
+                        floorTintHex: style.floorTintHex || r.floorTintHex,
+                        wallColorHex: style.wallColorHex || r.wallColorHex,
+                        wallPattern: style.wallPattern || r.wallPattern,
+                      }
+                    : r
+                ),
+              };
+            }
+            return {
               ...prev,
               floorMaterial: style.floorMaterial || prev.floorMaterial,
               floorTintHex: style.floorTintHex || prev.floorTintHex,
               walls: {
                 north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
                 south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: style.wallPattern || 'smooth' },
-                west: { colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex, pattern: style.wallPattern || 'smooth' },
+                west: {
+                  colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex,
+                  pattern: style.wallPattern || 'smooth',
+                },
                 east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
               },
               windows: prev.windows.map((w) => ({ ...w, curtainColorHex: style.curtainColorHex || w.curtainColorHex })),
-              sun: { ...prev.sun, hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour },
-            }));
-          }}
-          onApplyPinterestScene={(objects, style, replaceExisting) => {
-            setProject((prev) => {
-              const nextCeil = style?.hasMezzanine
-                ? Math.max(3.85, Math.min(4.8, (style.suggestedCeilingCm || 410) / 100))
-                : style?.suggestedCeilingCm
-                ? Math.max(2.5, Math.min(4.5, style.suggestedCeilingCm / 100))
-                : prev.ceilingM;
-              const nextMez = style?.hasMezzanine
+              sun: {
+                ...prev.sun,
+                hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
+              },
+            };
+          });
+        }}
+        onApplyPinterestScene={(objects, style, replaceExisting, targetRoomId) => {
+          const isAdjTarget = Boolean(targetRoomId && targetRoomId !== 'main');
+          setProject((prev) => {
+            if (isAdjTarget) {
+              const adj = (prev.adjacentRooms || []).find((r) => r.id === targetRoomId);
+              const keepObjs =
+                replaceExisting && adj
+                  ? prev.objects.filter(
+                      (o) =>
+                        !(
+                          o.x >= adj.centerXM - adj.widthM * 0.5 - 0.1 &&
+                          o.x <= adj.centerXM + adj.widthM * 0.5 + 0.1 &&
+                          o.z >= adj.centerZM - adj.depthM * 0.5 - 0.1 &&
+                          o.z <= adj.centerZM + adj.depthM * 0.5 + 0.1
+                        )
+                    )
+                  : prev.objects;
+              return {
+                ...prev,
+                adjacentRooms:
+                  style && adj
+                    ? (prev.adjacentRooms || []).map((r) =>
+                        r.id === adj.id
+                          ? {
+                              ...r,
+                              floorMaterial: style.floorMaterial || r.floorMaterial,
+                              floorTintHex: style.floorTintHex || r.floorTintHex,
+                              wallColorHex: style.wallColorHex || r.wallColorHex,
+                            }
+                          : r
+                      )
+                    : prev.adjacentRooms,
+                objects: [...keepObjs, ...objects],
+              };
+            }
+
+            const nextCeil = style?.hasMezzanine
+              ? Math.max(3.85, Math.min(4.8, (style.suggestedCeilingCm || 410) / 100))
+              : style?.suggestedCeilingCm && replaceExisting
+              ? Math.max(2.5, Math.min(4.5, style.suggestedCeilingCm / 100))
+              : prev.ceilingM;
+            const nextMez = style?.hasMezzanine
+              ? {
+                  enabled: true,
+                  anchorWall: style.mezzanine?.anchorWall || ('north' as WallId),
+                  heightM: Math.max(1.85, Math.min(nextCeil - 1.5, (style.mezzanine?.heightCm || 205) / 100)),
+                  depthM: Math.max(1.6, Math.min(prev.depthM * 0.65, (style.mezzanine?.depthRatio || 0.52) * prev.depthM)),
+                  widthRatio: Math.max(0.55, Math.min(1.0, style.mezzanine?.widthRatio || 0.78)),
+                  stairGapSide: style.mezzanine?.stairGapSide || ('west' as const),
+                  thicknessM: 0.16,
+                  deckColorHex: style.mezzanine?.deckColorHex || style.floorTintHex || '#c9b092',
+                  railingStyle: style.mezzanine?.railingStyle || ('none' as const),
+                  underLed: true,
+                }
+              : replaceExisting
+              ? undefined
+              : prev.mezzanine;
+
+            const winWall = style?.primaryWindowWall || 'west';
+            const nextWindows =
+              replaceExisting && style
+                ? style.hasVisibleWindow === false
+                  ? []
+                  : [
+                      {
+                        id: `pin-win-${Date.now()}`,
+                        wall: winWall,
+                        kind: (style.hasMezzanine ? 'french' : 'triple') as WindowKind,
+                        offsetCm: Math.round(
+                          getWallLengthM(winWall, prev.widthM, prev.depthM) * (style.hasMezzanine ? 32 : 50)
+                        ),
+                        widthCm: style.hasMezzanine ? 150 : 210,
+                        heightCm: Math.min(Math.round(nextCeil * 100) - 35, style.hasMezzanine ? 340 : 220),
+                        sillHeightCm: style.hasMezzanine ? 25 : 40,
+                        frameColorHex: '#232325',
+                        hasSill: true,
+                        curtainStyle: 'sheer_and_drape' as const,
+                        curtainColorHex: style.curtainColorHex || '#e5dfd3',
+                        curtainOpenRatio: 0.62,
+                      },
+                    ]
+                : prev.windows.map((w) => ({
+                    ...w,
+                    curtainColorHex: style?.curtainColorHex || w.curtainColorHex,
+                  }));
+
+            const nextCoves =
+              replaceExisting && style
+                ? style.hasVisibleWindow === false
+                  ? []
+                  : [
+                      {
+                        id: `pin-cove-${winWall}-${Date.now()}`,
+                        wall: winWall,
+                        depthCm: 20,
+                        dropCm: 16,
+                        ledEnabled: true,
+                        ledColorHex: '#ffddb0',
+                        ledIntensity: 1.0,
+                        colorHex: prev.ceilingColorHex,
+                      },
+                    ]
+                : prev.curtainCoves;
+
+            const keepOtherRoomObjs =
+              replaceExisting && (prev.adjacentRooms?.length || 0) > 0
+                ? prev.objects.filter(
+                    (o) =>
+                      !(
+                        o.x >= -prev.widthM * 0.5 - 0.1 &&
+                        o.x <= prev.widthM * 0.5 + 0.1 &&
+                        o.z >= -prev.depthM * 0.5 - 0.1 &&
+                        o.z <= prev.depthM * 0.5 + 0.1
+                      )
+                  )
+                : [];
+
+            return {
+              ...prev,
+              ceilingM: nextCeil,
+              mezzanine: nextMez,
+              ...(replaceExisting ? { wallZones: [], curtainCoves: nextCoves } : {}),
+              ...(style
+                ? {
+                    floorMaterial: style.floorMaterial || prev.floorMaterial,
+                    floorTintHex: style.floorTintHex || prev.floorTintHex,
+                    walls: {
+                      north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
+                      south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: 'smooth' },
+                      west: {
+                        colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex,
+                        pattern: style.hasMezzanine ? 'smooth' : style.wallPattern || 'smooth',
+                      },
+                      east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
+                    },
+                    windows: nextWindows,
+                    sun: {
+                      ...prev.sun,
+                      hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
+                    },
+                  }
+                : {}),
+              objects: replaceExisting ? [...keepOtherRoomObjs, ...objects] : [...prev.objects, ...objects],
+            };
+          });
+          if (replaceExisting && !isAdjTarget) {
+            setTimeout(() => viewportRef.current?.resetCamera('free'), 120);
+          }
+          if (objects[0]) {
+            setSelection({ type: 'object', id: objects[0].id });
+          } else {
+            setSelection(null);
+          }
+        }}
+        onRefinePinterestScene={(nextObjects, roomFixes) => {
+          setProject((prev) => {
+            const nextCeil = roomFixes?.enableMezzanine && prev.ceilingM < 3.85 ? 4.1 : prev.ceilingM;
+            const nextMez =
+              roomFixes?.enableMezzanine === true
                 ? {
                     enabled: true,
-                    anchorWall: style.mezzanine?.anchorWall || ('north' as WallId),
-                    heightM: Math.max(1.85, Math.min(nextCeil - 1.5, (style.mezzanine?.heightCm || 205) / 100)),
-                    depthM: Math.max(1.6, Math.min(prev.depthM * 0.65, (style.mezzanine?.depthRatio || 0.52) * prev.depthM)),
-                    widthRatio: Math.max(0.55, Math.min(1.0, style.mezzanine?.widthRatio || 0.78)),
-                    stairGapSide: style.mezzanine?.stairGapSide || ('west' as const),
+                    anchorWall: prev.mezzanine?.anchorWall || ('north' as WallId),
+                    heightM: (roomFixes.mezzanineHeightCm || 205) / 100,
+                    depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
+                    widthRatio: prev.mezzanine?.widthRatio || 0.78,
+                    stairGapSide: prev.mezzanine?.stairGapSide || ('west' as const),
                     thicknessM: 0.16,
-                    deckColorHex: style.mezzanine?.deckColorHex || style.floorTintHex || '#c9b092',
-                    railingStyle: style.mezzanine?.railingStyle || ('none' as const),
+                    deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
+                    railingStyle: prev.mezzanine?.railingStyle || ('none' as const),
                     underLed: true,
                   }
-                : replaceExisting
+                : roomFixes?.enableMezzanine === false
                 ? undefined
                 : prev.mezzanine;
 
-              const winWall = style?.primaryWindowWall || 'west';
-              const nextWindows =
-                replaceExisting && style
-                  ? style.hasVisibleWindow === false
-                    ? []
-                    : [
-                        {
-                          id: `pin-win-${Date.now()}`,
-                          wall: winWall,
-                          kind: (style.hasMezzanine ? 'french' : 'triple') as WindowKind,
-                          offsetCm: Math.round(
-                            getWallLengthM(winWall, prev.widthM, prev.depthM) * (style.hasMezzanine ? 32 : 50)
-                          ),
-                          widthCm: style.hasMezzanine ? 150 : 210,
-                          heightCm: Math.min(Math.round(nextCeil * 100) - 35, style.hasMezzanine ? 340 : 220),
-                          sillHeightCm: style.hasMezzanine ? 25 : 40,
-                          frameColorHex: '#232325',
-                          hasSill: true,
-                          curtainStyle: 'sheer_and_drape' as const,
-                          curtainColorHex: style.curtainColorHex || '#e5dfd3',
-                          curtainOpenRatio: 0.62,
-                        },
-                      ]
-                  : prev.windows.map((w) => ({
-                      ...w,
-                      curtainColorHex: style?.curtainColorHex || w.curtainColorHex,
-                    }));
+            const nextWalls =
+              roomFixes?.wallColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.wallColorHex)
+                ? {
+                    north: { ...prev.walls.north, colorHex: roomFixes.wallColorHex },
+                    south: { ...prev.walls.south, colorHex: roomFixes.wallColorHex },
+                    west: { ...prev.walls.west, colorHex: roomFixes.wallColorHex },
+                    east: { ...prev.walls.east, colorHex: roomFixes.wallColorHex },
+                  }
+                : prev.walls;
 
-              const nextCoves =
-                replaceExisting && style
-                  ? style.hasVisibleWindow === false
-                    ? []
-                    : [
-                        {
-                          id: `pin-cove-${winWall}-${Date.now()}`,
-                          wall: winWall,
-                          depthCm: 20,
-                          dropCm: 16,
-                          ledEnabled: true,
-                          ledColorHex: '#ffddb0',
-                          ledIntensity: 1.0,
-                          colorHex: prev.ceilingColorHex,
-                        },
-                      ]
-                  : prev.curtainCoves;
-
-              return {
-                ...prev,
-                ceilingM: nextCeil,
-                mezzanine: nextMez,
-                ...(replaceExisting ? { wallZones: [], curtainCoves: nextCoves } : {}),
-                ...(style
-                  ? {
-                      floorMaterial: style.floorMaterial || prev.floorMaterial,
-                      floorTintHex: style.floorTintHex || prev.floorTintHex,
-                      walls: {
-                        north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
-                        south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: 'smooth' },
-                        west: {
-                          colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex,
-                          pattern: style.hasMezzanine ? 'smooth' : style.wallPattern || 'smooth',
-                        },
-                        east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
-                      },
-                      windows: nextWindows,
-                      sun: {
-                        ...prev.sun,
-                        hour: style.suggestedSunHour ? Math.max(8, Math.min(18, style.suggestedSunHour)) : prev.sun.hour,
-                      },
-                    }
-                  : {}),
-                objects: replaceExisting ? objects : [...prev.objects, ...objects],
+            return {
+              ...prev,
+              ceilingM: nextCeil,
+              mezzanine: nextMez,
+              walls: nextWalls,
+              floorTintHex:
+                roomFixes?.floorTintHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.floorTintHex)
+                  ? roomFixes.floorTintHex
+                  : prev.floorTintHex,
+              ...(roomFixes?.removeWindows ? { windows: [], curtainCoves: [] } : {}),
+              objects: nextObjects,
+            };
+          });
+        }}
+        onAddGeneratedObject={(obj) => {
+          setProject((prev) => {
+            const existingIdx = obj.pinterestItemId
+              ? prev.objects.findIndex((o) => o.pinterestItemId === obj.pinterestItemId)
+              : -1;
+            if (existingIdx >= 0) {
+              const cur = prev.objects[existingIdx];
+              const replaced: ArchPlacedObject = {
+                ...obj,
+                id: cur.id,
+                x: cur.x,
+                y: cur.y,
+                z: cur.z,
+                rot: cur.rot,
+                widthM: cur.widthM,
+                depthM: cur.depthM,
+                heightM: cur.heightM,
+                tintHex: cur.tintHex,
               };
-            });
-            if (replaceExisting) {
-              setTimeout(() => viewportRef.current?.resetCamera('free'), 120);
+              const next = [...prev.objects];
+              next[existingIdx] = replaced;
+              return { ...prev, objects: next };
             }
-            if (objects[0]) {
-              setSelection({ type: 'object', id: objects[0].id });
-            } else {
-              setSelection(null);
-            }
-          }}
-          onRefinePinterestScene={(nextObjects, roomFixes) => {
-            setProject((prev) => {
-              const nextCeil =
-                roomFixes?.enableMezzanine && prev.ceilingM < 3.85 ? 4.1 : prev.ceilingM;
-              const nextMez =
-                roomFixes?.enableMezzanine === true
-                  ? {
-                      enabled: true,
-                      anchorWall: prev.mezzanine?.anchorWall || ('north' as WallId),
-                      heightM: (roomFixes.mezzanineHeightCm || 205) / 100,
-                      depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
-                      widthRatio: prev.mezzanine?.widthRatio || 0.78,
-                      stairGapSide: prev.mezzanine?.stairGapSide || ('west' as const),
-                      thicknessM: 0.16,
-                      deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
-                      railingStyle: prev.mezzanine?.railingStyle || ('none' as const),
-                      underLed: true,
-                    }
-                  : roomFixes?.enableMezzanine === false
-                  ? undefined
-                  : prev.mezzanine;
-
-              const nextWalls =
-                roomFixes?.wallColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.wallColorHex)
-                  ? {
-                      north: { ...prev.walls.north, colorHex: roomFixes.wallColorHex },
-                      south: { ...prev.walls.south, colorHex: roomFixes.wallColorHex },
-                      west: { ...prev.walls.west, colorHex: roomFixes.wallColorHex },
-                      east: { ...prev.walls.east, colorHex: roomFixes.wallColorHex },
-                    }
-                  : prev.walls;
-
-              return {
-                ...prev,
-                ceilingM: nextCeil,
-                mezzanine: nextMez,
-                walls: nextWalls,
-                floorTintHex:
-                  roomFixes?.floorTintHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.floorTintHex)
-                    ? roomFixes.floorTintHex
-                    : prev.floorTintHex,
-                ...(roomFixes?.removeWindows ? { windows: [], curtainCoves: [] } : {}),
-                objects: nextObjects,
-              };
-            });
-          }}
-          onAddGeneratedObject={(obj) => {
-            setProject((prev) => {
-              // If upgrading/replacing an existing instant Pinterest object in-place, preserve its exact position & rotation!
-              const existingIdx = obj.pinterestItemId
-                ? prev.objects.findIndex((o) => o.pinterestItemId === obj.pinterestItemId)
-                : -1;
-              if (existingIdx >= 0) {
-                const cur = prev.objects[existingIdx];
-                const replaced: ArchPlacedObject = {
-                  ...obj,
-                  id: cur.id,
-                  x: cur.x,
-                  y: cur.y,
-                  z: cur.z,
-                  rot: cur.rot,
-                  widthM: cur.widthM,
-                  depthM: cur.depthM,
-                  heightM: cur.heightM,
-                  tintHex: cur.tintHex,
-                };
-                const next = [...prev.objects];
-                next[existingIdx] = replaced;
-                return { ...prev, objects: next };
-              }
-              return { ...prev, objects: [...prev.objects, obj] };
-            });
-            setSelection((curSel) => {
-              const matched = obj.pinterestItemId
-                ? project.objects.find((o) => o.pinterestItemId === obj.pinterestItemId)
-                : undefined;
-              return { type: 'object', id: matched?.id || obj.id };
-            });
-          }}
-          onSelectObjectInRoom={(objId) => setSelection({ type: 'object', id: objId })}
-          onRemoveObjectInRoom={(objId) => {
-            setProject((prev) => ({ ...prev, objects: prev.objects.filter((o) => o.id !== objId) }));
-            setSelection((cur) => (cur?.type === 'object' && cur.id === objId ? null : cur));
-          }}
-          onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
-          onToast={showToast}
-        />
-      </div>
-    );
-  };
+            return { ...prev, objects: [...prev.objects, obj] };
+          });
+          setSelection((curSel) => {
+            const matched = obj.pinterestItemId
+              ? project.objects.find((o) => o.pinterestItemId === obj.pinterestItemId)
+              : undefined;
+            return { type: 'object', id: matched?.id || obj.id };
+          });
+        }}
+        onSelectObjectInRoom={(objId) => setSelection({ type: 'object', id: objId })}
+        onRemoveObjectInRoom={(objId) => {
+          setProject((prev) => ({ ...prev, objects: prev.objects.filter((o) => o.id !== objId) }));
+          setSelection((cur) => (cur?.type === 'object' && cur.id === objId ? null : cur));
+        }}
+        onSaveToCatalog={handleSaveObjectToCatalog}
+        onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
+        onToast={showToast}
+      />
+    </div>
+  );
 
   return (
     <div className="arch-studio-root fixed inset-0 h-[100dvh] bg-[#e8e5de] text-stone-950 flex flex-col overflow-hidden">
@@ -2443,6 +2649,15 @@ export const ArchitecturalStudioPage: React.FC = () => {
               aria-label="Menü"
             >
               {mobileSidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDesktopLeftOpen((v) => !v)}
+              className="hidden lg:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0 transition"
+              title={desktopLeftOpen ? 'Sol Paneli Gizle (Geniş 3B Alan)' : 'Sol Paneli Aç'}
+              aria-label={desktopLeftOpen ? 'Sol Paneli Gizle' : 'Sol Paneli Aç'}
+            >
+              {desktopLeftOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
             </button>
             <div>
               <p className="font-display text-sm 2xl:text-base font-extrabold tracking-tight text-stone-950 whitespace-nowrap leading-none">
@@ -2772,44 +2987,81 @@ export const ArchitecturalStudioPage: React.FC = () => {
         </header>
       )}
 
-      {/* Phone & Portrait Tablet Full-Width Quick-Add Drop Strip (< 1024px) */}
+      {/* Phone & Portrait Tablet Full-Width Universal Smart Search Drop Strip (< 1024px) */}
       {!tvPresentationMode && mobileSearchOpen && (
-        <div className="lg:hidden bg-white border-b border-stone-200 px-3 py-2 space-y-2 z-30 shrink-0">
+        <div className="lg:hidden bg-white border-b border-stone-200 px-3 py-2.5 space-y-2 z-30 shrink-0 max-h-[65dvh] flex flex-col">
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              executeQuickAdd();
+              if (universalSearch.results[0]) executeUniversalResult(universalSearch.results[0]);
+              else executeQuickAdd();
               setMobileSearchOpen(false);
             }}
-            className="flex items-center border border-stone-300 bg-[#faf9f6]"
+            className="flex items-center border border-stone-300 focus-within:border-stone-950 bg-[#faf9f6] shrink-0"
           >
+            <Search className="w-3.5 h-3.5 text-stone-500 ml-2.5 shrink-0" />
             <input
               type="text"
               autoFocus
               value={quickQuery}
               onChange={(e) => setQuickQuery(e.target.value)}
-              placeholder='Örn: "televizyon 160x90", "şömine", "oval pencere"'
-              className="flex-1 min-w-0 px-2.5 py-2 bg-transparent text-xs focus:outline-none"
+              placeholder='Renk/kod ("kaşmir", "PRK901"), eşya ("klozet"), pencere, 3+1...'
+              className="flex-1 min-w-0 px-2 py-2 bg-transparent text-xs focus:outline-none"
             />
+            {quickQuery && (
+              <button type="button" onClick={() => setQuickQuery('')} className="p-1.5 text-stone-400">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button type="submit" className="px-3 py-2 bg-stone-950 text-white text-xs font-semibold whitespace-nowrap">
-              + Ekle
+              Bul &amp; Ekle
             </button>
           </form>
-          <div className="flex gap-1 overflow-x-auto pb-0.5">
-            {QUICK_ADD_SUGGESTIONS.slice(0, 7).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => {
-                  executeQuickAdd(s);
-                  setMobileSearchOpen(false);
-                }}
-                className="px-2 py-1 border border-stone-200 bg-[#faf9f6] text-[11px] font-medium whitespace-nowrap shrink-0"
-              >
-                + {s}
-              </button>
-            ))}
-          </div>
+
+          {quickQuery.trim() ? (
+            <div className="overflow-y-auto space-y-1 pr-0.5">
+              {universalSearch.results.slice(0, 10).map((res) => (
+                <button
+                  key={res.id}
+                  type="button"
+                  onClick={() => executeUniversalResult(res)}
+                  className="w-full px-2 py-1.5 border border-stone-200 bg-[#faf9f6] flex items-center gap-2 text-left"
+                >
+                  {'hex' in res && res.hex ? (
+                    <span className="w-6 h-6 border border-black/20 shrink-0" style={{ backgroundColor: res.hex }} />
+                  ) : (
+                    <span className="w-6 h-6 bg-stone-950 text-white font-mono text-[9px] font-bold flex items-center justify-center shrink-0">
+                      {res.badge.slice(0, 3).toUpperCase()}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1">
+                      <span className="font-semibold text-stone-950 text-xs truncate">{res.title}</span>
+                      {'similarityPct' in res && res.similarityPct && (
+                        <span className="text-[9px] font-mono font-bold px-1 bg-stone-200 text-stone-800 shrink-0">
+                          %{res.similarityPct}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-stone-500 truncate">{res.subtitle}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex gap-1 overflow-x-auto pb-0.5 shrink-0">
+              {['kaşmir', 'PRK901', '10678', 'klozet', 'oval pencere', '3+1 daire', ...QUICK_ADD_SUGGESTIONS.slice(0, 4)].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setQuickQuery(s)}
+                  className="px-2 py-1 border border-stone-200 bg-[#faf9f6] text-[11px] font-medium whitespace-nowrap shrink-0"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -2823,11 +3075,15 @@ export const ArchitecturalStudioPage: React.FC = () => {
           />
         )}
 
-        {/* Left Slim 4-Tab Panel (Hidden in TV Presentation Mode; Drawer on Phone/Portrait iPad; Docked on Landscape iPad/Desktop/TV) */}
+        {/* Left Collapsible 5-Tab Panel: Always stays mounted on desktop/tablet when toggled via CSS so Pinterest state is NEVER lost! */}
         {!tvPresentationMode && (
           <aside
             className={`${
-              mobileSidebarOpen ? 'fixed inset-y-14 left-0 z-30 flex' : 'hidden lg:flex'
+              mobileSidebarOpen
+                ? 'fixed inset-y-14 left-0 z-30 flex'
+                : desktopLeftOpen
+                ? 'hidden lg:flex'
+                : 'hidden'
             } w-[88vw] max-w-[330px] lg:w-[292px] xl:w-[324px] 2xl:w-[360px] bg-white border-r border-stone-200 flex-col shrink-0 shadow-2xl lg:shadow-none pb-[env(safe-area-inset-bottom)]`}
           >
             <nav className="grid grid-cols-5 border-b border-stone-200 bg-[#faf9f6] shrink-0">
@@ -2849,12 +3105,38 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 );
               })}
             </nav>
-            <div className="flex-1 min-h-0 overflow-y-auto">{renderLeftSidebar()}</div>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {renderLeftSidebar()}
+              {renderPersistentPinterestPanel()}
+            </div>
           </aside>
         )}
 
-        {/* Center Full-Bleed Multi-Touch & 4K TV-Safe 3D Viewport */}
+        {/* Center Full-Bleed Multi-Touch & Tablet/4K TV-Safe 3D Viewport */}
         <main className="flex-1 min-w-0 relative overflow-hidden">
+          {/* Desktop & Landscape Tablet Edge Collapse/Expand Handles (Item #4) */}
+          {!tvPresentationMode && (
+            <button
+              type="button"
+              onClick={() => setDesktopLeftOpen((v) => !v)}
+              className="hidden lg:flex items-center gap-1 absolute top-1/2 -translate-y-1/2 left-0 z-20 px-1.5 py-3 bg-white/95 hover:bg-stone-950 text-stone-800 hover:text-white border border-l-0 border-stone-300 shadow-md transition"
+              title={desktopLeftOpen ? 'Sol Paneli Gizle' : 'Sol Paneli Aç'}
+              aria-label={desktopLeftOpen ? 'Sol Paneli Gizle' : 'Sol Paneli Aç'}
+            >
+              {desktopLeftOpen ? <PanelLeftClose className="w-3.5 h-3.5" /> : <PanelLeftOpen className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {!tvPresentationMode && selection && (
+            <button
+              type="button"
+              onClick={() => setRightPanelOpen((v) => !v)}
+              className="hidden lg:flex items-center gap-1 absolute top-1/2 -translate-y-1/2 right-0 z-20 px-1.5 py-3 bg-white/95 hover:bg-stone-950 text-stone-800 hover:text-white border border-r-0 border-stone-300 shadow-md transition"
+              title={rightPanelOpen ? 'Sağ Özellikler Panelini Gizle' : 'Sağ Özellikler Panelini Aç'}
+              aria-label={rightPanelOpen ? 'Sağ Paneli Gizle' : 'Sağ Paneli Aç'}
+            >
+              {rightPanelOpen ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
+            </button>
+          )}
           <ArchViewport3D
             ref={viewportRef}
             project={project}
@@ -3068,8 +3350,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
           )}
         </main>
 
-        {/* Right Contextual Inspector: Docked Side Panel on Desktop/Landscape iPad/TV; Clean Bottom Sheet on Phone/Portrait iPad! */}
-        {!tvPresentationMode && selection && (
+        {/* Right Contextual Inspector: Collapsible Side Panel on Desktop/Landscape Tablet; Clean Bottom Sheet on Phone/Portrait Tablet! */}
+        {!tvPresentationMode && selection && rightPanelOpen && (
           <aside className="fixed inset-x-0 bottom-0 max-h-[48dvh] border-t-2 border-stone-950 shadow-2xl pb-[env(safe-area-inset-bottom)] lg:static lg:inset-auto lg:max-h-none lg:border-t-0 lg:border-l lg:border-stone-200 lg:shadow-none lg:pb-0 lg:w-[276px] xl:w-[306px] 2xl:w-[348px] bg-white shrink-0 flex flex-col z-30">
             <SelectionInspector
               project={project}
@@ -3102,6 +3384,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
               onAttachRoom={(parentRoomId, side, roomKind) =>
                 handleAttachAdjacentRoom({ parentRoomId, side, roomKind, autoFurnish: true })
               }
+              onSaveToCatalog={handleSaveObjectToCatalog}
               onToast={showToast}
             />
           </aside>

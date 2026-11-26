@@ -43,6 +43,7 @@ import {
   fetchCloudProductById,
   fetchStorageConfig,
   getSavedStoragePin,
+  loadLocalCustomCatalog,
   registerPreUploadedR2Product,
   saveProductToCloudStorage,
   saveStoragePin,
@@ -272,8 +273,15 @@ export function App() {
   const [genMsg, setGenMsg] = useState<string | null>(null);
   const [generatedGlb, setGeneratedGlb] = useState<{ url: string; filename: string } | null>(null);
 
-  // Açılışta kalıcı bulut ürünlerini (R2 / Blob) yükle ve varsa ?urun=<bulut-id> QR linkini aç
+  // Açılışta yerel kaydedilen 2K PBR ürünleri + kalıcı bulut ürünlerini (R2 / Blob) yükle ve varsa ?urun=<bulut-id> QR linkini aç
   useEffect(() => {
+    const localSaved = loadLocalCustomCatalog();
+    if (localSaved.length > 0) {
+      setProducts((prev) => {
+        const seen = new Set(localSaved.map((p) => p.id));
+        return [...localSaved, ...prev.filter((p) => !seen.has(p.id))];
+      });
+    }
     let cancelled = false;
     fetchStorageConfig().then((cfg) => {
       if (!cancelled) setStorageCfg(cfg);

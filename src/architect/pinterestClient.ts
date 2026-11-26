@@ -429,6 +429,7 @@ export async function analyzePinterestRoom(params: {
   roomWidthM: number;
   roomDepthM: number;
   roomCeilingM: number;
+  userPrompt?: string;
   geminiKey?: string;
 }): Promise<{ roomStyle: PinterestRoomStyle | null; detectedObjects: PinterestDetectedObject[]; model: string }> {
   const key = (params.geminiKey || getSavedGeminiKey()).trim();
@@ -444,6 +445,7 @@ export async function analyzePinterestRoom(params: {
         roomWidthM: params.roomWidthM,
         roomDepthM: params.roomDepthM,
         roomCeilingM: params.roomCeilingM,
+        userPrompt: params.userPrompt || '',
       }),
     });
 
@@ -651,6 +653,7 @@ export async function verifyAndRefinePinterestRoom(params: {
   roomDepthM: number;
   roomCeilingM: number;
   placedObjects: Array<Record<string, unknown>>;
+  userPrompt?: string;
   geminiKey?: string;
 }): Promise<VerifyAndRefineResult> {
   const key = (params.geminiKey || getSavedGeminiKey()).trim();
@@ -668,6 +671,7 @@ export async function verifyAndRefinePinterestRoom(params: {
       roomDepthM: params.roomDepthM,
       roomCeilingM: params.roomCeilingM,
       placedObjects: params.placedObjects,
+      userPrompt: params.userPrompt || '',
     }),
   });
   const data = await resp.json().catch(() => null);

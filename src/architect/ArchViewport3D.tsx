@@ -436,12 +436,14 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const prevOrb = eng.sunOrbGroup.visible;
         const prevCompass = eng.builtRoom?.compassRingGroup.visible ?? false;
         const prevOverlay = eng.builtRoom?.planOverlayGroup.visible ?? false;
+        const prev3dLbl = eng.builtRoom?.room3dLabelsGroup.visible ?? false;
         if (hideSelection) {
           eng.selBox.visible = false;
           eng.sunOrbGroup.visible = false;
           if (eng.builtRoom && camModeRef.current !== 'plan') {
             eng.builtRoom.compassRingGroup.visible = false;
             eng.builtRoom.planOverlayGroup.visible = false;
+            eng.builtRoom.room3dLabelsGroup.visible = false;
           }
         }
         eng.renderer.shadowMap.needsUpdate = true;
@@ -452,6 +454,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         if (eng.builtRoom) {
           eng.builtRoom.compassRingGroup.visible = prevCompass;
           eng.builtRoom.planOverlayGroup.visible = prevOverlay;
+          eng.builtRoom.room3dLabelsGroup.visible = prev3dLbl;
         }
         eng.renderer.render(eng.scene, eng.camera);
         return url;
@@ -613,6 +616,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           br.gridHelper.visible = showGridRef.current && mode !== 'inside';
           br.planOverlayGroup.visible = mode === 'plan' || (showDoorArcsRef.current && mode !== 'inside');
           br.planLabelsGroup.visible = mode === 'plan';
+          br.room3dLabelsGroup.visible = mode === 'free';
           br.compassRingGroup.visible = mode !== 'inside';
           br.compassRingGroup.rotation.y = (p.sun.northAngleDeg * Math.PI) / 180;
 
