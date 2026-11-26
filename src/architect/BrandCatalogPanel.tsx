@@ -152,11 +152,11 @@ export const BrandCatalogPanel: React.FC<Props> = ({
           </span>
           <span className="text-[9px] font-mono text-stone-500">4 Tedarikçi · Canlı 3B</span>
         </div>
-        <div className="grid grid-cols-5 gap-1">
+        <div className="flex flex-wrap gap-1">
           <button
             type="button"
             onClick={() => setBrand('ALL')}
-            className={`py-1 border text-[10px] font-semibold transition ${
+            className={`px-2 py-1 border text-[10px] font-semibold transition whitespace-nowrap ${
               brand === 'ALL'
                 ? 'border-stone-950 bg-stone-950 text-white'
                 : 'border-stone-200 bg-white text-stone-700 hover:border-stone-500'
@@ -169,7 +169,7 @@ export const BrandCatalogPanel: React.FC<Props> = ({
               key={b}
               type="button"
               onClick={() => setBrand(b)}
-              className={`py-1 border text-[10px] font-semibold truncate px-0.5 transition ${
+              className={`px-2 py-1 border text-[10px] font-semibold transition whitespace-nowrap ${
                 brand === b
                   ? 'border-stone-950 bg-stone-950 text-white'
                   : 'border-stone-200 bg-white text-stone-700 hover:border-stone-500'
