@@ -253,8 +253,15 @@ export const ArchitecturalStudioPage: React.FC = () => {
         const { room, newObjects } = attachAdjacentRoom(prev, opts);
         createdRoomId = room.id;
         createdName = room.name;
+        // Automatically clear any overlapping exterior facade window/door on main's attached wall so the new passage opens cleanly with zero warnings
+        const nextWindows =
+          opts.parentRoomId === 'main' ? prev.windows.filter((w) => w.wall !== opts.side) : prev.windows;
+        const nextDoors =
+          opts.parentRoomId === 'main' ? prev.doors.filter((d) => d.wall !== opts.side) : prev.doors;
         return {
           ...prev,
+          windows: nextWindows,
+          doors: nextDoors,
           adjacentRooms: [...(prev.adjacentRooms || []), room],
           objects: [...prev.objects, ...newObjects],
         };

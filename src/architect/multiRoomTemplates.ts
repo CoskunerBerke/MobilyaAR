@@ -673,9 +673,9 @@ export function buildApartmentPreset(preset: ApartmentPresetId, catalogProducts:
     id: 'apt-hall',
     name: 'Koridor / Hol',
     roomKind: 'hallway',
-    centerXM: 0.9,
+    centerXM: 0.4,
     centerZM: hallwayZ,
-    widthM: 9.0, // -3.60 .. +5.40
+    widthM: 10.0, // -4.60 .. +5.40 (cleanly connects Salon, 3. Oda, Master, Genç & Banyo!)
     depthM: 1.6, // 2.48 .. 4.08
     parentRoomId: 'main',
     attachedSide: 'south',
@@ -767,7 +767,7 @@ export function buildApartmentPreset(preset: ApartmentPresetId, catalogProducts:
   pushRoom(bathroom);
 
   if (preset === '3+1') {
-    // 3rd Room (Çocuk / Çalışma Odası) flush West of Salon!
+    // 3rd Room (Çalışma / 3. Oda) flush West of Salon, entering cleanly from Koridor / Hol so Salon's west fireplace wall stays unobstructed!
     const room3: ArchAdjacentRoom = {
       id: 'apt-room-3',
       name: 'Çalışma / 3. Oda',
@@ -776,8 +776,8 @@ export function buildApartmentPreset(preset: ApartmentPresetId, catalogProducts:
       centerZM: 0,
       widthM: 3.4,
       depthM: salonD,
-      parentRoomId: 'main',
-      attachedSide: 'west',
+      parentRoomId: 'apt-hall',
+      attachedSide: 'north',
       passageStyle: 'door',
       passageWidthCm: 95,
       floorMaterial: 'plank_oak',

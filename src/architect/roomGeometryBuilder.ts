@@ -657,7 +657,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     slabMat.dispose();
   });
   const slab = new THREE.Mesh(slabGeo, slabMat);
-  slab.position.y = -0.072;
+  slab.position.y = -0.095;
   slab.receiveShadow = true;
   slab.raycast = () => {};
   roomRoot.add(slab);
@@ -1124,7 +1124,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     roomRoot.add(adjFloor);
 
     const adjSlab = new THREE.Mesh(adjSlabGeo, slabMat);
-    adjSlab.position.set(rCx, -0.072, rCz);
+    adjSlab.position.set(rCx, -0.095, rCz);
     adjSlab.receiveShadow = true;
     adjSlab.raycast = () => {};
     roomRoot.add(adjSlab);

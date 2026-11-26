@@ -61,8 +61,9 @@ function getCachedTextureFromCanvas(
   ry: number,
   wrap = true
 ): THREE.CanvasTexture {
-  // Reuse single Texture per baseKey when updating repeat in place (for floor), or per rounded repeat for zones
-  const texKey = `${baseKey}`;
+  // Share the drawn canvas by baseKey, but isolate CanvasTexture instances by bucketed repeat
+  // so multi-room houses with different room sizes (e.g. Salon vs Koridor) never overwrite each other's repeat!
+  const texKey = `${baseKey}:${Math.round(rx * 4)}:${Math.round(ry * 4)}`;
   const hit = TEXTURE_CACHE.get(texKey);
   if (hit) {
     hit.repeat.set(rx, ry);

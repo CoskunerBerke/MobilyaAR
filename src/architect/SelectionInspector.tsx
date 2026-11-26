@@ -1292,8 +1292,8 @@ export const SelectionInspector: React.FC<Props> = ({
               Zemin Parke / Seramik (10 Marka)
             </span>
             {room.floorBrandLabel && <p className="text-[10px] font-semibold text-stone-900 truncate">{room.floorBrandLabel}</p>}
-            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
-              {PARQUET_CATALOG.slice(0, 24).map((pq) => {
+            <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto pr-0.5">
+              {PARQUET_CATALOG.map((pq) => {
                 const active = room.floorBrandLabel?.includes(pq.code);
                 return (
                   <button
@@ -1324,8 +1324,8 @@ export const SelectionInspector: React.FC<Props> = ({
               Duvar Boya / Panel (Filli · Jotun · VitrA · AGT)
             </span>
             {room.wallBrandLabel && <p className="text-[10px] font-semibold text-stone-900 truncate">{room.wallBrandLabel}</p>}
-            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
-              {WALL_PANEL_CATALOG.slice(0, 24).map((wp) => {
+            <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto pr-0.5">
+              {WALL_PANEL_CATALOG.map((wp) => {
                 const active = room.wallBrandLabel?.includes(wp.code);
                 return (
                   <button

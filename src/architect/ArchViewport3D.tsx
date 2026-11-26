@@ -309,6 +309,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const spawn = computeDoorwaySpawn(projectRef.current);
       eng.controls.enabled = false;
       eng.camera.fov = 62;
+      eng.camera.near = 0.08;
       eng.camera.far = 90;
       eng.camera.updateProjectionMatrix();
       fpsRef.current.yaw = spawn.yaw;
@@ -367,28 +368,30 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       if (mode === 'plan') {
         eng.camera.fov = 16;
+        eng.camera.near = 2.0;
         eng.camera.far = Math.max(220, maxSpan * 18);
         eng.camera.updateProjectionMatrix();
         const aspect = Math.max(0.55, eng.camera.aspect || 1);
-        const fitDiv = Math.min(1, aspect * 0.92);
-        eng.camera.position.set(hb.centerX, (maxSpan * (hasMulti ? 4.85 : 5.25)) / fitDiv, hb.centerZ + 0.01);
+        const fitDiv = Math.min(1, aspect * 0.9);
+        eng.camera.position.set(hb.centerX, (maxSpan * (hasMulti ? 5.2 : 5.25)) / fitDiv, hb.centerZ + 0.01);
         eng.controls.target.set(hb.centerX, 0, hb.centerZ);
         eng.controls.maxPolarAngle = Math.PI * 0.49;
         eng.controls.minDistance = 4.0;
         eng.controls.maxDistance = Math.max(80, maxSpan * 8);
       } else {
         eng.camera.fov = 42;
+        eng.camera.near = 0.08;
         eng.camera.far = Math.max(90, maxSpan * 10);
         eng.camera.updateProjectionMatrix();
         eng.camera.position.set(
-          hb.centerX + hb.totalW * (hasMulti ? 0.72 : 0.95),
-          Math.max(4.0, maxSpan * (hasMulti ? 0.72 : 0.86)),
-          hb.centerZ + hb.totalD * (hasMulti ? 0.86 : 1.05)
+          hb.centerX + hb.totalW * (hasMulti ? 0.88 : 0.95),
+          Math.max(4.0, maxSpan * (hasMulti ? 0.9 : 0.86)),
+          hb.centerZ + hb.totalD * (hasMulti ? 1.06 : 1.05)
         );
-        eng.controls.target.set(hb.centerX, p.ceilingM * (hasMulti ? 0.22 : 0.34), hb.centerZ);
+        eng.controls.target.set(hb.centerX, p.ceilingM * (hasMulti ? 0.18 : 0.34), hb.centerZ);
         eng.controls.maxPolarAngle = Math.PI * 0.495;
         eng.controls.minDistance = 1.2;
-        eng.controls.maxDistance = Math.max(24, maxSpan * 3.4);
+        eng.controls.maxDistance = Math.max(24, maxSpan * 3.8);
       }
       eng.controls.update();
       eng.scheduleRender(true);
@@ -404,6 +407,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       eng.camera.rotation.order = 'XYZ';
       eng.controls.enabled = true;
       eng.camera.fov = 42;
+      eng.camera.near = 0.08;
       eng.camera.far = 90;
       eng.camera.updateProjectionMatrix();
       eng.controls.maxPolarAngle = Math.PI * 0.495;
