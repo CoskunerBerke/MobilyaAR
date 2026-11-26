@@ -13,6 +13,7 @@ import {
   Footprints,
   FolderOpen,
   Grid3X3,
+  Home,
   Layers,
   Loader2,
   Maximize2,
@@ -28,6 +29,7 @@ import {
   RefreshCw,
   RotateCcw,
   RotateCw,
+  Ruler,
   Save,
   Search,
   Sofa,
@@ -101,11 +103,15 @@ import {
 
 type StudioTab = 'room' | 'catalog' | 'objects' | 'sun' | 'pinterest';
 type RoomAccordion = 'houses' | 'dims' | 'openings' | 'structure';
+type StructureSubTab = 'loft' | 'cove' | 'col';
+type ObjectsSubTab = 'catalog' | 'modules' | 'placed';
+type ModuleCategoryFilter = 'all' | 'living' | 'kitchen_bath' | 'decor';
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
 
 const PARAMETRIC_CARDS: Array<{
   kind: ParametricFurnitureKind;
+  group: Exclude<ModuleCategoryFilter, 'all'>;
   name: string;
   sub: string;
   w: number;
@@ -116,41 +122,41 @@ const PARAMETRIC_CARDS: Array<{
   c1: string;
   c2: string;
 }> = [
-  { kind: 'wall_tv', name: 'Duvar OLED TV', sub: '145 × 6 × 84 cm', w: 1.45, d: 0.06, h: 0.84, y: 1.15, mount: 'wall', c1: '#18181b', c2: '#0b0c10' },
-  { kind: 'fireplace_marble', name: 'Mermer Şömine', sub: '200 × 44 × 260 cm', w: 2.0, d: 0.44, h: 2.6, y: 0, mount: 'wall', c1: '#ece9e2', c2: '#252423' },
-  { kind: 'tv_wall_unit', name: 'Çıtalı TV Ünitesi', sub: '240 × 42 × 245 cm', w: 2.4, d: 0.42, h: 2.45, y: 0, mount: 'wall', c1: '#b78e66', c2: '#252423' },
-  { kind: 'wardrobe', name: 'Mimari Gardırop', sub: '220 × 60 × 240 cm', w: 2.2, d: 0.6, h: 2.4, y: 0, mount: 'wall', c1: '#ebe6dd', c2: '#2b2a28' },
-  { kind: 'kitchen_counter', name: 'Laminat Tezgah', sub: '220 × 65 × 90 cm', w: 2.2, d: 0.65, h: 0.9, y: 0, mount: 'wall', c1: '#efede7', c2: '#3f4247' },
-  { kind: 'kitchen_upper_cabinet', name: 'Üst Mutfak Dolabı', sub: '220 × 36 × 72 cm', w: 2.2, d: 0.36, h: 0.72, y: 1.48, mount: 'wall', c1: '#f3f1eb', c2: '#262628' },
-  { kind: 'fridge', name: 'Inox Buzdolabı', sub: '75 × 70 × 192 cm', w: 0.75, d: 0.7, h: 1.92, y: 0, mount: 'wall', c1: '#c6c9ce', c2: '#2b2d31' },
-  { kind: 'toilet_wc', name: 'VitrA Klozet (WC)', sub: '42 × 68 × 110 cm', w: 0.42, d: 0.68, h: 1.1, y: 0, mount: 'wall', c1: '#f7f6f2', c2: '#c8cdd4' },
-  { kind: 'bathroom_vanity', name: 'Banyo Lavabo', sub: '100 × 48 × 195 cm', w: 1.0, d: 0.48, h: 1.95, y: 0, mount: 'wall', c1: '#b99268', c2: '#c8cdd4' },
-  { kind: 'shower_cabin', name: 'Cam Duşakabin', sub: '95 × 95 × 205 cm', w: 0.95, d: 0.95, h: 2.05, y: 0, mount: 'floor', c1: '#242528', c2: '#cfd4da' },
-  { kind: 'washer', name: 'Çamaşır Makinesi', sub: '60 × 60 × 85 cm', w: 0.6, d: 0.6, h: 0.85, y: 0, mount: 'floor', c1: '#f4f4f2', c2: '#2c2e33' },
-  { kind: 'dining_table', name: 'Yemek Masası', sub: '180 × 95 × 75 cm', w: 1.8, d: 0.95, h: 0.75, y: 0, mount: 'floor', c1: '#9b7452', c2: '#232325' },
-  { kind: 'bookshelf', name: 'Işıklı Kitaplık', sub: '160 × 36 × 220 cm', w: 1.6, d: 0.36, h: 2.2, y: 0, mount: 'wall', c1: '#876246', c2: '#242322' },
-  { kind: 'bed_frame', name: 'Çift Kişilik Yatak', sub: '175 × 212 × 112 cm', w: 1.75, d: 2.12, h: 1.12, y: 0, mount: 'floor', c1: '#dcd5c9', c2: '#f5f2ec' },
-  { kind: 'console_table', name: 'Modern Konsol', sub: '165 × 44 × 78 cm', w: 1.65, d: 0.44, h: 0.78, y: 0, mount: 'wall', c1: '#a47e5a', c2: '#232324' },
-  { kind: 'ac_unit', name: 'Duvar Kliması', sub: '95 × 24 × 32 cm', w: 0.95, d: 0.24, h: 0.32, y: 2.35, mount: 'wall', c1: '#f5f5f3', c2: '#2d2f33' },
-  { kind: 'wall_mirror', name: 'Duvar Aynası', sub: '90 × 4 × 185 cm', w: 0.9, d: 0.04, h: 1.85, y: 0.2, mount: 'wall', c1: '#c8a86b', c2: '#dce6ee' },
-  { kind: 'wall_art', name: 'Duvar Tablosu', sub: '120 × 4 × 90 cm', w: 1.2, d: 0.04, h: 0.9, y: 1.2, mount: 'wall', c1: '#2a2826', c2: '#dfd6c8' },
-  { kind: 'floor_lamp', name: 'Modern Lambader', sub: '42 × 42 × 168 cm', w: 0.42, d: 0.42, h: 1.68, y: 0, mount: 'floor', c1: '#242322', c2: '#f5efe2' },
-  { kind: 'rug_custom', name: 'Özel Ölçü Halı', sub: '260 × 190 cm', w: 2.6, d: 1.9, h: 0.015, y: 0, mount: 'rug', c1: '#e6dfd3', c2: '#b8ad9b' },
-  { kind: 'chandelier', name: 'Pirinç Avize', sub: '85 × 85 cm', w: 0.85, d: 0.85, h: 0.5, y: 2.32, mount: 'ceiling', c1: '#c8a86b', c2: '#fff4dc' },
+  { kind: 'wall_tv', group: 'living', name: 'Duvar OLED TV', sub: '145 × 6 × 84 cm', w: 1.45, d: 0.06, h: 0.84, y: 1.15, mount: 'wall', c1: '#18181b', c2: '#0b0c10' },
+  { kind: 'fireplace_marble', group: 'living', name: 'Mermer Şömine', sub: '200 × 44 × 260 cm', w: 2.0, d: 0.44, h: 2.6, y: 0, mount: 'wall', c1: '#ece9e2', c2: '#252423' },
+  { kind: 'tv_wall_unit', group: 'living', name: 'Çıtalı TV Ünitesi', sub: '240 × 42 × 245 cm', w: 2.4, d: 0.42, h: 2.45, y: 0, mount: 'wall', c1: '#b78e66', c2: '#252423' },
+  { kind: 'wardrobe', group: 'living', name: 'Mimari Gardırop', sub: '220 × 60 × 240 cm', w: 2.2, d: 0.6, h: 2.4, y: 0, mount: 'wall', c1: '#ebe6dd', c2: '#2b2a28' },
+  { kind: 'kitchen_counter', group: 'kitchen_bath', name: 'Laminat Tezgah', sub: '220 × 65 × 90 cm', w: 2.2, d: 0.65, h: 0.9, y: 0, mount: 'wall', c1: '#efede7', c2: '#3f4247' },
+  { kind: 'kitchen_upper_cabinet', group: 'kitchen_bath', name: 'Üst Mutfak Dolabı', sub: '220 × 36 × 72 cm', w: 2.2, d: 0.36, h: 0.72, y: 1.48, mount: 'wall', c1: '#f3f1eb', c2: '#262628' },
+  { kind: 'fridge', group: 'kitchen_bath', name: 'Inox Buzdolabı', sub: '75 × 70 × 192 cm', w: 0.75, d: 0.7, h: 1.92, y: 0, mount: 'wall', c1: '#c6c9ce', c2: '#2b2d31' },
+  { kind: 'toilet_wc', group: 'kitchen_bath', name: 'VitrA Klozet (WC)', sub: '42 × 68 × 110 cm', w: 0.42, d: 0.68, h: 1.1, y: 0, mount: 'wall', c1: '#f7f6f2', c2: '#c8cdd4' },
+  { kind: 'bathroom_vanity', group: 'kitchen_bath', name: 'Banyo Lavabo', sub: '100 × 48 × 195 cm', w: 1.0, d: 0.48, h: 1.95, y: 0, mount: 'wall', c1: '#b99268', c2: '#c8cdd4' },
+  { kind: 'shower_cabin', group: 'kitchen_bath', name: 'Cam Duşakabin', sub: '95 × 95 × 205 cm', w: 0.95, d: 0.95, h: 2.05, y: 0, mount: 'floor', c1: '#242528', c2: '#cfd4da' },
+  { kind: 'washer', group: 'kitchen_bath', name: 'Çamaşır Makinesi', sub: '60 × 60 × 85 cm', w: 0.6, d: 0.6, h: 0.85, y: 0, mount: 'floor', c1: '#f4f4f2', c2: '#2c2e33' },
+  { kind: 'dining_table', group: 'living', name: 'Yemek Masası', sub: '180 × 95 × 75 cm', w: 1.8, d: 0.95, h: 0.75, y: 0, mount: 'floor', c1: '#9b7452', c2: '#232325' },
+  { kind: 'bookshelf', group: 'living', name: 'Işıklı Kitaplık', sub: '160 × 36 × 220 cm', w: 1.6, d: 0.36, h: 2.2, y: 0, mount: 'wall', c1: '#876246', c2: '#242322' },
+  { kind: 'bed_frame', group: 'living', name: 'Çift Kişilik Yatak', sub: '175 × 212 × 112 cm', w: 1.75, d: 2.12, h: 1.12, y: 0, mount: 'floor', c1: '#dcd5c9', c2: '#f5f2ec' },
+  { kind: 'console_table', group: 'living', name: 'Modern Konsol', sub: '165 × 44 × 78 cm', w: 1.65, d: 0.44, h: 0.78, y: 0, mount: 'wall', c1: '#a47e5a', c2: '#232324' },
+  { kind: 'ac_unit', group: 'decor', name: 'Duvar Kliması', sub: '95 × 24 × 32 cm', w: 0.95, d: 0.24, h: 0.32, y: 2.35, mount: 'wall', c1: '#f5f5f3', c2: '#2d2f33' },
+  { kind: 'wall_mirror', group: 'decor', name: 'Duvar Aynası', sub: '90 × 4 × 185 cm', w: 0.9, d: 0.04, h: 1.85, y: 0.2, mount: 'wall', c1: '#c8a86b', c2: '#dce6ee' },
+  { kind: 'wall_art', group: 'decor', name: 'Duvar Tablosu', sub: '120 × 4 × 90 cm', w: 1.2, d: 0.04, h: 0.9, y: 1.2, mount: 'wall', c1: '#2a2826', c2: '#dfd6c8' },
+  { kind: 'floor_lamp', group: 'decor', name: 'Modern Lambader', sub: '42 × 42 × 168 cm', w: 0.42, d: 0.42, h: 1.68, y: 0, mount: 'floor', c1: '#242322', c2: '#f5efe2' },
+  { kind: 'rug_custom', group: 'decor', name: 'Özel Ölçü Halı', sub: '260 × 190 cm', w: 2.6, d: 1.9, h: 0.015, y: 0, mount: 'rug', c1: '#e6dfd3', c2: '#b8ad9b' },
+  { kind: 'chandelier', group: 'decor', name: 'Pirinç Avize', sub: '85 × 85 cm', w: 0.85, d: 0.85, h: 0.5, y: 2.32, mount: 'ceiling', c1: '#c8a86b', c2: '#fff4dc' },
 ];
 
 export const ArchitecturalStudioPage: React.FC = () => {
   const [catalog, setCatalog] = useState<Product[]>(PRODUCTS);
   const [project, setProject] = useState<ArchRoomProject>(() => createDefaultArchitectProject(PRODUCTS));
   const [activeTab, setActiveTab] = useState<StudioTab>('room');
-  const [openSections, setOpenSections] = useState<Record<RoomAccordion, boolean>>({
-    houses: true,
-    dims: false,
-    openings: false,
-    structure: false,
-  });
+  // Single-open accordion prevents giant vertical scroll walls while keeping every feature 1 tap away
+  const [openRoomSection, setOpenRoomSection] = useState<RoomAccordion | null>('dims');
   const toggleSection = (key: RoomAccordion) =>
-    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+    setOpenRoomSection((prev) => (prev === key ? null : key));
+  const [showAddRoomForm, setShowAddRoomForm] = useState(false);
+  const [structureSubTab, setStructureSubTab] = useState<StructureSubTab>('loft');
+  const [objectsSubTab, setObjectsSubTab] = useState<ObjectsSubTab>('catalog');
+  const [moduleCategoryFilter, setModuleCategoryFilter] = useState<ModuleCategoryFilter>('all');
 
   // Sims-style "+ Yanına Oda Ekle" form state
   const [newRoomParentId, setNewRoomParentId] = useState<string>('main');
@@ -318,7 +324,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
           ),
         }));
         showToast(
-          `✓ "${finalProd.name}" Ürün Kataloğuna kaydedildi! (Eşya sekmesinde ve Canlı AR'da kullanıma hazır)`
+          `✓ "${finalProd.name}" Ürün Kataloğuna kaydedildi! (Mobilya sekmesinde ve Canlı AR'da kullanıma hazır)`
         );
         return true;
       } catch (err) {
@@ -1016,7 +1022,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
       else if (res.actionId === 'add_beam') addBeam('x');
       else if (res.actionId === 'toggle_mezzanine') {
         setActiveTab('room');
-        setOpenSections((prev) => ({ ...prev, structure: true }));
+        setOpenRoomSection('structure');
+        setStructureSubTab('loft');
         setProject((prev) => {
           const enabling = !prev.mezzanine?.enabled;
           return {
@@ -1055,7 +1062,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
         handleAttachAdjacentRoom({ parentRoomId: 'main', side: activeWall, roomKind: 'hallway', passageStyle: 'open_arch', autoFurnish: false });
       } else {
         setActiveTab('room');
-        setOpenSections((prev) => ({ ...prev, houses: true }));
+        setOpenRoomSection('houses');
+        setShowAddRoomForm(true);
       }
     }
     setQuickFocused(false);
@@ -1276,267 +1284,323 @@ export const ArchitecturalStudioPage: React.FC = () => {
     showToast('Yüksek çözünürlüklü görüntü indirildi.');
   };
 
-  const TABS: Array<{ id: StudioTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-    { id: 'room', label: 'Oda', icon: Building2 },
-    { id: 'catalog', label: 'Katalog', icon: Layers },
-    { id: 'objects', label: 'Eşya', icon: Sofa },
-    { id: 'sun', label: 'Güneş', icon: Sun },
-    { id: 'pinterest', label: 'Pinterest', icon: Sparkles },
+  const TABS: Array<{ id: StudioTab; label: string; title: string; icon: React.ComponentType<{ className?: string }> }> = [
+    { id: 'room', label: 'Oda', title: 'Daire planı, oda ölçüleri, pencere/kapı ve 2. kat', icon: Building2 },
+    { id: 'catalog', label: 'Malzeme', title: '10 marka parke, duvar boya/profil, süpürgelik, kapı ve tezgah', icon: Layers },
+    { id: 'objects', label: 'Mobilya', title: '3B mobilyalar, mutfak/banyo modülleri ve CAD yükleme', icon: Sofa },
+    { id: 'sun', label: 'Işık', title: 'Güneş saati, mevsim ve cephe yönü', icon: Sun },
+    { id: 'pinterest', label: 'Foto 3B', title: 'Pinterest veya kamera fotoğrafından anında 3B oda oluştur', icon: Sparkles },
   ];
 
   const renderLeftSidebar = () => {
     if (activeTab === 'room') {
       const adjList = project.adjacentRooms || [];
+      const structureSummaryParts: string[] = [];
+      if (project.mezzanine?.enabled) structureSummaryParts.push('2. Kat Aktif');
+      if (project.curtainCoves.length > 0) structureSummaryParts.push(`${project.curtainCoves.length} Perde Havuzu`);
+      const structColBeamCount = project.columns.length + project.beams.length;
+      if (structColBeamCount > 0) structureSummaryParts.push(`${structColBeamCount} Kolon/Kiriş`);
+      const structureSubtitle =
+        structureSummaryParts.length > 0 ? structureSummaryParts.join(' · ') : 'Asma Kat · Perde · Kolon';
+
       return (
         <div className="divide-y divide-stone-200 text-xs">
-          {/* Accordion 0: Sims-Style Multi-Room House & 3+1 Apartment Builder */}
+          {/* Top Always-Visible Quick Apartment Strip & Live Room Summary */}
+          <div className="p-3 bg-[#faf9f6] space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                Daire Planı (Tek Tık)
+              </span>
+              <span className="text-[10px] font-mono font-semibold text-stone-700 whitespace-nowrap">
+                {totalRoomCount} Oda · {Math.round(houseBounds.totalAreaM2)} m²
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {(
+                [
+                  { id: 'single' as ApartmentPresetId, lbl: 'Tek Oda' },
+                  { id: '1+1' as ApartmentPresetId, lbl: '1+1' },
+                  { id: '2+1' as ApartmentPresetId, lbl: '2+1' },
+                  { id: '3+1' as ApartmentPresetId, lbl: '3+1' },
+                ]
+              ).map((pr) => {
+                const active =
+                  (pr.id === 'single' && adjList.length === 0) ||
+                  (pr.id !== 'single' && project.projectName.startsWith(pr.id));
+                return (
+                  <button
+                    key={pr.id}
+                    type="button"
+                    onClick={() => applyApartmentPreset(pr.id)}
+                    className={`py-1.5 px-1 border text-[11px] font-semibold whitespace-nowrap transition ${
+                      active
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                    }`}
+                  >
+                    {pr.lbl}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Card 1: Odalar & Yanına Oda Ekle */}
           <div>
             <button
               type="button"
               onClick={() => toggleSection('houses')}
-              className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
+              className={`w-full px-3.5 py-3 flex items-center justify-between gap-2.5 text-left transition ${
+                openRoomSection === 'houses' ? 'bg-white' : 'bg-[#faf9f6] hover:bg-stone-100/80'
+              }`}
             >
-              <span>
-                00 · Ev Planı &amp; Çoklu Oda ({totalRoomCount} Oda · {Math.round(houseBounds.totalAreaM2)} m²)
-              </span>
-              {openSections.houses ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Home className="w-4 h-4 text-stone-700 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-stone-950 leading-tight truncate">Odalar &amp; Yanına Oda Ekle</p>
+                  <p className="text-[10px] text-stone-500 truncate mt-0.5">
+                    {totalRoomCount} Oda · {Math.round(houseBounds.totalAreaM2)} m² · Geçişli oda ekle
+                  </p>
+                </div>
+              </div>
+              {openRoomSection === 'houses' ? (
+                <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
+              )}
             </button>
-            {openSections.houses && (
-              <div className="p-3.5 space-y-3">
-                {/* 1-Click Turkish Apartment Presets */}
-                <div className="space-y-1.5">
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-                    Hazır Daire Planları (Tek Tık)
+            {openRoomSection === 'houses' && (
+              <div className="px-3.5 pb-3.5 pt-1 space-y-3 bg-white">
+                {/* Active Rooms List */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-mono uppercase text-stone-500">
+                    Evdeki Odalar (Düzenlemek İçin Seç)
                   </span>
-                  <div className="grid grid-cols-4 gap-1">
-                    {(
-                      [
-                        { id: 'single' as ApartmentPresetId, lbl: 'Tek Oda' },
-                        { id: '1+1' as ApartmentPresetId, lbl: '1+1' },
-                        { id: '2+1' as ApartmentPresetId, lbl: '2+1' },
-                        { id: '3+1' as ApartmentPresetId, lbl: '3+1 Daire' },
-                      ]
-                    ).map((pr) => {
-                      const active =
-                        (pr.id === 'single' && adjList.length === 0) ||
-                        (pr.id !== 'single' && project.projectName.startsWith(pr.id));
+                  <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelection({ type: 'floor' })}
+                      className={`w-full px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
+                        selection?.type === 'floor'
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-200 hover:border-stone-950 bg-[#faf9f6] text-stone-900'
+                      }`}
+                    >
+                      <span className="font-semibold">Ana Salon</span>
+                      <span className="font-mono text-[10px] opacity-75">
+                        {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {(project.widthM * project.depthM).toFixed(0)} m²
+                      </span>
+                    </button>
+                    {adjList.map((r) => {
+                      const active = selection?.type === 'adjacentRoom' && selection.id === r.id;
                       return (
                         <button
-                          key={pr.id}
+                          key={r.id}
                           type="button"
-                          onClick={() => applyApartmentPreset(pr.id)}
-                          className={`py-1.5 px-1 border text-[10px] font-bold whitespace-nowrap transition ${
+                          onClick={() => setSelection({ type: 'adjacentRoom', id: r.id })}
+                          className={`w-full px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
                             active
                               ? 'border-stone-950 bg-stone-950 text-white'
-                              : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                              : 'border-stone-200 bg-white hover:border-stone-950 text-stone-900'
                           }`}
                         >
-                          {pr.lbl}
+                          <span className="truncate font-medium">{r.name}</span>
+                          <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
+                            {r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m · {(r.widthM * r.depthM).toFixed(0)} m²
+                          </span>
                         </button>
                       );
                     })}
                   </div>
                 </div>
 
-                {/* Sims-Style "+ Yanına Oda Ekle" Interactive Builder */}
-                <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2.5">
-                  <span className="text-[10px] font-mono uppercase font-bold text-stone-900 block">
-                    + Yanına Geçişli Oda Ekle (Sims)
-                  </span>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <label className="space-y-0.5">
-                      <span className="text-[10px] text-stone-500 block">Bağlanacak Oda</span>
-                      <select
-                        value={newRoomParentId}
-                        onChange={(e) => setNewRoomParentId(e.target.value)}
-                        className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
-                      >
-                        <option value="main">Ana Salon</option>
-                        {adjList.map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="space-y-0.5">
-                      <span className="text-[10px] text-stone-500 block">Oda Tipi</span>
-                      <select
-                        value={newRoomKind}
-                        onChange={(e) => {
-                          const k = e.target.value as RoomKind;
-                          setNewRoomKind(k);
-                          setNewRoomW(ROOM_KIND_DEFAULTS[k].w);
-                          setNewRoomD(ROOM_KIND_DEFAULTS[k].d);
-                          setNewRoomPassage(ROOM_KIND_DEFAULTS[k].passageStyle);
-                        }}
-                        className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
-                      >
-                        {(Object.keys(ROOM_KIND_LABELS) as RoomKind[]).map((rk) => (
-                          <option key={rk} value={rk}>
-                            {ROOM_KIND_LABELS[rk]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-
-                  {/* Wall Side Picker */}
-                  <div className="space-y-1">
-                    <span className="text-[10px] text-stone-500 block">Hangi Cepheye Eklensin?</span>
-                    <div className="grid grid-cols-4 gap-1">
-                      {(
-                        [
-                          { id: 'north' as WallId, lbl: 'Üst A' },
-                          { id: 'east' as WallId, lbl: 'Sağ B' },
-                          { id: 'south' as WallId, lbl: 'Alt C' },
-                          { id: 'west' as WallId, lbl: 'Sol D' },
-                        ]
-                      ).map((sd) => (
-                        <button
-                          key={sd.id}
-                          type="button"
-                          onClick={() => setNewRoomSide(sd.id)}
-                          className={`py-1 border text-[10px] font-semibold ${
-                            newRoomSide === sd.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
-                          }`}
-                        >
-                          {sd.lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Passage Style + Size */}
-                  <div className="grid grid-cols-3 gap-1">
-                    {(['door', 'open_arch', 'open_wide'] as PassageStyle[]).map((ps) => (
-                      <button
-                        key={ps}
-                        type="button"
-                        onClick={() => setNewRoomPassage(ps)}
-                        className={`py-1 border text-[10px] font-semibold truncate ${
-                          newRoomPassage === ps ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
-                        }`}
-                      >
-                        {PASSAGE_STYLE_LABELS[ps].split(' ')[0]}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <label className="text-[10px] text-stone-600">
-                      En (m)
-                      <NumericInput
-                        min={1.4}
-                        max={8}
-                        step={0.2}
-                        decimals={1}
-                        value={newRoomW}
-                        onChange={setNewRoomW}
-                        className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
-                      />
-                    </label>
-                    <label className="text-[10px] text-stone-600">
-                      Derinlik (m)
-                      <NumericInput
-                        min={1.4}
-                        max={8}
-                        step={0.2}
-                        decimals={1}
-                        value={newRoomD}
-                        onChange={setNewRoomD}
-                        className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
-                      />
-                    </label>
-                  </div>
-
-                  <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newRoomFurnish}
-                      onChange={(e) => setNewRoomFurnish(e.target.checked)}
-                      className="accent-stone-950"
-                    />
-                    <span>Eşyalarıyla birlikte hazır kur (WC / Tezgah / Yatak)</span>
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleAttachAdjacentRoom({
-                        parentRoomId: newRoomParentId,
-                        side: newRoomSide,
-                        roomKind: newRoomKind,
-                        widthM: newRoomW,
-                        depthM: newRoomD,
-                        passageStyle: newRoomPassage,
-                        autoFurnish: newRoomFurnish,
-                      })
-                    }
-                    className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition"
-                  >
+                {/* Collapsible "+ Yanına Yeni Oda Ekle" Sims Form */}
+                <button
+                  type="button"
+                  onClick={() => setShowAddRoomForm((v) => !v)}
+                  className={`w-full py-2 px-2.5 border text-[11px] font-semibold flex items-center justify-between transition ${
+                    showAddRoomForm
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-950 bg-white text-stone-950 hover:bg-stone-950 hover:text-white'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Odayı Yanına Ekle &amp; Geçiş Aç</span>
-                  </button>
-                </div>
+                    <span>Yanına Yeni Oda Ekle</span>
+                  </span>
+                  {showAddRoomForm ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                </button>
 
-                {/* Clickable list of active rooms in the house */}
-                {adjList.length > 0 && (
-                  <div className="space-y-1 pt-1 border-t border-stone-200">
-                    <span className="text-[10px] font-mono uppercase text-stone-500">
-                      Evdeki Odalar (Malzeme İçin Tıkla)
-                    </span>
-                    <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setSelection({ type: 'floor' })}
-                        className="w-full px-2 py-1.5 border border-stone-200 hover:border-stone-950 bg-white flex items-center justify-between text-[11px]"
-                      >
-                        <span className="font-semibold text-stone-900">01 · Ana Salon</span>
-                        <span className="font-mono text-[10px] text-stone-500">
-                          {(project.widthM * project.depthM).toFixed(1)} m²
-                        </span>
-                      </button>
-                      {adjList.map((r, i) => {
-                        const active = selection?.type === 'adjacentRoom' && selection.id === r.id;
-                        return (
+                {showAddRoomForm && (
+                  <div className="border border-stone-200 bg-[#faf9f6] p-2.5 space-y-2.5">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <label className="space-y-0.5">
+                        <span className="text-[10px] text-stone-500 block">Bağlanacak Oda</span>
+                        <select
+                          value={newRoomParentId}
+                          onChange={(e) => setNewRoomParentId(e.target.value)}
+                          className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                        >
+                          <option value="main">Ana Salon</option>
+                          {adjList.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="text-[10px] text-stone-500 block">Oda Tipi</span>
+                        <select
+                          value={newRoomKind}
+                          onChange={(e) => {
+                            const k = e.target.value as RoomKind;
+                            setNewRoomKind(k);
+                            setNewRoomW(ROOM_KIND_DEFAULTS[k].w);
+                            setNewRoomD(ROOM_KIND_DEFAULTS[k].d);
+                            setNewRoomPassage(ROOM_KIND_DEFAULTS[k].passageStyle);
+                          }}
+                          className="w-full px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                        >
+                          {(Object.keys(ROOM_KIND_LABELS) as RoomKind[]).map((rk) => (
+                            <option key={rk} value={rk}>
+                              {ROOM_KIND_LABELS[rk]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-stone-500 block">Hangi Duvara Eklensin?</span>
+                      <div className="grid grid-cols-4 gap-1">
+                        {(
+                          [
+                            { id: 'north' as WallId, lbl: 'Üst A' },
+                            { id: 'east' as WallId, lbl: 'Sağ B' },
+                            { id: 'south' as WallId, lbl: 'Alt C' },
+                            { id: 'west' as WallId, lbl: 'Sol D' },
+                          ]
+                        ).map((sd) => (
                           <button
-                            key={r.id}
+                            key={sd.id}
                             type="button"
-                            onClick={() => setSelection({ type: 'adjacentRoom', id: r.id })}
-                            className={`w-full px-2 py-1.5 border flex items-center justify-between text-[11px] ${
-                              active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                            onClick={() => setNewRoomSide(sd.id)}
+                            className={`py-1 border text-[10px] font-semibold ${
+                              newRoomSide === sd.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
                             }`}
                           >
-                            <span className="truncate font-medium">
-                              {String(i + 2).padStart(2, '0')} · {r.name}
-                            </span>
-                            <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
-                              {(r.widthM * r.depthM).toFixed(1)} m²
-                            </span>
+                            {sd.lbl}
                           </button>
-                        );
-                      })}
+                        ))}
+                      </div>
                     </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-stone-500 block">Geçiş Şekli</span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(['door', 'open_arch', 'open_wide'] as PassageStyle[]).map((ps) => (
+                          <button
+                            key={ps}
+                            type="button"
+                            onClick={() => setNewRoomPassage(ps)}
+                            className={`py-1 border text-[10px] font-semibold truncate ${
+                              newRoomPassage === ps ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
+                            }`}
+                          >
+                            {PASSAGE_STYLE_LABELS[ps].split(' ')[0]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <label className="text-[10px] text-stone-600">
+                        En (m)
+                        <NumericInput
+                          min={1.4}
+                          max={8}
+                          step={0.2}
+                          decimals={1}
+                          value={newRoomW}
+                          onChange={setNewRoomW}
+                          className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
+                        />
+                      </label>
+                      <label className="text-[10px] text-stone-600">
+                        Derinlik (m)
+                        <NumericInput
+                          min={1.4}
+                          max={8}
+                          step={0.2}
+                          decimals={1}
+                          value={newRoomD}
+                          onChange={setNewRoomD}
+                          className="w-full px-2 py-1 border border-stone-300 bg-white font-mono text-xs"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newRoomFurnish}
+                        onChange={(e) => setNewRoomFurnish(e.target.checked)}
+                        className="accent-stone-950"
+                      />
+                      <span>Eşyalarıyla birlikte hazır kur (WC / Tezgah / Yatak)</span>
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleAttachAdjacentRoom({
+                          parentRoomId: newRoomParentId,
+                          side: newRoomSide,
+                          roomKind: newRoomKind,
+                          widthM: newRoomW,
+                          depthM: newRoomD,
+                          passageStyle: newRoomPassage,
+                          autoFurnish: newRoomFurnish,
+                        })
+                      }
+                      className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Odayı Ekle &amp; Geçiş Aç</span>
+                    </button>
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Accordion 1: Oda Ölçüleri (bağımsız aç/kapat) */}
+          {/* Card 2: Ölçü, Tavan & Duvarlar */}
           <div>
             <button
               type="button"
               onClick={() => toggleSection('dims')}
-              className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
+              className={`w-full px-3.5 py-3 flex items-center justify-between gap-2.5 text-left transition ${
+                openRoomSection === 'dims' ? 'bg-white' : 'bg-[#faf9f6] hover:bg-stone-100/80'
+              }`}
             >
-              <span>01 · Oda Ölçüleri &amp; Tavan</span>
-              {openSections.dims ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Ruler className="w-4 h-4 text-stone-700 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-stone-950 leading-tight truncate">Ölçü, Tavan &amp; Duvarlar</p>
+                  <p className="text-[10px] text-stone-500 truncate mt-0.5">
+                    {project.widthM.toFixed(1)} × {project.depthM.toFixed(1)} m · Tavan {project.ceilingM.toFixed(2)} m
+                  </p>
+                </div>
+              </div>
+              {openRoomSection === 'dims' ? (
+                <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
+              )}
             </button>
-            {openSections.dims && (
-              <div className="p-3.5 space-y-3">
+            {openRoomSection === 'dims' && (
+              <div className="px-3.5 pb-3.5 pt-1 space-y-3 bg-white">
                 <div className="grid grid-cols-3 gap-2">
                   <label className="space-y-1">
                     <span className="text-[10px] text-stone-500 block">En (m)</span>
@@ -1579,9 +1643,10 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   </label>
                 </div>
                 <p className="text-[10px] text-stone-400">
-                  İstediğin ölçüyü doğrudan yazıp <strong>Enter</strong>&apos;a bas (örn. <code className="font-mono">7,5</code> veya <code className="font-mono">10</code>).
+                  Ölçüyü yazıp <strong>Enter</strong>&apos;a bas (örn. <code className="font-mono">7,5</code>).
                 </p>
-                <div className="flex flex-wrap gap-3 text-[11px]">
+
+                <div className="grid grid-cols-2 gap-y-1.5 gap-x-2 text-[11px] pt-1 border-t border-stone-100">
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
                       type="checkbox"
@@ -1619,8 +1684,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     <span>Spot Işık</span>
                   </label>
                 </div>
-                <div className="pt-1 border-t border-stone-200 space-y-1.5">
-                  <p className="text-[10px] text-stone-500">Hızlı Yüzey Seç (veya 3B&apos;de doğrudan tıkla):</p>
+
+                <div className="pt-2 border-t border-stone-200 space-y-1.5">
+                  <p className="text-[10px] text-stone-500">Duvar veya Zemin Seç (veya 3B&apos;de tıkla):</p>
                   <div className="grid grid-cols-2 gap-1">
                     {WALL_IDS.map((wId) => (
                       <button
@@ -1631,55 +1697,78 @@ export const ArchitecturalStudioPage: React.FC = () => {
                           setSelection({ type: 'wall', wall: wId });
                           if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
                         }}
-                        className="px-2 py-1.5 border border-stone-200 hover:border-stone-950 bg-white flex items-center justify-between text-[11px]"
+                        className={`px-2 py-1.5 border flex items-center justify-between text-[11px] transition ${
+                          selection?.type === 'wall' && selection.wall === wId
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-200 hover:border-stone-950 bg-white text-stone-800'
+                        }`}
                       >
                         <span className="truncate">{WALL_LABELS[wId]}</span>
-                        <span className="w-3 h-3 border border-black/20" style={{ backgroundColor: project.walls[wId].colorHex }} />
+                        <span className="w-3 h-3 border border-black/20 shrink-0" style={{ backgroundColor: project.walls[wId].colorHex }} />
                       </button>
                     ))}
                   </div>
                   <button
                     type="button"
                     onClick={() => setSelection({ type: 'floor' })}
-                    className="w-full py-1.5 border border-stone-200 hover:border-stone-950 bg-white text-[11px] font-medium"
+                    className={`w-full py-1.5 border text-[11px] font-medium transition ${
+                      selection?.type === 'floor'
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-200 hover:border-stone-950 bg-[#faf9f6] text-stone-800'
+                    }`}
                   >
-                    Zemin Malzemesi &amp; Rengini Düzenle
+                    Zemin Parkesi &amp; Rengini Düzenle
                   </button>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Accordion 2: Pencere & Kapı (bağımsız aç/kapat) */}
+          {/* Card 3: Pencere & Kapılar */}
           <div>
             <button
               type="button"
               onClick={() => toggleSection('openings')}
-              className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
+              className={`w-full px-3.5 py-3 flex items-center justify-between gap-2.5 text-left transition ${
+                openRoomSection === 'openings' ? 'bg-white' : 'bg-[#faf9f6] hover:bg-stone-100/80'
+              }`}
             >
-              <span>
-                02 · Pencere &amp; Kapı ({project.windows.length}P · {project.doors.length}K)
-              </span>
-              {openSections.openings ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <DoorOpen className="w-4 h-4 text-stone-700 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-stone-950 leading-tight truncate">Pencere &amp; Kapılar</p>
+                  <p className="text-[10px] text-stone-500 truncate mt-0.5">
+                    {project.windows.length} Pencere · {project.doors.length} Kapı
+                  </p>
+                </div>
+              </div>
+              {openRoomSection === 'openings' ? (
+                <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
+              )}
             </button>
-            {openSections.openings && (
-              <div className="p-3.5 space-y-3">
-                <div className="grid grid-cols-2 gap-1">
-                  {WALL_IDS.map((wId) => (
-                    <button
-                      key={wId}
-                      type="button"
-                      onClick={() => {
-                        setActiveWall(wId);
-                        if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
-                      }}
-                      className={`px-2 py-1.5 border text-[11px] font-semibold truncate ${
-                        activeWall === wId ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700'
-                      }`}
-                    >
-                      {WALL_LABELS[wId]}
-                    </button>
-                  ))}
+            {openRoomSection === 'openings' && (
+              <div className="px-3.5 pb-3.5 pt-1 space-y-3 bg-white">
+                <div className="space-y-1">
+                  <span className="text-[10px] text-stone-500 block">Eklenecek Duvar</span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {WALL_IDS.map((wId) => (
+                      <button
+                        key={wId}
+                        type="button"
+                        onClick={() => {
+                          setActiveWall(wId);
+                          if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
+                        }}
+                        className={`py-1.5 border text-[10px] font-semibold truncate transition ${
+                          activeWall === wId ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-[#faf9f6] text-stone-700'
+                        }`}
+                      >
+                        {wId === 'north' ? 'Üst A' : wId === 'east' ? 'Sağ B' : wId === 'south' ? 'Alt C' : 'Sol D'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1714,342 +1803,396 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Clickable list of existing openings to inspect in right panel */}
-                <div className="border-t border-stone-200 pt-2.5 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-stone-500">Düzenlemek İçin Seç</span>
-                  {project.windows.map((w) => (
-                    <button
-                      key={w.id}
-                      type="button"
-                      onClick={() => {
-                        setSelection({ type: 'window', id: w.id });
-                        if (cameraMode === 'free') viewportRef.current?.focusWall(w.wall);
-                      }}
-                      className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
-                        selection?.type === 'window' && selection.id === w.id
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-200 bg-white hover:border-stone-500'
-                      }`}
-                    >
-                      <span className="truncate">{WINDOW_KIND_LABELS[w.kind]}</span>
-                      <span className="text-[10px] font-mono opacity-75">{w.wall === 'north' ? 'A' : w.wall === 'east' ? 'B' : w.wall === 'south' ? 'C' : 'D'}</span>
-                    </button>
-                  ))}
-                  {project.doors.map((d) => (
-                    <button
-                      key={d.id}
-                      type="button"
-                      onClick={() => {
-                        setSelection({ type: 'door', id: d.id });
-                        if (cameraMode === 'free') viewportRef.current?.focusWall(d.wall);
-                      }}
-                      className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
-                        selection?.type === 'door' && selection.id === d.id
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-200 bg-white hover:border-stone-500'
-                      }`}
-                    >
-                      <span className="truncate">
-                        {DOOR_KIND_LABELS[d.kind]} ({d.swing === 'inward' ? 'İçeri' : 'Dışarı'})
-                      </span>
-                      <span className="text-[10px] font-mono opacity-75">{d.wall === 'north' ? 'A' : d.wall === 'east' ? 'B' : d.wall === 'south' ? 'C' : 'D'}</span>
-                    </button>
-                  ))}
-                </div>
+                {(project.windows.length > 0 || project.doors.length > 0) && (
+                  <div className="border-t border-stone-200 pt-2.5 space-y-1">
+                    <span className="text-[10px] font-mono uppercase text-stone-500">Mevcut Pencere &amp; Kapılar</span>
+                    {project.windows.map((w) => (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => {
+                          setSelection({ type: 'window', id: w.id });
+                          if (cameraMode === 'free') viewportRef.current?.focusWall(w.wall);
+                        }}
+                        className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
+                          selection?.type === 'window' && selection.id === w.id
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-200 bg-white hover:border-stone-500'
+                        }`}
+                      >
+                        <span className="truncate">{WINDOW_KIND_LABELS[w.kind]}</span>
+                        <span className="text-[10px] font-mono opacity-75">
+                          {w.wall === 'north' ? 'Üst A' : w.wall === 'east' ? 'Sağ B' : w.wall === 'south' ? 'Alt C' : 'Sol D'}
+                        </span>
+                      </button>
+                    ))}
+                    {project.doors.map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => {
+                          setSelection({ type: 'door', id: d.id });
+                          if (cameraMode === 'free') viewportRef.current?.focusWall(d.wall);
+                        }}
+                        className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
+                          selection?.type === 'door' && selection.id === d.id
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-200 bg-white hover:border-stone-500'
+                        }`}
+                      >
+                        <span className="truncate">
+                          {DOOR_KIND_LABELS[d.kind]} ({d.swing === 'inward' ? 'İçeri' : 'Dışarı'})
+                        </span>
+                        <span className="text-[10px] font-mono opacity-75">
+                          {d.wall === 'north' ? 'Üst A' : d.wall === 'east' ? 'Sağ B' : d.wall === 'south' ? 'Alt C' : 'Sol D'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* Accordion 3: Kolon, Kiriş & Perde Havuzu (bağımsız aç/kapat!) */}
+          {/* Card 4: 2. Kat & Mimari Detaylar (3 Focused Sub-Tabs!) */}
           <div>
             <button
               type="button"
               onClick={() => toggleSection('structure')}
-              className="w-full px-3.5 py-2.5 flex items-center justify-between font-semibold text-stone-900 bg-[#faf9f6] hover:bg-stone-100"
+              className={`w-full px-3.5 py-3 flex items-center justify-between gap-2.5 text-left transition ${
+                openRoomSection === 'structure' ? 'bg-white' : 'bg-[#faf9f6] hover:bg-stone-100/80'
+              }`}
             >
-              <span>03 · Asma Kat, Kolon, Kiriş &amp; Perde Havuzu</span>
-              {openSections.structure ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Layers className="w-4 h-4 text-stone-700 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-stone-950 leading-tight truncate">2. Kat &amp; Mimari Detaylar</p>
+                  <p className="text-[10px] text-stone-500 truncate mt-0.5">{structureSubtitle}</p>
+                </div>
+              </div>
+              {openRoomSection === 'structure' ? (
+                <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
+              )}
             </button>
-            {openSections.structure && (
-              <div className="p-3.5 space-y-3.5">
-                {/* 2. Kat / Asma Kat (Loft Mezzanine) Controls */}
-                <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono uppercase font-bold text-stone-900">
-                      2. Kat / Asma Kat (Loft)
-                    </span>
+            {openRoomSection === 'structure' && (
+              <div className="px-3.5 pb-3.5 pt-1 space-y-3 bg-white">
+                {/* 3-way sub-tab switcher keeps Asma Kat, Perde Havuzu, and Kolon/Kiriş separated & clean */}
+                <div className="grid grid-cols-3 gap-1 bg-[#faf9f6] p-1 border border-stone-200">
+                  {(
+                    [
+                      { id: 'loft' as StructureSubTab, lbl: '2. Kat (Loft)' },
+                      { id: 'cove' as StructureSubTab, lbl: 'Perde Havuzu' },
+                      { id: 'col' as StructureSubTab, lbl: 'Kolon & Kiriş' },
+                    ]
+                  ).map((st) => (
                     <button
+                      key={st.id}
                       type="button"
-                      onClick={() => {
-                        setProject((prev) => {
-                          const enabling = !prev.mezzanine?.enabled;
-                          const nextCeil = enabling ? Math.max(4.0, prev.ceilingM) : prev.ceilingM;
-                          return {
-                            ...prev,
-                            ceilingM: nextCeil,
-                            mezzanine: enabling
-                              ? {
-                                  enabled: true,
-                                  anchorWall: prev.mezzanine?.anchorWall || 'north',
-                                  heightM: prev.mezzanine?.heightM || 2.05,
-                                  depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
-                                  widthRatio: prev.mezzanine?.widthRatio || 0.78,
-                                  stairGapSide: prev.mezzanine?.stairGapSide || 'west',
-                                  thicknessM: 0.16,
-                                  deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
-                                  railingStyle: prev.mezzanine?.railingStyle || 'none',
-                                  underLed: prev.mezzanine?.underLed ?? true,
-                                }
-                              : { ...(prev.mezzanine as any), enabled: false },
-                          };
-                        });
-                      }}
-                      className={`px-2 py-1 border text-[10px] font-semibold ${
-                        project.mezzanine?.enabled
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-400 bg-white text-stone-800 hover:border-stone-950'
+                      onClick={() => setStructureSubTab(st.id)}
+                      className={`py-1.5 px-1 text-[10px] font-semibold truncate transition ${
+                        structureSubTab === st.id
+                          ? 'bg-stone-950 text-white'
+                          : 'text-stone-700 hover:text-stone-950'
                       }`}
                     >
-                      {project.mezzanine?.enabled ? '✓ 2. Kat Aktif' : '+ 2. Kat Ekle'}
+                      {st.lbl}
                     </button>
-                  </div>
-
-                  {project.mezzanine?.enabled && (
-                    <div className="space-y-2 pt-1 border-t border-stone-200">
-                      <div className="grid grid-cols-2 gap-1.5 text-[10px] text-stone-600">
-                        <label>
-                          Kat Yüksekliği {Math.round(project.mezzanine.heightM * 100)} cm
-                          <input
-                            type="range"
-                            min={170}
-                            max={Math.max(220, Math.round((project.ceilingM - 1.25) * 100))}
-                            step={5}
-                            value={Math.round(project.mezzanine.heightM * 100)}
-                            onChange={(e) =>
-                              setProject((p) =>
-                                p.mezzanine
-                                  ? { ...p, mezzanine: { ...p.mezzanine, heightM: Number(e.target.value) / 100 } }
-                                  : p
-                              )
-                            }
-                            className="w-full accent-stone-950"
-                          />
-                        </label>
-                        <label>
-                          Derinlik {Math.round(project.mezzanine.depthM * 100)} cm
-                          <input
-                            type="range"
-                            min={130}
-                            max={Math.round(project.depthM * 70)}
-                            step={10}
-                            value={Math.round(project.mezzanine.depthM * 100)}
-                            onChange={(e) =>
-                              setProject((p) =>
-                                p.mezzanine
-                                  ? { ...p, mezzanine: { ...p.mezzanine, depthM: Number(e.target.value) / 100 } }
-                                  : p
-                              )
-                            }
-                            className="w-full accent-stone-950"
-                          />
-                        </label>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-1">
-                        {(['west', 'none', 'east'] as const).map((side) => (
-                          <button
-                            key={side}
-                            type="button"
-                            onClick={() =>
-                              setProject((p) =>
-                                p.mezzanine
-                                  ? {
-                                      ...p,
-                                      mezzanine: {
-                                        ...p.mezzanine,
-                                        stairGapSide: side,
-                                        widthRatio: side === 'none' ? 1.0 : 0.78,
-                                      },
-                                    }
-                                  : p
-                              )
-                            }
-                            className={`py-1 border text-[10px] font-semibold ${
-                              project.mezzanine?.stairGapSide === side
-                                ? 'border-stone-950 bg-stone-950 text-white'
-                                : 'border-stone-200 bg-white'
-                            }`}
-                          >
-                            {side === 'west' ? 'Sol Merdiven' : side === 'east' ? 'Sağ Merdiven' : 'Tam Genişlik'}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-1">
-                        {(['none', 'glass', 'metal'] as const).map((rs) => (
-                          <button
-                            key={rs}
-                            type="button"
-                            onClick={() =>
-                              setProject((p) =>
-                                p.mezzanine ? { ...p, mezzanine: { ...p.mezzanine, railingStyle: rs } } : p
-                              )
-                            }
-                            className={`py-1 border text-[10px] font-semibold ${
-                              project.mezzanine?.railingStyle === rs
-                                ? 'border-stone-950 bg-stone-950 text-white'
-                                : 'border-stone-200 bg-white'
-                            }`}
-                          >
-                            {rs === 'none' ? 'Korkuluksuz' : rs === 'glass' ? 'Cam Korkuluk' : 'Metal Korkuluk'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono uppercase text-stone-500">Perde Havuzu &amp; Gizli LED</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProject((prev) => {
-                          const existing = new Set(prev.curtainCoves.map((c) => c.wall));
-                          const adds: ArchCurtainCove[] = WALL_IDS.filter((w) => !existing.has(w)).map((w) => ({
-                            id: `cove-${w}-${Date.now()}`,
-                            wall: w,
-                            depthCm: 22,
-                            dropCm: 18,
-                            ledEnabled: true,
-                            ledColorHex: '#ffddb0',
-                            ledIntensity: 1.2,
-                            colorHex: prev.ceilingColorHex,
-                          }));
-                          return { ...prev, curtainCoves: [...prev.curtainCoves, ...adds] };
-                        });
-                        showToast('4 duvara LED’li perde havuzu eklendi.');
-                      }}
-                      className="text-[10px] font-semibold underline text-stone-700"
-                    >
-                      4 Duvara Ekle
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1">
-                    {WALL_IDS.map((wId) => {
-                      const active = project.curtainCoves.some((c) => c.wall === wId);
-                      return (
-                        <button
-                          key={wId}
-                          type="button"
-                          onClick={() => toggleCurtainCove(wId)}
-                          className={`px-2 py-1.5 border text-[10px] font-semibold ${
-                            active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700'
-                          }`}
-                        >
-                          {active ? '✓ ' : '+ '}
-                          {WALL_LABELS[wId]}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {project.curtainCoves.map((cove) => (
-                    <div key={cove.id} className="border border-stone-200 bg-[#faf9f6] p-2 space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-semibold">{WALL_LABELS[cove.wall]}</span>
-                        <label className="flex items-center gap-1 text-[10px] cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={cove.ledEnabled}
-                            onChange={(e) =>
-                              setProject((p) => ({
-                                ...p,
-                                curtainCoves: p.curtainCoves.map((c) =>
-                                  c.id === cove.id ? { ...c, ledEnabled: e.target.checked } : c
-                                ),
-                              }))
-                            }
-                            className="accent-amber-600"
-                          />
-                          <span>LED</span>
-                        </label>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-[10px] text-stone-600">
-                        <label>
-                          Derinlik {cove.depthCm}cm
-                          <input
-                            type="range"
-                            min={12}
-                            max={35}
-                            value={cove.depthCm}
-                            onChange={(e) =>
-                              setProject((p) => ({
-                                ...p,
-                                curtainCoves: p.curtainCoves.map((c) =>
-                                  c.id === cove.id ? { ...c, depthCm: Number(e.target.value) } : c
-                                ),
-                              }))
-                            }
-                            className="w-full accent-stone-950"
-                          />
-                        </label>
-                        <label>
-                          Sarkma {cove.dropCm}cm
-                          <input
-                            type="range"
-                            min={10}
-                            max={30}
-                            value={cove.dropCm}
-                            onChange={(e) =>
-                              setProject((p) => ({
-                                ...p,
-                                curtainCoves: p.curtainCoves.map((c) =>
-                                  c.id === cove.id ? { ...c, dropCm: Number(e.target.value) } : c
-                                ),
-                              }))
-                            }
-                            className="w-full accent-stone-950"
-                          />
-                        </label>
-                      </div>
-                    </div>
                   ))}
                 </div>
 
-                <div className="border-t border-stone-200 pt-2.5 space-y-1.5">
-                  <span className="text-[10px] font-mono uppercase text-stone-500">Kolon &amp; Kiriş Ekle</span>
-                  <div className="grid grid-cols-2 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => addColumn('rect')}
-                      className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-[10px] font-semibold"
-                    >
-                      + Kare Kolon
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => addColumn('round')}
-                      className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-[10px] font-semibold"
-                    >
-                      + Yuvarlak Kolon
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => addBeam('x')}
-                      className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-[10px] font-semibold"
-                    >
-                      + Yatay Kiriş
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => addBeam('z')}
-                      className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-[10px] font-semibold"
-                    >
-                      + Dikey Kiriş
-                    </button>
+                {structureSubTab === 'loft' && (
+                  <div className="border border-stone-200 bg-[#faf9f6] p-2.5 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-stone-900">
+                        Asma Kat (Mezzanine)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProject((prev) => {
+                            const enabling = !prev.mezzanine?.enabled;
+                            const nextCeil = enabling ? Math.max(4.0, prev.ceilingM) : prev.ceilingM;
+                            return {
+                              ...prev,
+                              ceilingM: nextCeil,
+                              mezzanine: enabling
+                                ? {
+                                    enabled: true,
+                                    anchorWall: prev.mezzanine?.anchorWall || 'north',
+                                    heightM: prev.mezzanine?.heightM || 2.05,
+                                    depthM: prev.mezzanine?.depthM || Math.round(prev.depthM * 52) / 100,
+                                    widthRatio: prev.mezzanine?.widthRatio || 0.78,
+                                    stairGapSide: prev.mezzanine?.stairGapSide || 'west',
+                                    thicknessM: 0.16,
+                                    deckColorHex: prev.mezzanine?.deckColorHex || prev.floorTintHex || '#c9b092',
+                                    railingStyle: prev.mezzanine?.railingStyle || 'none',
+                                    underLed: prev.mezzanine?.underLed ?? true,
+                                  }
+                                : { ...(prev.mezzanine as any), enabled: false },
+                            };
+                          });
+                        }}
+                        className={`px-2.5 py-1 border text-[10px] font-semibold transition ${
+                          project.mezzanine?.enabled
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-400 bg-white text-stone-800 hover:border-stone-950'
+                        }`}
+                      >
+                        {project.mezzanine?.enabled ? '✓ 2. Kat Aktif' : '+ 2. Kat Ekle'}
+                      </button>
+                    </div>
+
+                    {!project.mezzanine?.enabled && (
+                      <p className="text-[11px] text-stone-500 leading-snug">
+                        Yüksek tavanlı loft odalar için tek tıkla 2. kat ekler; kat yüksekliği ve korkuluk tipini özelleştirebilirsin.
+                      </p>
+                    )}
+
+                    {project.mezzanine?.enabled && (
+                      <div className="space-y-2.5 pt-2 border-t border-stone-200">
+                        <div className="grid grid-cols-2 gap-2 text-[10px] text-stone-600">
+                          <label>
+                            Kat Yüksekliği <strong className="font-mono text-stone-900">{Math.round(project.mezzanine.heightM * 100)} cm</strong>
+                            <input
+                              type="range"
+                              min={170}
+                              max={Math.max(220, Math.round((project.ceilingM - 1.25) * 100))}
+                              step={5}
+                              value={Math.round(project.mezzanine.heightM * 100)}
+                              onChange={(e) =>
+                                setProject((p) =>
+                                  p.mezzanine
+                                    ? { ...p, mezzanine: { ...p.mezzanine, heightM: Number(e.target.value) / 100 } }
+                                    : p
+                                )
+                              }
+                              className="w-full accent-stone-950 mt-1"
+                            />
+                          </label>
+                          <label>
+                            Derinlik <strong className="font-mono text-stone-900">{Math.round(project.mezzanine.depthM * 100)} cm</strong>
+                            <input
+                              type="range"
+                              min={130}
+                              max={Math.round(project.depthM * 70)}
+                              step={10}
+                              value={Math.round(project.mezzanine.depthM * 100)}
+                              onChange={(e) =>
+                                setProject((p) =>
+                                  p.mezzanine
+                                    ? { ...p, mezzanine: { ...p.mezzanine, depthM: Number(e.target.value) / 100 } }
+                                    : p
+                                )
+                              }
+                              className="w-full accent-stone-950 mt-1"
+                            />
+                          </label>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1">
+                          {(['west', 'none', 'east'] as const).map((side) => (
+                            <button
+                              key={side}
+                              type="button"
+                              onClick={() =>
+                                setProject((p) =>
+                                  p.mezzanine
+                                    ? {
+                                        ...p,
+                                        mezzanine: {
+                                          ...p.mezzanine,
+                                          stairGapSide: side,
+                                          widthRatio: side === 'none' ? 1.0 : 0.78,
+                                        },
+                                      }
+                                    : p
+                                )
+                              }
+                              className={`py-1 border text-[10px] font-semibold ${
+                                project.mezzanine?.stairGapSide === side
+                                  ? 'border-stone-950 bg-stone-950 text-white'
+                                  : 'border-stone-200 bg-white'
+                              }`}
+                            >
+                              {side === 'west' ? 'Sol Merdiven' : side === 'east' ? 'Sağ Merdiven' : 'Tam Genişlik'}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1">
+                          {(['none', 'glass', 'metal'] as const).map((rs) => (
+                            <button
+                              key={rs}
+                              type="button"
+                              onClick={() =>
+                                setProject((p) =>
+                                  p.mezzanine ? { ...p, mezzanine: { ...p.mezzanine, railingStyle: rs } } : p
+                                )
+                              }
+                              className={`py-1 border text-[10px] font-semibold ${
+                                project.mezzanine?.railingStyle === rs
+                                  ? 'border-stone-950 bg-stone-950 text-white'
+                                  : 'border-stone-200 bg-white'
+                              }`}
+                            >
+                              {rs === 'none' ? 'Korkuluksuz' : rs === 'glass' ? 'Cam Korkuluk' : 'Metal Korkuluk'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
+
+                {structureSubTab === 'cove' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono uppercase text-stone-500">Perde Havuzu &amp; Gizli LED</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProject((prev) => {
+                            const existing = new Set(prev.curtainCoves.map((c) => c.wall));
+                            const adds: ArchCurtainCove[] = WALL_IDS.filter((w) => !existing.has(w)).map((w) => ({
+                              id: `cove-${w}-${Date.now()}`,
+                              wall: w,
+                              depthCm: 22,
+                              dropCm: 18,
+                              ledEnabled: true,
+                              ledColorHex: '#ffddb0',
+                              ledIntensity: 1.2,
+                              colorHex: prev.ceilingColorHex,
+                            }));
+                            return { ...prev, curtainCoves: [...prev.curtainCoves, ...adds] };
+                          });
+                          showToast('4 duvara LED’li perde havuzu eklendi.');
+                        }}
+                        className="text-[10px] font-semibold underline text-stone-700 hover:text-stone-950"
+                      >
+                        4 Duvara Ekle
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {WALL_IDS.map((wId) => {
+                        const active = project.curtainCoves.some((c) => c.wall === wId);
+                        return (
+                          <button
+                            key={wId}
+                            type="button"
+                            onClick={() => toggleCurtainCove(wId)}
+                            className={`px-2 py-1.5 border text-[10px] font-semibold transition ${
+                              active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700 hover:border-stone-950'
+                            }`}
+                          >
+                            {active ? '✓ ' : '+ '}
+                            {WALL_LABELS[wId]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {project.curtainCoves.map((cove) => (
+                      <div key={cove.id} className="border border-stone-200 bg-[#faf9f6] p-2 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold">{WALL_LABELS[cove.wall]}</span>
+                          <label className="flex items-center gap-1 text-[10px] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={cove.ledEnabled}
+                              onChange={(e) =>
+                                setProject((p) => ({
+                                  ...p,
+                                  curtainCoves: p.curtainCoves.map((c) =>
+                                    c.id === cove.id ? { ...c, ledEnabled: e.target.checked } : c
+                                  ),
+                                }))
+                              }
+                              className="accent-amber-600"
+                            />
+                            <span>LED</span>
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px] text-stone-600">
+                          <label>
+                            Derinlik {cove.depthCm}cm
+                            <input
+                              type="range"
+                              min={12}
+                              max={35}
+                              value={cove.depthCm}
+                              onChange={(e) =>
+                                setProject((p) => ({
+                                  ...p,
+                                  curtainCoves: p.curtainCoves.map((c) =>
+                                    c.id === cove.id ? { ...c, depthCm: Number(e.target.value) } : c
+                                  ),
+                                }))
+                              }
+                              className="w-full accent-stone-950"
+                            />
+                          </label>
+                          <label>
+                            Sarkma {cove.dropCm}cm
+                            <input
+                              type="range"
+                              min={10}
+                              max={30}
+                              value={cove.dropCm}
+                              onChange={(e) =>
+                                setProject((p) => ({
+                                  ...p,
+                                  curtainCoves: p.curtainCoves.map((c) =>
+                                    c.id === cove.id ? { ...c, dropCm: Number(e.target.value) } : c
+                                  ),
+                                }))
+                              }
+                              className="w-full accent-stone-950"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {structureSubTab === 'col' && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-stone-500 leading-snug">
+                      Odadaki taşıyıcı kolon veya tavan kirişlerini ekleyip 3B sahneden konumlandırabilirsin.
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => addColumn('rect')}
+                        className="px-2 py-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[11px] font-semibold transition"
+                      >
+                        + Kare Kolon
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addColumn('round')}
+                        className="px-2 py-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[11px] font-semibold transition"
+                      >
+                        + Yuvarlak Kolon
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addBeam('x')}
+                        className="px-2 py-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[11px] font-semibold transition"
+                      >
+                        + Yatay Kiriş
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addBeam('z')}
+                        className="px-2 py-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[11px] font-semibold transition"
+                      >
+                        + Dikey Kiriş
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2085,69 +2228,17 @@ export const ArchitecturalStudioPage: React.FC = () => {
     }
 
     if (activeTab === 'objects') {
+      const filteredModules =
+        moduleCategoryFilter === 'all'
+          ? PARAMETRIC_CARDS
+          : PARAMETRIC_CARDS.filter((m) => m.group === moduleCategoryFilter);
+
       return (
-        <div className="p-3.5 space-y-4 text-xs">
-          {/* Active Room Scene Chips (easy selection of chandelier, rug, TV, fireplace!) */}
-          <div className="space-y-1.5">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              Odadaki Eşyalar ({project.objects.length})
-            </span>
-            <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto">
-              {project.objects.map((o) => {
-                const isSel = selection?.type === 'object' && selection.id === o.id;
-                return (
-                  <button
-                    key={o.id}
-                    type="button"
-                    onClick={() => setSelection({ type: 'object', id: o.id })}
-                    className={`px-2 py-1 border text-[10px] font-semibold truncate max-w-[135px] ${
-                      isSel ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-[#faf9f6] text-stone-800 hover:border-stone-500'
-                    }`}
-                  >
-                    {o.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Parametric Modules */}
-          <div className="border-t border-stone-200 pt-3 space-y-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              Mimari Modüller (Ölçü &amp; Renk Ayarlı)
-            </span>
-            <div className="grid grid-cols-2 gap-1.5">
-              {PARAMETRIC_CARDS.map((m) => (
-                <button
-                  key={m.kind}
-                  type="button"
-                  onClick={() =>
-                    spawnParametricObject({
-                      kind: m.kind,
-                      name: m.name,
-                      category: 'Mimari Modül',
-                      wM: m.w,
-                      dM: m.d,
-                      hM: m.h,
-                      yM: m.y,
-                      mount: m.mount,
-                      c1: m.c1,
-                      c2: m.c2,
-                    })
-                  }
-                  className="text-left px-2.5 py-2 border border-stone-200 hover:border-stone-950 bg-white transition"
-                >
-                  <p className="text-[11px] font-semibold text-stone-950 truncate">{m.name}</p>
-                  <p className="text-[9px] font-mono text-stone-500 truncate">{m.sub}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* CAD Upload */}
-          <label className="w-full py-2 px-3 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition">
+        <div className="p-3.5 space-y-3 text-xs">
+          {/* Compact Top CAD Upload Bar */}
+          <label className="w-full py-2 px-3 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 text-[11px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition">
             {uploadingCad ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-            <span>CAD Yükle (.FBX / .OBJ / .GLB / .STL)</span>
+            <span>CAD Model Yükle (.GLB / .FBX / .OBJ / .STL)</span>
             <input
               type="file"
               accept=".fbx,.glb,.gltf,.obj,.stl"
@@ -2159,18 +2250,39 @@ export const ArchitecturalStudioPage: React.FC = () => {
             />
           </label>
 
-          {/* 3D Furniture Catalog */}
-          <div className="border-t border-stone-200 pt-3 space-y-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              3B Mobilya Kataloğu ({catalog.length})
-            </span>
+          {/* Clean 3-Way Sub-Tab Bar (Eliminates long mixed scrolling!) */}
+          <div className="grid grid-cols-3 gap-1 bg-[#faf9f6] p-1 border border-stone-200">
+            {(
+              [
+                { id: 'catalog' as ObjectsSubTab, lbl: `3B Katalog (${catalog.length})` },
+                { id: 'modules' as ObjectsSubTab, lbl: `Modüller (${PARAMETRIC_CARDS.length})` },
+                { id: 'placed' as ObjectsSubTab, lbl: `Odadakiler (${project.objects.length})` },
+              ]
+            ).map((st) => (
+              <button
+                key={st.id}
+                type="button"
+                onClick={() => setObjectsSubTab(st.id)}
+                className={`py-1.5 px-1 text-[10px] font-semibold truncate transition ${
+                  objectsSubTab === st.id
+                    ? 'bg-stone-950 text-white'
+                    : 'text-stone-700 hover:text-stone-950'
+                }`}
+              >
+                {st.lbl}
+              </button>
+            ))}
+          </div>
+
+          {/* Sub-Tab 1: 3D GLB Furniture Catalog */}
+          {objectsSubTab === 'catalog' && (
             <div className="grid grid-cols-2 gap-1.5">
               {catalog.map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => addCatalogProduct(p)}
-                  className="text-left border border-stone-200 hover:border-stone-950 bg-white overflow-hidden"
+                  className="text-left border border-stone-200 hover:border-stone-950 bg-white overflow-hidden transition"
                 >
                   <div className="h-16 bg-[#f5f4f0] flex items-center justify-center p-1 border-b border-stone-200">
                     {p.thumbUrl ? (
@@ -2186,7 +2298,92 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 </button>
               ))}
             </div>
-          </div>
+          )}
+
+          {/* Sub-Tab 2: Parametric Architectural & Kitchen/Bath Modules */}
+          {objectsSubTab === 'modules' && (
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-4 gap-1">
+                {(
+                  [
+                    { id: 'all' as ModuleCategoryFilter, lbl: 'Tümü' },
+                    { id: 'living' as ModuleCategoryFilter, lbl: 'Salon' },
+                    { id: 'kitchen_bath' as ModuleCategoryFilter, lbl: 'Mutfak/WC' },
+                    { id: 'decor' as ModuleCategoryFilter, lbl: 'Dekor' },
+                  ]
+                ).map((mf) => (
+                  <button
+                    key={mf.id}
+                    type="button"
+                    onClick={() => setModuleCategoryFilter(mf.id)}
+                    className={`py-1 border text-[10px] font-semibold truncate transition ${
+                      moduleCategoryFilter === mf.id
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-200 bg-white text-stone-700 hover:border-stone-500'
+                    }`}
+                  >
+                    {mf.lbl}
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {filteredModules.map((m) => (
+                  <button
+                    key={m.kind}
+                    type="button"
+                    onClick={() =>
+                      spawnParametricObject({
+                        kind: m.kind,
+                        name: m.name,
+                        category: 'Mimari Modül',
+                        wM: m.w,
+                        dM: m.d,
+                        hM: m.h,
+                        yM: m.y,
+                        mount: m.mount,
+                        c1: m.c1,
+                        c2: m.c2,
+                      })
+                    }
+                    className="text-left px-2.5 py-2 border border-stone-200 hover:border-stone-950 bg-white transition"
+                  >
+                    <p className="text-[11px] font-semibold text-stone-950 truncate">{m.name}</p>
+                    <p className="text-[9px] font-mono text-stone-500 truncate">{m.sub}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sub-Tab 3: Active Placed Objects in Scene */}
+          {objectsSubTab === 'placed' && (
+            <div className="space-y-1.5">
+              {project.objects.length === 0 ? (
+                <p className="text-[11px] text-stone-500 py-6 text-center border border-dashed border-stone-300 bg-[#faf9f6]">
+                  Odada henüz eşya yok — 3B Katalog veya Modüllerden ekleyebilirsin.
+                </p>
+              ) : (
+                project.objects.map((o) => {
+                  const isSel = selection?.type === 'object' && selection.id === o.id;
+                  return (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => setSelection({ type: 'object', id: o.id })}
+                      className={`w-full px-2.5 py-2 border flex items-center justify-between gap-2 text-left transition ${
+                        isSel
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-200 bg-white text-stone-900 hover:border-stone-950'
+                      }`}
+                    >
+                      <span className="font-semibold text-[11px] truncate">{o.name}</span>
+                      <span className="font-mono text-[10px] opacity-75 shrink-0">{o.dimensionsCm}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
       );
     }
@@ -3094,6 +3291,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   <button
                     key={t.id}
                     type="button"
+                    title={t.title}
                     onClick={() => setActiveTab(t.id)}
                     className={`py-2.5 px-1 flex flex-col items-center justify-center gap-1 border-b-2 text-[10px] 2xl:text-[11px] font-semibold transition whitespace-nowrap ${
                       active ? 'border-stone-950 bg-white text-stone-950' : 'border-transparent text-stone-500 hover:text-stone-900'

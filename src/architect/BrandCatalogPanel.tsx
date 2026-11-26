@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Check, Search } from 'lucide-react';
+import { Check, Search, X } from 'lucide-react';
 import { colorSimilarityPct, detectQueryColorHex, normalizeSearchTr } from './universalSearch';
 import {
   COUNTERTOP_CATALOG,
@@ -39,11 +39,11 @@ interface Props {
 
 const CATEGORIES: Array<{ id: CatalogCategory; label: string }> = [
   { id: 'parquet', label: 'Parke & Seramik' },
-  { id: 'wall', label: 'Duvar Boya & Profil' },
-  { id: 'skirting', label: 'Süpürgelik & Köşelik' },
+  { id: 'wall', label: 'Duvar & Profil' },
+  { id: 'skirting', label: 'Süpürgelik' },
   { id: 'door', label: 'Kapı Paneli' },
-  { id: 'countertop', label: 'Laminat & Kuvars Tezgah' },
-  { id: 'furniture', label: 'Mobilya & MDF-Lam' },
+  { id: 'countertop', label: 'Tezgah' },
+  { id: 'furniture', label: 'Mobilya Paneli' },
 ];
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
@@ -165,53 +165,63 @@ export const BrandCatalogPanel: React.FC<Props> = ({
     selection?.type === 'door' ? project.doors.find((d) => d.id === selection.id) : project.doors[0];
 
   return (
-    <div className="p-3.5 space-y-3 text-xs">
-      {/* Header & Brand Filter */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-900">
-            Resmi Marka Kartelaları
-          </span>
-          <span className="text-[9px] font-mono text-stone-500">10 Büyük Marka · 150+ Kod</span>
-        </div>
-        <div className="flex flex-wrap gap-1">
+    <div className="p-3 space-y-2.5 text-xs">
+      {/* Row 1: Instant Code / Color Search */}
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Kod veya renk ara: PRK901, kaşmir, meşe..."
+          className="w-full pl-8 pr-7 py-1.5 border border-stone-300 bg-white text-[11px] focus:outline-none focus:border-stone-950"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-950"
+            aria-label="Aramayı temizle"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* Row 2: Compact 1-Line Brand Dropdown (replaces 3 wrapped rows of 11 buttons!) */}
+      <div className="flex items-center gap-1.5">
+        <select
+          value={brand}
+          onChange={(e) => setBrand(e.target.value as 'ALL' | SupplierBrand)}
+          aria-label="Marka Seç"
+          className="flex-1 min-w-0 px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] font-semibold text-stone-900 focus:outline-none focus:border-stone-950"
+        >
+          <option value="ALL">Tüm Markalar (10 Marka · 150+ Kod)</option>
+          {SUPPLIER_BRANDS.map((b) => (
+            <option key={b} value={b}>
+              {b}
+            </option>
+          ))}
+        </select>
+        {brand !== 'ALL' && (
           <button
             type="button"
             onClick={() => setBrand('ALL')}
-            className={`px-2 py-1 border text-[10px] font-semibold transition whitespace-nowrap ${
-              brand === 'ALL'
-                ? 'border-stone-950 bg-stone-950 text-white'
-                : 'border-stone-200 bg-white text-stone-700 hover:border-stone-500'
-            }`}
+            className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-[10px] font-semibold text-stone-700 whitespace-nowrap shrink-0"
           >
             Tümü
           </button>
-          {SUPPLIER_BRANDS.map((b) => (
-            <button
-              key={b}
-              type="button"
-              onClick={() => setBrand(b)}
-              className={`px-2 py-1 border text-[10px] font-semibold transition whitespace-nowrap ${
-                brand === b
-                  ? 'border-stone-950 bg-stone-950 text-white'
-                  : 'border-stone-200 bg-white text-stone-700 hover:border-stone-500'
-              }`}
-              title={b}
-            >
-              {SUPPLIER_SHORT[b]}
-            </button>
-          ))}
-        </div>
+        )}
       </div>
 
-      {/* Category Switcher */}
-      <div className="grid grid-cols-2 gap-1">
+      {/* Row 3: Crisp 3x2 Category Grid */}
+      <div className="grid grid-cols-3 gap-1">
         {CATEGORIES.map((c) => (
           <button
             key={c.id}
             type="button"
             onClick={() => setCategory(c.id)}
-            className={`px-2 py-1.5 border text-[10px] font-semibold text-left truncate transition ${
+            className={`px-1.5 py-1.5 border text-[10px] font-semibold text-center truncate transition ${
               category === c.id
                 ? 'border-stone-950 bg-stone-950 text-white'
                 : 'border-stone-200 bg-[#faf9f6] text-stone-800 hover:border-stone-500'
@@ -220,18 +230,6 @@ export const BrandCatalogPanel: React.FC<Props> = ({
             {c.label}
           </button>
         ))}
-      </div>
-
-      {/* Quick Search by Code / Color / Series */}
-      <div className="relative">
-        <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Kod veya renk ara: PRK901, LB-2050, 275, meşe..."
-          className="w-full pl-8 pr-2.5 py-1.5 border border-stone-300 bg-white text-[11px] focus:outline-none focus:border-stone-950"
-        />
       </div>
 
       {/* Active Spec Summary for Current Category */}

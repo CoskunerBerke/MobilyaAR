@@ -3,6 +3,8 @@ import {
   BookmarkPlus,
   Camera,
   Check,
+  ChevronDown,
+  ChevronRight,
   Crop,
   Download,
   Image as ImageIcon,
@@ -11,6 +13,7 @@ import {
   Loader2,
   MousePointerClick,
   Plus,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   Upload,
@@ -436,6 +439,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
     setIsDraggingFile(false);
     void handleDroppedDataTransfer(e.dataTransfer);
   };
+
+  // Progressive disclosure toggles (keeps main flow clean with zero feature loss)
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [showPhotorealSection, setShowPhotorealSection] = useState(false);
 
   // Photoreal V-Ray style render state
   const [renderStyleNote, setRenderStyleNote] = useState(
@@ -1659,37 +1666,30 @@ export const PinterestAIPanel: React.FC<Props> = ({
           <p className="text-[11px] text-stone-200">Bilgisayardan veya Pinterest sekmesinden doğrudan sürükleyebilirsin</p>
         </div>
       )}
-      {/* Engine status & Gemini API Key config */}
-      <div className="border border-stone-200 bg-[#faf9f6] p-3 space-y-2">
+      {/* Compact Engine Status & API Key Toggle */}
+      <div className="border border-stone-200 bg-[#faf9f6] px-3 py-2 space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="font-semibold text-stone-950">Pinterest → Anında 3B Oda Motoru</p>
-            <p className="text-[11px] text-stone-500">Tek tıkla tüm eşya &amp; renkleri odaya kur, canlı düzenle</p>
+          <div className="min-w-0">
+            <p className="font-semibold text-stone-950 truncate">Fotoğraftan 3B Oda &amp; Eşya</p>
+            <p className="text-[10px] font-mono text-stone-500 flex items-center gap-2 mt-0.5">
+              <span className={hasGeminiAccess ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                ● {hasGeminiAccess ? 'Motor Hazır' : 'Anahtar Gerekli'}
+              </span>
+              {runpodReady && <span className="text-emerald-700 font-semibold">● 2K PBR</span>}
+            </p>
           </div>
           <button
             type="button"
             onClick={() => setShowKeyBox((v) => !v)}
-            className="px-2 py-1 border border-stone-300 hover:border-stone-950 bg-white text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+            className={`px-2 py-1 border text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
+              showKeyBox
+                ? 'border-stone-950 bg-stone-950 text-white'
+                : 'border-stone-300 hover:border-stone-950 bg-white text-stone-800'
+            }`}
           >
             <KeyRound className="w-3 h-3" />
             <span>API</span>
           </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
-          <span className={hasGeminiAccess ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
-            ● Vision AI:{' '}
-            {geminiKey.trim()
-              ? 'Oturum Anahtarı'
-              : serverCfg.groqConfigured || serverCfg.openaiConfigured || serverCfg.openrouterConfigured
-              ? 'Çift Motor Bağlı'
-              : serverCfg.geminiConfigured
-              ? 'Sunucu Bağlı'
-              : 'Anahtar Gerekli'}
-          </span>
-          <span className={runpodReady ? 'text-emerald-700 font-semibold' : 'text-stone-500'}>
-            ● 2K PBR: {runpodReady ? 'Hazır' : 'Opsiyonel'}
-          </span>
         </div>
 
         {showKeyBox && (
@@ -1792,11 +1792,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Step 1: Upload Pinterest Photo */}
+      {/* Step 1: Upload Reference Photo */}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-            01 · Pinterest Oda Fotoğrafı
+            Referans Fotoğraf (Pinterest / Kamera)
           </span>
           {photoDataUrl && (
             <div className="flex items-center gap-2">
@@ -1975,11 +1975,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Item #2: Pre-Analysis Focus / Exclusion Prompt Box */}
-            <div className="border border-stone-300 bg-white p-2.5 space-y-2">
+            {/* Item #2: Clean Focus / Exclusion Prompt Box */}
+            <div className="border border-stone-200 bg-white p-2.5 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-mono uppercase font-bold text-stone-800">
-                  Odak &amp; Yönlendirme Notu (Opsiyonel)
+                <span className="text-[10px] font-semibold text-stone-800">
+                  Ne Modellenmeli? <span className="font-normal text-stone-400">(Opsiyonel)</span>
                 </span>
                 {userFocusPrompt && (
                   <button
@@ -1995,7 +1995,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 rows={2}
                 value={userFocusPrompt}
                 onChange={(e) => setUserFocusPrompt(e.target.value)}
-                placeholder='Örn: "Sadece ortadaki sehpayı al; çiçek, lamba, tablo ve halıyı modelleme"'
+                placeholder='Örn: "Sadece ortadaki sehpayı al; çiçek, tablo ve halıyı ekleme"'
                 className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] text-stone-950 placeholder:text-stone-400 resize-none leading-snug focus:border-stone-950 focus:outline-none"
               />
               <div className="flex flex-wrap gap-1">
@@ -2019,16 +2019,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Item #3A: Target Room Picker + Non-Destructive Mode Switch */}
-            <div className="flex flex-col gap-2 text-[11px] text-stone-700 bg-[#faf9f6] border border-stone-200 px-2.5 py-2.5">
-              <div className="space-y-1">
-                <label className="text-[10px] font-mono uppercase text-stone-500 block">
-                  Hangi Odaya Yerleştirilsin?
-                </label>
+            {/* Inline Multi-Room Target Picker (shown directly whenever apartment has 2+ rooms!) */}
+            {(project.adjacentRooms?.length || 0) > 0 && (
+              <div className="flex items-center gap-2 border border-stone-200 bg-[#faf9f6] px-2.5 py-1.5">
+                <span className="text-[10px] font-semibold text-stone-600 whitespace-nowrap">Hedef Oda:</span>
                 <select
                   value={targetRoomId}
                   onChange={(e) => setTargetRoomId(e.target.value)}
-                  className="w-full px-2 py-1.5 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
+                  className="flex-1 min-w-0 px-1.5 py-1 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
                 >
                   <option value="main">Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)</option>
                   {(project.adjacentRooms || []).map((r) => (
@@ -2038,52 +2036,93 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   ))}
                 </select>
               </div>
+            )}
 
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  onClick={() => setReplaceExistingOnBuild(false)}
-                  className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
-                    !replaceExistingOnBuild
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 bg-white text-stone-700'
-                  }`}
-                >
-                  Mevcut Odaya Ekle
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setReplaceExistingOnBuild(true)}
-                  className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
-                    replaceExistingOnBuild
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 bg-white text-stone-700'
-                  }`}
-                >
-                  Odayı Sıfırla &amp; Kur
-                </button>
-              </div>
-
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoPopulateOnAnalyze}
-                  onChange={(e) => setAutoPopulateOnAnalyze(e.target.checked)}
-                  className="accent-stone-950"
-                />
-                <span className="font-medium text-stone-900">Analiz bitince seçili odaya anında kur</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoVerifyAfterBuild}
-                  onChange={(e) => setAutoVerifyAfterBuild(e.target.checked)}
-                  className="accent-stone-950"
-                />
-                <span className="font-medium text-stone-900">
-                  Arka planda otomatik kalibre et (%75+ uyum, geri düşme korumalı)
+            {/* Collapsible Placement & Calibration Options (keeps primary CTA crisp & clutter-free) */}
+            <div className="border border-stone-200 bg-[#faf9f6]">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedOptions((v) => !v)}
+                className="w-full px-2.5 py-2 flex items-center justify-between gap-2 text-left hover:bg-stone-100/70 transition"
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-stone-600 shrink-0" />
+                  <span className="text-[11px] font-semibold text-stone-800 truncate">
+                    {replaceExistingOnBuild ? 'Odayı Sıfırla & Kur' : 'Mevcut Odaya Ekle'} ·{' '}
+                    {autoVerifyAfterBuild ? 'Oto Kalibre' : 'Manuel'}
+                  </span>
                 </span>
-              </label>
+                {showAdvancedOptions ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                )}
+              </button>
+
+              {showAdvancedOptions && (
+                <div className="px-2.5 pb-2.5 pt-2 border-t border-stone-200 space-y-2 text-[11px] text-stone-700 bg-white">
+                  {(project.adjacentRooms?.length || 0) === 0 && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-mono uppercase text-stone-500 block">
+                        Hangi Odaya Yerleştirilsin?
+                      </label>
+                      <select
+                        value={targetRoomId}
+                        onChange={(e) => setTargetRoomId(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
+                      >
+                        <option value="main">Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setReplaceExistingOnBuild(false)}
+                      className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
+                        !replaceExistingOnBuild
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-300 bg-white text-stone-700'
+                      }`}
+                    >
+                      Mevcut Odaya Ekle
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReplaceExistingOnBuild(true)}
+                      className={`py-1.5 px-1.5 border text-[10px] font-bold transition ${
+                        replaceExistingOnBuild
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-300 bg-white text-stone-700'
+                      }`}
+                    >
+                      Odayı Sıfırla &amp; Kur
+                    </button>
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoPopulateOnAnalyze}
+                      onChange={(e) => setAutoPopulateOnAnalyze(e.target.checked)}
+                      className="accent-stone-950"
+                    />
+                    <span className="font-medium text-stone-900">Analiz bitince seçili odaya anında kur</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoVerifyAfterBuild}
+                      onChange={(e) => setAutoVerifyAfterBuild(e.target.checked)}
+                      className="accent-stone-950"
+                    />
+                    <span className="font-medium text-stone-900">
+                      Arka planda otomatik kalibre et (%75+ uyum, geri düşme korumalı)
+                    </span>
+                  </label>
+                </div>
+              )}
             </div>
 
             <button
@@ -2457,37 +2496,56 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Bonus: 1-Click V-Ray Style Photoreal Render of Current 3D Room */}
-      <div className="border-t border-stone-200 pt-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-            Müşteri Sunumu · Fotogerçekçi Render
-          </span>
-        </div>
-        <p className="text-[11px] text-stone-600 leading-relaxed">
-          3B sahnenin şu anki kamera açısını pencere, kiriş, perde havuzu ve güneş açısını bozmadan V-Ray kalitesinde gerçek fotoğrafa dönüştürür.
-        </p>
-        <textarea
-          rows={2}
-          value={renderStyleNote}
-          onChange={(e) => setRenderStyleNote(e.target.value)}
-          placeholder="Işık veya atmosfer notu..."
-          className="w-full px-2.5 py-1.5 border border-stone-300 bg-white text-[11px] resize-none leading-snug"
-        />
-        {renderError && (
-          <div className="p-2 bg-amber-50 border border-amber-300 text-[10px] text-amber-950 leading-snug">
-            {renderError}
-          </div>
-        )}
+      {/* Bonus: Collapsible 1-Click V-Ray Style Photoreal Render */}
+      <div className="border border-stone-200 bg-[#faf9f6]">
         <button
           type="button"
-          disabled={renderingPhoto}
-          onClick={handlePhotorealRender}
-          className="w-full py-2 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 font-semibold flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+          onClick={() => setShowPhotorealSection((v) => !v)}
+          className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-stone-100/70 transition"
         >
-          {renderingPhoto ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
-          <span>{renderingPhoto ? 'Fotogerçekçi Render Hazırlanıyor...' : 'Bu Açıdan Fotogerçekçi Render Al'}</span>
+          <span className="flex items-center gap-2 min-w-0">
+            <Camera className="w-3.5 h-3.5 text-stone-700 shrink-0" />
+            <span className="min-w-0">
+              <span className="block font-semibold text-stone-900 text-[11px] truncate">
+                Fotogerçekçi Sunum Renderı
+              </span>
+              <span className="block text-[10px] text-stone-500 truncate">
+                Mevcut 3B açıdan V-Ray kalitesinde fotoğraf üret
+              </span>
+            </span>
+          </span>
+          {showPhotorealSection || renderingPhoto || renderError ? (
+            <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
+          )}
         </button>
+
+        {(showPhotorealSection || renderingPhoto || renderError) && (
+          <div className="px-3 pb-3 pt-2 border-t border-stone-200 bg-white space-y-2">
+            <textarea
+              rows={2}
+              value={renderStyleNote}
+              onChange={(e) => setRenderStyleNote(e.target.value)}
+              placeholder="Işık veya atmosfer notu..."
+              className="w-full px-2.5 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] resize-none leading-snug"
+            />
+            {renderError && (
+              <div className="p-2 bg-amber-50 border border-amber-300 text-[10px] text-amber-950 leading-snug">
+                {renderError}
+              </div>
+            )}
+            <button
+              type="button"
+              disabled={renderingPhoto}
+              onClick={handlePhotorealRender}
+              className="w-full py-2 border border-stone-950 hover:bg-stone-950 hover:text-white text-stone-950 font-semibold flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+            >
+              {renderingPhoto ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
+              <span>{renderingPhoto ? 'Fotogerçekçi Render Hazırlanıyor...' : 'Bu Açıdan Fotogerçekçi Render Al'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Photoreal Render Lightbox */}
