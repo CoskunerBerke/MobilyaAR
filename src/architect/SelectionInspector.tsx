@@ -13,6 +13,15 @@ import {
 import { getWorldAABBSpan } from '../lib/collision2d';
 import { NumericInput } from './NumericInput';
 import {
+  COUNTERTOP_CATALOG,
+  DOOR_PANEL_CATALOG,
+  FURNITURE_PANEL_CATALOG,
+  PARQUET_CATALOG,
+  SKIRTING_TRIM_CATALOG,
+  SUPPLIER_SHORT,
+  WALL_PANEL_CATALOG,
+} from './materialCatalogs';
+import {
   ARCHITECTURAL_PAINT_SWATCHES,
   DOOR_KIND_LABELS,
   FLOOR_MATERIAL_LABELS,
@@ -228,6 +237,44 @@ export const SelectionInspector: React.FC<Props> = ({
                   }`}
                   style={{ backgroundColor: sw.hex }}
                 />
+              ))}
+            </div>
+          </div>
+
+          {/* 4-Brand Official Wall Panels & AGT Wall Profiles */}
+          <div className="space-y-1.5 border-t border-stone-200 pt-3">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              AGT · Kastamonu · Yıldız · Starwood Duvar
+            </span>
+            {finish.brandLabel && (
+              <p className="text-[10px] font-semibold text-stone-800 truncate">{finish.brandLabel}</p>
+            )}
+            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
+              {WALL_PANEL_CATALOG.slice(0, 12).map((wp) => (
+                <button
+                  key={wp.id}
+                  type="button"
+                  onClick={() =>
+                    onUpdateProject((p) => ({
+                      ...p,
+                      walls: {
+                        ...p.walls,
+                        [wall]: {
+                          colorHex: wp.hex,
+                          pattern: wp.pattern,
+                          brandLabel: `${SUPPLIER_SHORT[wp.brand]} ${wp.code} · ${wp.name}`,
+                        },
+                      },
+                    }))
+                  }
+                  className="px-1.5 py-1 border border-stone-200 hover:border-stone-950 bg-white flex items-center gap-1.5 text-left"
+                  title={`${wp.brand} ${wp.series} (${wp.code})`}
+                >
+                  <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: wp.hex }} />
+                  <span className="truncate text-[10px] font-medium">
+                    <strong className="font-mono">{wp.code.split(' ')[0]}</strong> {wp.name}
+                  </span>
+                </button>
               ))}
             </div>
           </div>
@@ -492,25 +539,116 @@ export const SelectionInspector: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="border-t border-stone-200 pt-3 grid grid-cols-2 gap-2">
-            <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6]">
-              <span className="text-[10px] text-stone-600">Tavan</span>
-              <input
-                type="color"
-                value={project.ceilingColorHex}
-                onChange={(e) => onUpdateProject((p) => ({ ...p, ceilingColorHex: e.target.value }))}
-                className="w-6 h-5 border border-stone-300 cursor-pointer"
-              />
-            </label>
-            <label className="flex items-center justify-between border border-stone-200 px-2 py-1.5 bg-[#faf9f6]">
-              <span className="text-[10px] text-stone-600">Süpürgelik</span>
-              <input
-                type="color"
-                value={project.baseboardColorHex}
-                onChange={(e) => onUpdateProject((p) => ({ ...p, baseboardColorHex: e.target.value }))}
-                className="w-6 h-5 border border-stone-300 cursor-pointer"
-              />
-            </label>
+          <div className="border-t border-stone-200 pt-3 space-y-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              Floorpan · VarioClic · AGT Laminat Parke
+            </span>
+            {project.floorBrandLabel && (
+              <p className="text-[10px] font-semibold text-stone-900 truncate">{project.floorBrandLabel}</p>
+            )}
+            <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto pr-0.5">
+              {PARQUET_CATALOG.slice(0, 12).map((pq) => {
+                const active = project.floorBrandLabel?.includes(pq.code);
+                return (
+                  <button
+                    key={pq.id}
+                    type="button"
+                    onClick={() =>
+                      onUpdateProject((p) => ({
+                        ...p,
+                        floorMaterial: pq.floorMaterial,
+                        floorTintHex: pq.hex,
+                        floorBrandLabel: `${SUPPLIER_SHORT[pq.brand]} ${pq.series} ${pq.code} · ${pq.name}`,
+                      }))
+                    }
+                    className={`px-1.5 py-1 border flex items-center gap-1.5 text-left ${
+                      active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                    }`}
+                    title={`${pq.brand} ${pq.series} (${pq.code})`}
+                  >
+                    <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: pq.hex }} />
+                    <span className="truncate text-[10px]">
+                      <strong className="font-mono">{pq.code}</strong> {pq.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="border-t border-stone-200 pt-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                Süpürgelik &amp; Köşelik Profili
+              </span>
+              <div className="flex gap-1">
+                {[8, 10, 12, 15].map((cm) => (
+                  <button
+                    key={cm}
+                    type="button"
+                    onClick={() => onUpdateProject((p) => ({ ...p, showBaseboard: true, baseboardHeightCm: cm }))}
+                    className={`px-1 py-0.5 border font-mono text-[9px] font-semibold ${
+                      (project.baseboardHeightCm ?? 10) === cm ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
+                    }`}
+                  >
+                    {cm}cm
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {SKIRTING_TRIM_CATALOG.slice(0, 8).map((sk) => (
+                <button
+                  key={sk.id}
+                  type="button"
+                  onClick={() =>
+                    onUpdateProject((p) => ({
+                      ...p,
+                      showBaseboard: true,
+                      baseboardColorHex: sk.hex,
+                      baseboardBrandLabel: `${SUPPLIER_SHORT[sk.brand]} ${sk.code} · ${sk.name}`,
+                      cornerTrimColorHex: sk.hex,
+                      cornerTrimBrandLabel: `${SUPPLIER_SHORT[sk.brand]} ${sk.code} · Köşelik`,
+                    }))
+                  }
+                  className="px-1.5 py-1 border border-stone-200 hover:border-stone-950 bg-white flex items-center gap-1.5 text-left"
+                >
+                  <span className="w-3 h-3 border border-black/20 shrink-0" style={{ backgroundColor: sk.hex }} />
+                  <span className="truncate text-[10px]">
+                    <strong className="font-mono">{sk.code}</strong> {sk.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-3 gap-1.5 pt-1">
+              <label className="flex items-center justify-between border border-stone-200 px-1.5 py-1 bg-[#faf9f6]">
+                <span className="text-[9px] text-stone-600">Tavan</span>
+                <input
+                  type="color"
+                  value={project.ceilingColorHex}
+                  onChange={(e) => onUpdateProject((p) => ({ ...p, ceilingColorHex: e.target.value }))}
+                  className="w-5 h-4 border border-stone-300 cursor-pointer"
+                />
+              </label>
+              <label className="flex items-center justify-between border border-stone-200 px-1.5 py-1 bg-[#faf9f6]">
+                <span className="text-[9px] text-stone-600">Süpürgelik</span>
+                <input
+                  type="color"
+                  value={project.baseboardColorHex}
+                  onChange={(e) => onUpdateProject((p) => ({ ...p, baseboardColorHex: e.target.value }))}
+                  className="w-5 h-4 border border-stone-300 cursor-pointer"
+                />
+              </label>
+              <label className="flex items-center justify-between border border-stone-200 px-1.5 py-1 bg-[#faf9f6]">
+                <span className="text-[9px] text-stone-600">Köşelik</span>
+                <input
+                  type="color"
+                  value={project.cornerTrimColorHex || project.baseboardColorHex}
+                  onChange={(e) => onUpdateProject((p) => ({ ...p, showCornerTrim: true, cornerTrimColorHex: e.target.value }))}
+                  className="w-5 h-4 border border-stone-300 cursor-pointer"
+                />
+              </label>
+            </div>
           </div>
         </div>
       </div>
@@ -829,6 +967,40 @@ export const SelectionInspector: React.FC<Props> = ({
                 <span className="font-mono text-[10px]">{door.colorHex}</span>
               </div>
             </label>
+          </div>
+
+          <div className="border-t border-stone-200 pt-3 space-y-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              Doorpan · VarioDor · AGT Kapı Paneli
+            </span>
+            {door.brandLabel && <p className="text-[10px] font-semibold text-stone-900 truncate">{door.brandLabel}</p>}
+            <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto pr-0.5">
+              {DOOR_PANEL_CATALOG.map((dp) => {
+                const active = door.brandLabel?.includes(dp.code);
+                return (
+                  <button
+                    key={dp.id}
+                    type="button"
+                    onClick={() =>
+                      patchDoor({
+                        colorHex: dp.hex,
+                        handleColorHex: dp.handleHex,
+                        panelStyle: dp.panelStyle,
+                        brandLabel: `${SUPPLIER_SHORT[dp.brand]} ${dp.code} · ${dp.name}`,
+                      })
+                    }
+                    className={`px-1.5 py-1 border flex items-center gap-1.5 text-left ${
+                      active ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white hover:border-stone-950'
+                    }`}
+                  >
+                    <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: dp.hex }} />
+                    <span className="truncate text-[10px]">
+                      <strong className="font-mono">{dp.code}</strong> {dp.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
@@ -1237,6 +1409,65 @@ export const SelectionInspector: React.FC<Props> = ({
                 3B Mesh Tonlama
               </div>
             )}
+          </div>
+
+          {/* Official 4-Brand Supplier Panel / Countertop Swatches right in Object Inspector */}
+          <div className="pt-2 border-t border-stone-200 space-y-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+              {obj.parametricKind === 'kitchen_counter'
+                ? 'Technotop · AGT · Starwood Laminat Tezgah'
+                : 'Kastamonu · Yıldız · Starwood · AGT Kartela'}
+            </span>
+            {obj.materialBrandLabel && (
+              <p className="text-[10px] font-semibold text-stone-900 truncate">{obj.materialBrandLabel}</p>
+            )}
+            <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
+              {obj.parametricKind === 'kitchen_counter'
+                ? COUNTERTOP_CATALOG.map((ct) => (
+                    <button
+                      key={ct.id}
+                      type="button"
+                      onClick={() =>
+                        patchObj({
+                          parametricColorHex: ct.hex,
+                          countertopSurface: ct.surfaceKind,
+                          parametricAccentHex: ct.recommendedCabinetHex,
+                          materialBrandLabel: `${SUPPLIER_SHORT[ct.brand]} ${ct.code} · ${ct.name}`,
+                        })
+                      }
+                      className="px-1.5 py-1 border border-stone-200 hover:border-stone-950 bg-white flex items-center gap-1.5 text-left"
+                    >
+                      <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: ct.hex }} />
+                      <span className="truncate text-[10px]">
+                        <strong className="font-mono">{ct.code}</strong> {ct.name}
+                      </span>
+                    </button>
+                  ))
+                : FURNITURE_PANEL_CATALOG.slice(0, 12).map((fp) => (
+                    <button
+                      key={fp.id}
+                      type="button"
+                      onClick={() =>
+                        obj.parametricKind
+                          ? patchObj({
+                              parametricColorHex: fp.hex,
+                              parametricAccentHex: fp.accentHex,
+                              materialBrandLabel: `${SUPPLIER_SHORT[fp.brand]} ${fp.code} · ${fp.name}`,
+                            })
+                          : patchObj({
+                              tintHex: fp.hex,
+                              materialBrandLabel: `${SUPPLIER_SHORT[fp.brand]} ${fp.code} · ${fp.name}`,
+                            })
+                      }
+                      className="px-1.5 py-1 border border-stone-200 hover:border-stone-950 bg-white flex items-center gap-1.5 text-left"
+                    >
+                      <span className="w-3.5 h-3.5 border border-black/20 shrink-0" style={{ backgroundColor: fp.hex }} />
+                      <span className="truncate text-[10px]">
+                        <strong className="font-mono">{fp.code}</strong> {fp.name}
+                      </span>
+                    </button>
+                  ))}
+            </div>
           </div>
         </div>
 

@@ -725,6 +725,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       t: project.wallThicknessM,
       bb: project.showBaseboard,
       bbc: project.baseboardColorHex,
+      bbh: project.baseboardHeightCm,
+      ct: project.showCornerTrim,
+      ctc: project.cornerTrimColorHex,
       cc: project.ceilingColorHex,
       sp: project.recessedSpots,
       spw: project.spotWarmthHex,
@@ -962,7 +965,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       for (const obj of project.objects) {
         const sig = obj.parametricKind
-          ? `param:${obj.parametricKind}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.parametricColorHex}:${obj.parametricAccentHex}:${obj.thumbUrl ? obj.thumbUrl.slice(-24) : ''}:${obj.name}`
+          ? `param:${obj.parametricKind}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.parametricColorHex}:${obj.parametricAccentHex}:${obj.countertopSurface || ''}:${obj.thumbUrl ? obj.thumbUrl.slice(-24) : ''}:${obj.name}`
           : `glb:${obj.glbUrl}:${obj.widthM.toFixed(2)}:${obj.depthM.toFixed(2)}:${obj.heightM.toFixed(2)}:${obj.tintHex || ''}`;
 
         const existing = eng.mountedObjects.get(obj.id);

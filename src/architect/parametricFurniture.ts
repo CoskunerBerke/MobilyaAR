@@ -805,6 +805,70 @@ export function buildParametricObject3D(
       addBox(W - 0.07, H - 0.07, 0.012, 0, H * 0.5, D * 0.5 + 0.002, canvasMat, false);
       addBox(W * 0.42, H * 0.52, 0.014, -W * 0.12, H * 0.48, D * 0.5 + 0.005, accentBlock, false);
     }
+  } else if (obj.parametricKind === 'kitchen_counter') {
+    // Realistic Technotop / Laminate Countertop & Lower Cabinet Assembly (Mutfak & Ada Tezgahı)
+    const surfKind = obj.countertopSurface || 'marble';
+    const topTex = createFloorTexture(surfKind, primaryHex, W * 1.1, D * 1.4);
+    const topMat = new THREE.MeshStandardMaterial({
+      map: topTex,
+      roughness: surfKind === 'marble' ? 0.24 : surfKind === 'travertine' ? 0.42 : 0.55,
+      metalness: 0.04,
+    });
+    const cabMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accentHex),
+      roughness: 0.52,
+      metalness: 0.06,
+    });
+    const seamMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accentHex).multiplyScalar(0.75),
+      roughness: 0.65,
+    });
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0xcbd0d6,
+      roughness: 0.25,
+      metalness: 0.85,
+    });
+    const sinkMat = new THREE.MeshStandardMaterial({
+      color: 0x2a2c30,
+      roughness: 0.35,
+      metalness: 0.5,
+    });
+    disposables.push(() => {
+      topMat.dispose();
+      cabMat.dispose();
+      seamMat.dispose();
+      steelMat.dispose();
+      sinkMat.dispose();
+    });
+
+    const plinthH = 0.1;
+    const topT = 0.044;
+    const cabH = Math.max(0.45, H - plinthH - topT);
+    // Recessed dark toe-kick plinth
+    addBox(W - 0.04, plinthH, D - 0.08, 0, plinthH * 0.5, -0.02, seamMat, false);
+    // Main lower cabinet body
+    addBox(W - 0.02, cabH, D - 0.04, 0, plinthH + cabH * 0.5, -0.01, cabMat);
+    // Individual cabinet doors + recessed handles
+    const doors = Math.max(2, Math.min(6, Math.round(W / 0.55)));
+    const dw = (W - 0.03) / doors;
+    for (let i = 0; i < doors; i++) {
+      const dx = -W * 0.5 + 0.015 + dw * (i + 0.5);
+      addBox(dw - 0.01, cabH - 0.02, 0.022, dx, plinthH + cabH * 0.5, D * 0.5 - 0.015, cabMat);
+      if (i > 0) addBox(0.008, cabH - 0.02, 0.012, dx - dw * 0.5, plinthH + cabH * 0.5, D * 0.5 - 0.012, seamMat, false);
+      // Sleek horizontal aluminum Gola profile handle near top of door
+      addBox(dw * 0.36, 0.014, 0.02, dx, plinthH + cabH - 0.055, D * 0.5 + 0.005, steelMat, false);
+    }
+    // Thick Technotop / Laminate countertop slab with slight front overhang
+    addBox(W + 0.02, topT, D + 0.03, 0, H - topT * 0.5, 0.01, topMat);
+    // Matching 16cm rear splashback strip
+    addBox(W + 0.02, 0.16, 0.024, 0, H + 0.08, -D * 0.5 + 0.012, topMat);
+    // Integrated matte granite/steel sink basin + minimalist gooseneck faucet
+    if (W >= 1.1) {
+      const sinkX = W * 0.22;
+      addBox(0.56, 0.012, 0.4, sinkX, H + 0.006, 0.02, sinkMat, false);
+      addBox(0.026, 0.24, 0.026, sinkX, H + 0.12, -0.2, steelMat, false);
+      addBox(0.022, 0.022, 0.16, sinkX, H + 0.23, -0.13, steelMat, false);
+    }
   } else if (obj.parametricKind === 'console_table') {
     const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.54 });
     const legMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.36, metalness: 0.65 });

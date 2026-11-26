@@ -37,6 +37,8 @@ import { fetchCloudCatalog } from '../lib/storageClient';
 import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
+import { BrandCatalogPanel } from './BrandCatalogPanel';
+import { SUPPLIER_SHORT } from './materialCatalogs';
 import { NumericInput } from './NumericInput';
 import { PinterestAIPanel } from './PinterestAIPanel';
 import { SelectionInspector } from './SelectionInspector';
@@ -65,7 +67,7 @@ import {
   type WindowKind,
 } from './types';
 
-type StudioTab = 'room' | 'objects' | 'sun' | 'pinterest';
+type StudioTab = 'room' | 'catalog' | 'objects' | 'sun' | 'pinterest';
 type RoomAccordion = 'dims' | 'openings' | 'structure';
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
@@ -86,6 +88,7 @@ const PARAMETRIC_CARDS: Array<{
   { kind: 'fireplace_marble', name: 'Mermer Şömine', sub: '200 × 44 × 260 cm', w: 2.0, d: 0.44, h: 2.6, y: 0, mount: 'wall', c1: '#ece9e2', c2: '#252423' },
   { kind: 'tv_wall_unit', name: 'Çıtalı TV Ünitesi', sub: '240 × 42 × 245 cm', w: 2.4, d: 0.42, h: 2.45, y: 0, mount: 'wall', c1: '#b78e66', c2: '#252423' },
   { kind: 'wardrobe', name: 'Mimari Gardırop', sub: '220 × 60 × 240 cm', w: 2.2, d: 0.6, h: 2.4, y: 0, mount: 'wall', c1: '#ebe6dd', c2: '#2b2a28' },
+  { kind: 'kitchen_counter', name: 'Laminat Tezgah', sub: '220 × 65 × 90 cm', w: 2.2, d: 0.65, h: 0.9, y: 0, mount: 'wall', c1: '#efede7', c2: '#3f4247' },
   { kind: 'dining_table', name: 'Yemek Masası', sub: '180 × 95 × 75 cm', w: 1.8, d: 0.95, h: 0.75, y: 0, mount: 'floor', c1: '#9b7452', c2: '#232325' },
   { kind: 'bookshelf', name: 'Işıklı Kitaplık', sub: '160 × 36 × 220 cm', w: 1.6, d: 0.36, h: 2.2, y: 0, mount: 'wall', c1: '#876246', c2: '#242322' },
   { kind: 'bed_frame', name: 'Çift Kişilik Yatak', sub: '175 × 212 × 112 cm', w: 1.75, d: 2.12, h: 1.12, y: 0, mount: 'floor', c1: '#dcd5c9', c2: '#f5f2ec' },
@@ -771,7 +774,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
   };
 
   const TABS: Array<{ id: StudioTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-    { id: 'room', label: 'Oda & Yapı', icon: Building2 },
+    { id: 'room', label: 'Oda', icon: Building2 },
+    { id: 'catalog', label: 'Katalog', icon: Layers },
     { id: 'objects', label: 'Eşya', icon: Sofa },
     { id: 'sun', label: 'Güneş', icon: Sun },
     { id: 'pinterest', label: 'Pinterest', icon: Sparkles },
@@ -855,6 +859,15 @@ export const ArchitecturalStudioPage: React.FC = () => {
                       className="accent-stone-950"
                     />
                     <span>Süpürgelik</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={project.showCornerTrim !== false}
+                      onChange={(e) => setProject((p) => ({ ...p, showCornerTrim: e.target.checked }))}
+                      className="accent-stone-950"
+                    />
+                    <span>Köşelik</span>
                   </label>
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
@@ -1301,6 +1314,221 @@ export const ArchitecturalStudioPage: React.FC = () => {
             )}
           </div>
         </div>
+      );
+    }
+
+    if (activeTab === 'catalog') {
+      return (
+        <BrandCatalogPanel
+          project={project}
+          activeWall={activeWall}
+          selection={selection}
+          onSelectWall={(wId) => {
+            setActiveWall(wId);
+            if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
+          }}
+          onApplyParquet={(item) => {
+            setProject((p) => ({
+              ...p,
+              floorMaterial: item.floorMaterial,
+              floorTintHex: item.hex,
+              floorBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.series} ${item.code} · ${item.name}`,
+            }));
+            showToast(`Zemin → ${SUPPLIER_SHORT[item.brand]} ${item.code} (${item.name})`);
+          }}
+          onApplyWallPanel={(item, mode) => {
+            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+            if (mode === 'zone') {
+              const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
+              const ceilCm = Math.round(project.ceilingM * 100);
+              const zone: ArchWallZone = {
+                id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+                wall: activeWall,
+                label,
+                offsetCm: Math.round(wallLenCm * 0.5),
+                widthCm: Math.min(wallLenCm, 190),
+                bottomCm: 0,
+                heightCm: ceilCm,
+                pattern: item.pattern,
+                colorHex: item.hex,
+                brandLabel: label,
+              };
+              setProject((p) => ({ ...p, wallZones: [...(p.wallZones || []), zone] }));
+              setSelection({ type: 'wallZone', id: zone.id });
+              if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+              showToast(`${WALL_LABELS[activeWall]} → ${label} panel eklendi.`);
+            } else if (mode === 'all') {
+              setProject((p) => ({
+                ...p,
+                walls: {
+                  north: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+                  east: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+                  south: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+                  west: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+                },
+              }));
+              showToast(`4 Duvar → ${label}`);
+            } else {
+              setProject((p) => ({
+                ...p,
+                walls: {
+                  ...p.walls,
+                  [activeWall]: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
+                },
+              }));
+              if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+              showToast(`${WALL_LABELS[activeWall]} → ${label}`);
+            }
+          }}
+          onApplySkirtingTrim={(item, target) => {
+            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+            setProject((p) => ({
+              ...p,
+              ...(target === 'both' || target === 'baseboard'
+                ? {
+                    showBaseboard: true,
+                    baseboardColorHex: item.hex,
+                    baseboardHeightCm: p.baseboardHeightCm || item.defaultHeightCm,
+                    baseboardBrandLabel: label,
+                  }
+                : {}),
+              ...(target === 'both' || target === 'corner'
+                ? {
+                    showCornerTrim: true,
+                    cornerTrimColorHex: item.hex,
+                    cornerTrimBrandLabel: `${SUPPLIER_SHORT[item.brand]} ${item.code} · Köşelik`,
+                  }
+                : {}),
+            }));
+            showToast(
+              `${target === 'corner' ? 'Köşelik' : target === 'baseboard' ? 'Süpürgelik' : 'Süpürgelik & Köşelik'} → ${label}`
+            );
+          }}
+          onUpdateSkirtingHeight={(cm) => {
+            setProject((p) => ({ ...p, showBaseboard: true, baseboardHeightCm: cm }));
+            showToast(`Süpürgelik yüksekliği: ${cm} cm`);
+          }}
+          onToggleCornerTrim={(enabled) => {
+            setProject((p) => ({ ...p, showCornerTrim: enabled }));
+          }}
+          onApplyDoorPanel={(item) => {
+            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+            if (project.doors.length === 0) {
+              const wallLenCm = Math.round(getWallLengthM(activeWall, project.widthM, project.depthM) * 100);
+              const door: ArchDoor = {
+                id: `door-${Date.now()}`,
+                wall: activeWall,
+                kind: 'single',
+                offsetCm: Math.round(wallLenCm * 0.35),
+                widthCm: 95,
+                heightCm: Math.min(215, Math.round(project.ceilingM * 100) - 15),
+                swing: 'inward',
+                hinge: 'left',
+                openAngleDeg: 40,
+                colorHex: item.hex,
+                handleColorHex: item.handleHex,
+                panelStyle: item.panelStyle,
+                brandLabel: label,
+              };
+              setProject((p) => ({ ...p, doors: [door] }));
+              setSelection({ type: 'door', id: door.id });
+              showToast(`${label} kapı eklendi.`);
+              return;
+            }
+            const targetDoorId = selection?.type === 'door' ? selection.id : null;
+            setProject((p) => ({
+              ...p,
+              doors: p.doors.map((d) =>
+                !targetDoorId || d.id === targetDoorId
+                  ? {
+                      ...d,
+                      colorHex: item.hex,
+                      handleColorHex: item.handleHex,
+                      panelStyle: item.panelStyle,
+                      brandLabel: label,
+                    }
+                  : d
+              ),
+            }));
+            showToast(`Kapı Paneli → ${label}`);
+          }}
+          onApplyCountertop={(item) => {
+            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+            const existing =
+              (selection?.type === 'object'
+                ? project.objects.find((o) => o.id === selection.id && o.parametricKind === 'kitchen_counter')
+                : undefined) || project.objects.find((o) => o.parametricKind === 'kitchen_counter');
+            if (existing) {
+              setProject((p) => ({
+                ...p,
+                objects: p.objects.map((o) =>
+                  o.id === existing.id
+                    ? {
+                        ...o,
+                        parametricColorHex: item.hex,
+                        parametricAccentHex: item.recommendedCabinetHex,
+                        countertopSurface: item.surfaceKind,
+                        materialBrandLabel: label,
+                      }
+                    : o
+                ),
+              }));
+              setSelection({ type: 'object', id: existing.id });
+              showToast(`Laminat Tezgah → ${label}`);
+              return;
+            }
+            const snap = computeWallSnapTransform(activeWall, 0.65, project);
+            const obj: ArchPlacedObject = {
+              id: `mod-kitchen_counter-${Date.now()}`,
+              name: `${item.series} (${item.code})`,
+              category: 'Tezgah & Mutfak',
+              dimensionsCm: '220 × 65 × 90 cm',
+              parametricKind: 'kitchen_counter',
+              parametricColorHex: item.hex,
+              parametricAccentHex: item.recommendedCabinetHex,
+              countertopSurface: item.surfaceKind,
+              materialBrandLabel: label,
+              x: snap.x,
+              y: 0,
+              z: snap.z,
+              rot: snap.rot,
+              widthM: 2.2,
+              depthM: 0.65,
+              heightM: 0.9,
+              mountMode: 'wall',
+              attachedWall: activeWall,
+              source: 'parametric',
+            };
+            setProject((p) => ({ ...p, objects: [...p.objects, obj] }));
+            setSelection({ type: 'object', id: obj.id });
+            if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
+            showToast(`${label} tezgah modülü eklendi.`);
+          }}
+          onApplyFurniturePanel={(item) => {
+            const label = `${SUPPLIER_SHORT[item.brand]} ${item.code} · ${item.name}`;
+            const targetObj = selection?.type === 'object' ? project.objects.find((o) => o.id === selection.id) : null;
+            if (!targetObj) {
+              showToast('Önce 3B sahneden bir mobilyaya (dolap, kitaplık, masa, koltuk vb.) tıklayın.');
+              return;
+            }
+            setProject((p) => ({
+              ...p,
+              objects: p.objects.map((o) =>
+                o.id === targetObj.id
+                  ? o.parametricKind
+                    ? {
+                        ...o,
+                        parametricColorHex: item.hex,
+                        parametricAccentHex: item.accentHex,
+                        materialBrandLabel: label,
+                      }
+                    : { ...o, tintHex: item.hex, materialBrandLabel: label }
+                  : o
+              ),
+            }));
+            showToast(`${targetObj.name} → ${label}`);
+          }}
+        />
       );
     }
 
@@ -2066,9 +2294,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
           <aside
             className={`${
               mobileSidebarOpen ? 'fixed inset-y-14 left-0 z-30 flex' : 'hidden lg:flex'
-            } w-[85vw] max-w-[320px] lg:w-[272px] xl:w-[306px] 2xl:w-[348px] bg-white border-r border-stone-200 flex-col shrink-0 shadow-2xl lg:shadow-none pb-[env(safe-area-inset-bottom)]`}
+            } w-[88vw] max-w-[330px] lg:w-[292px] xl:w-[324px] 2xl:w-[360px] bg-white border-r border-stone-200 flex-col shrink-0 shadow-2xl lg:shadow-none pb-[env(safe-area-inset-bottom)]`}
           >
-            <nav className="grid grid-cols-4 border-b border-stone-200 bg-[#faf9f6] shrink-0">
+            <nav className="grid grid-cols-5 border-b border-stone-200 bg-[#faf9f6] shrink-0">
               {TABS.map((t) => {
                 const Icon = t.icon;
                 const active = activeTab === t.id;

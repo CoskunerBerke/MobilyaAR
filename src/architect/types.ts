@@ -64,11 +64,13 @@ export type ParametricFurnitureKind =
   | 'wall_mirror'
   | 'floor_lamp'
   | 'console_table'
+  | 'kitchen_counter'
   | 'wall_art';
 
 export interface WallFinish {
   colorHex: string;
   pattern: WallPattern;
+  brandLabel?: string;
 }
 
 /** Partial region / accent panel painted or clad on a specific section of any wall */
@@ -84,6 +86,7 @@ export interface ArchWallZone {
   heightCm: number;
   pattern: WallPattern;
   colorHex: string;
+  brandLabel?: string;
 }
 
 export interface ArchWindow {
@@ -113,6 +116,8 @@ export interface ArchDoor {
   openAngleDeg: number;
   colorHex: string;
   handleColorHex: string;
+  panelStyle?: 'classic' | 'modern' | 'fluted' | 'wood';
+  brandLabel?: string;
 }
 
 export interface ArchColumn {
@@ -270,6 +275,10 @@ export interface ArchPlacedObject {
   parametricKind?: ParametricFurnitureKind;
   parametricColorHex?: string;
   parametricAccentHex?: string;
+  /** Countertop surface texture kind for kitchen_counter (Technotop / laminate worktops) */
+  countertopSurface?: FloorMaterialKind;
+  /** Real supplier catalog specification label (e.g. "Starwood 332 Avustralya Ceviz") */
+  materialBrandLabel?: string;
   /** Live color tint applied to imported/RunPod .GLB meshes when user changes color */
   tintHex?: string;
   /** Tracks originating Pinterest item ID so RunPod 2K PBR upgrade replaces it in-place */
@@ -311,11 +320,17 @@ export interface ArchRoomProject {
   showCeiling: boolean;
   showBaseboard: boolean;
   baseboardColorHex: string;
+  baseboardHeightCm?: number;
+  baseboardBrandLabel?: string;
+  showCornerTrim?: boolean;
+  cornerTrimColorHex?: string;
+  cornerTrimBrandLabel?: string;
   ceilingColorHex: string;
   recessedSpots: boolean;
   spotWarmthHex: string;
   floorMaterial: FloorMaterialKind;
   floorTintHex: string;
+  floorBrandLabel?: string;
   walls: Record<WallId, WallFinish>;
   wallZones: ArchWallZone[];
   windows: ArchWindow[];
@@ -555,29 +570,36 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
     wallThicknessM: 0.18,
     showCeiling: false,
     showBaseboard: true,
-    baseboardColorHex: '#f2efe8',
+    baseboardColorHex: '#f4f2ec',
+    baseboardHeightCm: 10,
+    baseboardBrandLabel: 'AGT SPR-3072 · Lake Beyaz',
+    showCornerTrim: true,
+    cornerTrimColorHex: '#eae7df',
+    cornerTrimBrandLabel: 'AGT SPR-734 · Soft Touch Köşelik',
     ceilingColorHex: '#f8f7f3',
     recessedSpots: true,
     spotWarmthHex: '#ffe7c2',
     floorMaterial: 'herringbone_oak',
-    floorTintHex: '#c8ab86',
+    floorTintHex: '#c4a47c',
+    floorBrandLabel: 'Kastamonu Floorpan FRV001 · Danube Meşe',
     walls: {
-      north: { colorHex: '#f2efe8', pattern: 'smooth' },
-      south: { colorHex: '#f2efe8', pattern: 'boiserie' },
-      west: { colorHex: '#ece7de', pattern: 'smooth' },
-      east: { colorHex: '#f0ece4', pattern: 'smooth' },
+      north: { colorHex: '#f3f1eb', pattern: 'smooth', brandLabel: 'Kastamonu Evogloss P001 · Süpermat Beyaz' },
+      south: { colorHex: '#f3f1eb', pattern: 'boiserie', brandLabel: 'Kastamonu Evogloss P001 · Çıtalı' },
+      west: { colorHex: '#e8e4dc', pattern: 'smooth', brandLabel: 'AGT Supramat 3018 · Ay Işığı' },
+      east: { colorHex: '#efeae2', pattern: 'smooth', brandLabel: 'Yıldız Trend YT_10Z · Satürn Bej' },
     },
     wallZones: [
       {
         id: 'zone-east-slats',
         wall: 'east',
-        label: 'Ahşap Çıta Bölgesi',
+        label: 'AGT LB-2050 / 3079 · Ahşap Meşe Duvar Profili',
         offsetCm: 335,
         widthCm: 190,
         bottomCm: 0,
         heightCm: 285,
         pattern: 'slats',
-        colorHex: '#b9936c',
+        colorHex: '#b99268',
+        brandLabel: 'AGT LB-2050 / 3079 · Ahşap Meşe',
       },
     ],
     windows: [
@@ -621,8 +643,10 @@ export function createDefaultArchitectProject(catalogProducts: Product[]): ArchR
         swing: 'inward',
         hinge: 'left',
         openAngleDeg: 38,
-        colorHex: '#f3f1eb',
-        handleColorHex: '#262626',
+        colorHex: '#f4f2ec',
+        handleColorHex: '#232325',
+        panelStyle: 'classic',
+        brandLabel: 'Kastamonu Doorpan DP202 · Anatolia Beyaz',
       },
     ],
     columns: [

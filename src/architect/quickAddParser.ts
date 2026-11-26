@@ -97,6 +97,7 @@ export const QUICK_ADD_SUGGESTIONS = [
   'Mermer Şömine 200 cm',
   'TV Duvar Ünitesi 240 cm',
   'Gardırop 220x60x240',
+  'Laminat Tezgah 220 cm',
   'Yemek Masası 180x95',
   'Kitaplık 160x35x220',
   'Çift Kişilik Yatak',
@@ -232,6 +233,23 @@ export function parseQuickAddQuery(raw: string, catalog: Product[], ceilingM = 2
       mountMode: 'wall',
       colorHex: color || '#ece9e2',
       accentHex: '#252423',
+    };
+  }
+
+  // 3.5) Laminat Tezgah / Mutfak Tezgahı / Ada
+  if (norm.includes('tezgah') || norm.includes('mutfak') || norm.includes('ada')) {
+    return {
+      kind: 'parametric',
+      parametricKind: 'kitchen_counter',
+      name: 'Technotop Laminat Tezgah',
+      category: 'Tezgah & Mutfak',
+      widthCm: dims.w || 220,
+      depthCm: dims.d && dims.d <= 120 ? dims.d : 65,
+      heightCm: dims.h && dims.h >= 65 && dims.h <= 120 ? dims.h : 90,
+      yCm: 0,
+      mountMode: 'wall',
+      colorHex: color || '#efede7',
+      accentHex: '#3f4247',
     };
   }
 

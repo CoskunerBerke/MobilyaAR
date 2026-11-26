@@ -362,13 +362,27 @@ function createDoorAssembly(
   const doorGroup = new THREE.Group();
   const swingArcGroup = new THREE.Group();
 
-  const leafMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(door.colorHex), roughness: 0.55, metalness: 0.04 });
-  const trimMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(door.colorHex).multiplyScalar(0.95), roughness: 0.5 });
+  const pStyle = door.panelStyle || 'classic';
+  const leafTex =
+    pStyle === 'wood'
+      ? createFloorTexture('plank_oak', door.colorHex, w * 1.4, h * 0.9)
+      : pStyle === 'fluted'
+      ? createWallTexture('slats', door.colorHex, w * 1.6, h * 0.9)
+      : null;
+  const leafMat = new THREE.MeshStandardMaterial({
+    color: leafTex ? 0xffffff : new THREE.Color(door.colorHex),
+    map: leafTex || undefined,
+    roughness: pStyle === 'modern' ? 0.36 : 0.56,
+    metalness: 0.04,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(door.colorHex).multiplyScalar(0.93), roughness: 0.48 });
+  const grooveMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(door.colorHex).multiplyScalar(0.76), roughness: 0.65 });
   const handleMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(door.handleColorHex), roughness: 0.3, metalness: 0.82 });
   const thresholdMat = new THREE.MeshStandardMaterial({ color: 0xd9d4ca, roughness: 0.35 });
   disposables.push(() => {
     leafMat.dispose();
     trimMat.dispose();
+    grooveMat.dispose();
     handleMat.dispose();
     thresholdMat.dispose();
   });
@@ -448,8 +462,22 @@ function createDoorAssembly(
 
     addBox(pivot, leafW, clearH, leafThick, leafSign * leafW * 0.5, clearH * 0.5, 0, leafMat);
     const panelW = Math.max(0.2, leafW - 0.18);
-    addBox(pivot, panelW, clearH * 0.36, leafThick + 0.008, leafSign * leafW * 0.5, clearH * 0.72, 0, trimMat);
-    addBox(pivot, panelW, clearH * 0.32, leafThick + 0.008, leafSign * leafW * 0.5, clearH * 0.26, 0, trimMat);
+    if (pStyle === 'classic') {
+      addBox(pivot, panelW, clearH * 0.36, leafThick + 0.008, leafSign * leafW * 0.5, clearH * 0.72, 0, trimMat);
+      addBox(pivot, panelW, clearH * 0.32, leafThick + 0.008, leafSign * leafW * 0.5, clearH * 0.26, 0, trimMat);
+    } else if (pStyle === 'modern') {
+      // Sleek minimal horizontal CNC grooves (VarioDor Lake / Supramat style)
+      for (const ratio of [0.22, 0.42, 0.62, 0.82]) {
+        addBox(pivot, leafW - 0.1, 0.008, leafThick + 0.004, leafSign * leafW * 0.5, clearH * ratio, 0, grooveMat);
+      }
+    } else if (pStyle === 'fluted') {
+      // Vertical architectural ribs (VarioDor Luxury / AGT Soft Touch style)
+      const ribCount = Math.max(4, Math.round(panelW / 0.075));
+      for (let r = 0; r < ribCount; r++) {
+        const rx = leafSign * (0.1 + ((r + 0.5) / ribCount) * panelW);
+        addBox(pivot, 0.016, clearH - 0.22, leafThick + 0.01, rx, clearH * 0.5, 0, trimMat);
+      }
+    }
 
     const hx = leafSign * (leafW - 0.09);
     addBox(pivot, 0.03, 0.03, leafThick + 0.09, hx, 1.02, 0, handleMat);
@@ -666,8 +694,17 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     { side: 'east', len: D, extendCorners: false, pos: [W / 2, 0, 0], rotY: -Math.PI / 2, inward: [-1, 0, 0] },
   ];
 
-  const baseboardMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(project.baseboardColorHex), roughness: 0.65 });
-  disposables.push(() => baseboardMat.dispose());
+  const baseboardH = Math.max(0.06, Math.min(0.18, (project.baseboardHeightCm ?? 10) / 100));
+  const baseboardMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(project.baseboardColorHex), roughness: 0.55 });
+  const cornerTrimMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(project.cornerTrimColorHex || project.baseboardColorHex),
+    roughness: 0.45,
+    metalness: 0.08,
+  });
+  disposables.push(() => {
+    baseboardMat.dispose();
+    cornerTrimMat.dispose();
+  });
 
   for (const ws of wallSpecs) {
     const wallHolder = new THREE.Group();
@@ -806,25 +843,48 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       visualGroup.add(zMesh);
     }
 
-    // Segmented interior baseboard
+    // Segmented interior baseboard (AGT / Floorpan / VarioClic adjustable profile height!)
     if (project.showBaseboard) {
       floorBreakSpans.sort((a, b) => a[0] - b[0]);
       let cursor = -ws.len * 0.5;
       const addBbSeg = (a: number, b: number) => {
         if (b - a < 0.04) return;
-        const g = new THREE.BoxGeometry(b - a, 0.095, 0.018);
-        disposables.push(() => g.dispose());
+        const g = new THREE.BoxGeometry(b - a, baseboardH, 0.018);
+        const capG = new THREE.BoxGeometry(b - a, 0.014, 0.022);
+        disposables.push(() => {
+          g.dispose();
+          capG.dispose();
+        });
         const m = new THREE.Mesh(g, baseboardMat);
-        m.position.set((a + b) * 0.5, 0.0475, 0.009);
+        m.position.set((a + b) * 0.5, baseboardH * 0.5, 0.009);
         m.receiveShadow = true;
-        m.raycast = () => {};
+        m.userData.pickTarget = { type: 'floor' } satisfies ArchSelection;
         visualGroup.add(m);
+        const cap = new THREE.Mesh(capG, baseboardMat);
+        cap.position.set((a + b) * 0.5, baseboardH - 0.007, 0.011);
+        cap.raycast = () => {};
+        visualGroup.add(cap);
       };
       for (const [bx0, bx1] of floorBreakSpans) {
         if (bx0 > cursor) addBbSeg(cursor, Math.min(bx0, ws.len * 0.5));
         cursor = Math.max(cursor, bx1);
       }
       if (cursor < ws.len * 0.5) addBbSeg(cursor, ws.len * 0.5);
+    }
+
+    // Interior vertical corner trim profiles (AGT / Starwood Köşelik Profilleri) at both ends of each wall!
+    if (project.showCornerTrim !== false) {
+      const trimW = 0.032;
+      const trimD = 0.016;
+      const trimGeo = new THREE.BoxGeometry(trimW, H, trimD);
+      disposables.push(() => trimGeo.dispose());
+      for (const endX of [-ws.len * 0.5 + trimW * 0.5, ws.len * 0.5 - trimW * 0.5]) {
+        const tm = new THREE.Mesh(trimGeo, cornerTrimMat);
+        tm.position.set(endX, H * 0.5, trimD * 0.5);
+        tm.receiveShadow = true;
+        tm.raycast = () => {};
+        visualGroup.add(tm);
+      }
     }
 
     if (coveOnWall) {
@@ -862,12 +922,24 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     roomRoot.add(mesh);
 
     if (project.showBaseboard && col.shape === 'rect') {
-      const bGeo = new THREE.BoxGeometry(colW + 0.02, 0.095, colD + 0.02);
+      const bGeo = new THREE.BoxGeometry(colW + 0.02, baseboardH, colD + 0.02);
       disposables.push(() => bGeo.dispose());
       const bm = new THREE.Mesh(bGeo, baseboardMat);
-      bm.position.set(colX, 0.0475, colZ);
+      bm.position.set(colX, baseboardH * 0.5, colZ);
       bm.raycast = () => {};
       roomRoot.add(bm);
+    }
+    if (project.showCornerTrim !== false && col.shape === 'rect') {
+      const cTrimGeo = new THREE.BoxGeometry(0.026, H, 0.026);
+      disposables.push(() => cTrimGeo.dispose());
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const ct = new THREE.Mesh(cTrimGeo, cornerTrimMat);
+          ct.position.set(colX + sx * (colW * 0.5 + 0.004), H * 0.5, colZ + sz * (colD * 0.5 + 0.004));
+          ct.raycast = () => {};
+          roomRoot.add(ct);
+        }
+      }
     }
   }
 
