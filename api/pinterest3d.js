@@ -19,9 +19,8 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Sequential fallback only if primary fails -> saves ~85% credit while staying 100% resilient.
 const VISION_WAVES = [
   ['gemini-3.8-flash'],
-  ['gemini-3.1-pro-preview', 'gemini-2.5-pro'],
-  ['gemini-2.5-flash'],
-  ['gemini-3.5-flash', 'gemma-4-31b-it'],
+  ['gemini-3.7-flash', 'gemini-3.5-flash'],
+  ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
@@ -104,7 +103,7 @@ async function discoverFallbackModels(apiKey, mode, alreadyTried) {
   }
 }
 
-async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, expectJson = false) {
+async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, expectJson = false, disableThinkingCap = false) {
   const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   let payload = body;
   if (/^gemma-/i.test(model) || /omni/i.test(model)) {
@@ -112,6 +111,13 @@ async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, exp
     delete cfg.responseMimeType;
     delete cfg.thinkingConfig;
     cfg.maxOutputTokens = Math.max(cfg.maxOutputTokens || 4096, 6144);
+    payload = { ...body, generationConfig: cfg };
+  } else if (expectJson && !disableThinkingCap && /^gemini-3/i.test(model)) {
+    // Cap Gemini 3.x reasoning latency (LOW keeps full spatial precision while responding in ~4-9s instead of 25-45s!)
+    const cfg = { ...(body.generationConfig || {}) };
+    if (!cfg.thinkingConfig) {
+      cfg.thinkingConfig = { thinkingLevel: 'LOW' };
+    }
     payload = { ...body, generationConfig: cfg };
   }
   const resp = await fetch(url, {
@@ -126,6 +132,9 @@ async function callSingleGeminiModel(apiKey, model, body, timeoutMs = 42000, exp
     json = JSON.parse(text);
   } catch {
     /* raw error */
+  }
+  if (!resp.ok && resp.status === 400 && !disableThinkingCap && /thinking/i.test(text)) {
+    return callSingleGeminiModel(apiKey, model, body, timeoutMs, expectJson, true);
   }
   if (resp.ok && json) {
     const parts = json?.candidates?.[0]?.content?.parts || [];
@@ -148,12 +157,13 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
   const errors = [];
   const tried = new Set();
   const recordErr = (model, e) => {
-    const st = e?.status || 'ERR';
+    const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError' || /timeout|aborted/i.test(String(e?.message || ''));
+    const st = e?.status || (isTimeout ? 'TIMEOUT' : /JSON/i.test(String(e?.message || '')) ? 'JSON' : 'ERR');
     statusMap.push(`${model}:${st}`);
     errors.push(e?.message || String(e));
   };
 
-  // For Vision: race COMPLETELY SEPARATE serving pools in parallel waves -> beats 503 spikes!
+  // For Vision: race COMPLETELY SEPARATE serving pools in parallel waves -> beats 503 spikes & fits strictly <52s!
   if (mode === 'vision') {
     for (const wave of VISION_WAVES) {
       const waveModels = wave.filter((m) => !tried.has(m));
@@ -162,7 +172,13 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
       try {
         const winner = await Promise.any(
           waveModels.map((m) =>
-            callSingleGeminiModel(apiKey, m, body, /^gemma-/i.test(m) ? 24000 : /3\.8-flash/.test(m) ? 22000 : /3\.5-flash/.test(m) ? 18000 : 12000, true).catch((e) => {
+            callSingleGeminiModel(
+              apiKey,
+              m,
+              body,
+              /3\.8-flash/.test(m) ? 20000 : /flash-lite/.test(m) ? 14000 : 16000,
+              true
+            ).catch((e) => {
               recordErr(m, e);
               throw e;
             })
@@ -797,7 +813,7 @@ Return ONLY valid JSON:
 {
   "nameTr": "short descriptive Turkish name (e.g. Saksılı Zeytin Ağacı, Metal Çerçeveli Kitaplık, Yuvarlak Duvar Aynası)",
   "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
-  "parametricKind": "sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_wall_unit" | "wall_tv" | "fireplace_marble" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit",
+  "parametricKind": ${VALID_ARCHETYPES},
   "primaryColorHex": "#RRGGBB (exact dominant color of this item)",
   "accentColorHex": "#RRGGBB (secondary/leg/frame/pot color)",
   "widthCm": number,
