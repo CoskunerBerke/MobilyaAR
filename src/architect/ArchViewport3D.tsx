@@ -477,14 +477,27 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         eng.camera.rotation.order = 'XYZ';
         eng.controls.enabled = true;
         eng.controls.maxPolarAngle = Math.PI * 0.495;
+        const hasMultiRooms = (p.adjacentRooms?.length || 0) > 0;
         if (angle === 'eye') {
-          const eyeY = Math.min(1.55, Math.max(1.15, p.ceilingM * 0.55));
-          eng.camera.fov = 56;
+          const eyeY = Math.min(1.52, Math.max(1.22, p.ceilingM * 0.52));
+          eng.camera.fov = 60;
           eng.camera.near = 0.08;
           eng.camera.far = Math.max(90, maxSpan * 12);
           eng.camera.updateProjectionMatrix();
-          eng.camera.position.set(cx + rw * 0.34, eyeY, cz + rd * 0.38);
-          eng.controls.target.set(cx - rw * 0.08, p.ceilingM * 0.42, cz - rd * 0.25);
+          eng.camera.position.set(cx + rw * 0.36, eyeY, cz + rd * 0.40);
+          eng.controls.target.set(cx - rw * 0.06, p.ceilingM * 0.40, cz - rd * 0.28);
+        } else if (hasMultiRooms) {
+          // Elevated corner view INSIDE the room's footprint so adjacent room walls (e.g. Banyo/WC) NEVER block the lens!
+          eng.camera.fov = 52;
+          eng.camera.near = 0.08;
+          eng.camera.far = Math.max(90, maxSpan * 12);
+          eng.camera.updateProjectionMatrix();
+          eng.camera.position.set(
+            cx + rw * 0.42,
+            Math.max(p.ceilingM + 1.35, maxSpan * 0.92),
+            cz + rd * 0.44
+          );
+          eng.controls.target.set(cx, p.ceilingM * 0.26, cz - rd * 0.08);
         } else {
           eng.camera.fov = 42;
           eng.camera.near = 0.08;

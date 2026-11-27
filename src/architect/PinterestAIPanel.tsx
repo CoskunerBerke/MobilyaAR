@@ -2649,10 +2649,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 type="button"
                 disabled={analyzing || refining}
                 onClick={() => {
-                  const hasMultiRooms = (project.adjacentRooms?.length || 0) > 0;
                   onOpenRenderStudio({
-                    roomId: hasMultiRooms || targetRoomId !== 'main' ? targetRoomId : 'current',
-                    angle: hasMultiRooms || targetRoomId !== 'main' ? 'corner' : 'current',
+                    roomId: targetRoomId || 'main',
+                    angle: 'eye',
                     referencePhoto: {
                       id: activePhoto.id,
                       label: `Foto ${activePhoto.index}`,

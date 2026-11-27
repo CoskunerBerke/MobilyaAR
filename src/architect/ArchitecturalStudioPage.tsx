@@ -1597,7 +1597,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => openRenderStudio({ roomId: 'main', angle: 'corner', autoStart: true })}
+                        onClick={() => openRenderStudio({ roomId: 'main', angle: 'eye', autoStart: true })}
                         className="px-2 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-700 shrink-0 transition"
                         title="Ana Salon için V-Ray Render Al"
                         aria-label="Ana Salon için Render Al"
@@ -1625,7 +1625,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => openRenderStudio({ roomId: r.id, angle: 'corner', autoStart: true })}
+                            onClick={() => openRenderStudio({ roomId: r.id, angle: 'eye', autoStart: true })}
                             className="px-2 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-700 shrink-0 transition"
                             title={`${r.name} için V-Ray Render Al`}
                             aria-label={`${r.name} için Render Al`}
@@ -3130,7 +3130,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
           });
           if (isAdjTarget || (project.adjacentRooms?.length || 0) > 0) {
             const focusId = targetRoomId || 'main';
-            setTimeout(() => viewportRef.current?.focusRoom(focusId, 'corner'), 120);
+            setTimeout(() => viewportRef.current?.focusRoom(focusId, 'eye'), 120);
           } else if (replaceExisting) {
             setTimeout(() => viewportRef.current?.resetCamera('free'), 120);
           }

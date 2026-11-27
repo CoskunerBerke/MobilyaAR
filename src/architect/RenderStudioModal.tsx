@@ -115,7 +115,7 @@ export const RenderStudioModal: React.FC<Props> = ({
   }, [project.widthM, project.depthM, project.adjacentRooms]);
 
   const [targetRoomId, setTargetRoomId] = useState<string>('current');
-  const [cameraAngle, setCameraAngle] = useState<'corner' | 'eye'>('corner');
+  const [cameraAngle, setCameraAngle] = useState<'corner' | 'eye'>('eye');
   const [presetId, setPresetId] = useState<string>('daylight');
   const [customNote, setCustomNote] = useState<string>('');
   const [activeRenderId, setActiveRenderId] = useState<string | null>(null);
@@ -182,12 +182,15 @@ export const RenderStudioModal: React.FC<Props> = ({
     if (!snap) {
       throw new Error('3B sahne görüntüsü yakalanamadı. Önce 3B görünümün yüklendiğinden emin olun.');
     }
+    const foundRoomName = rooms.find((r) => r.id === roomId)?.name || 'Oda';
     const roomLabel =
       roomId === 'current'
         ? refPhoto
           ? `${refPhoto.label} · 3B Sahne`
           : 'Mevcut 3B Açı'
-        : rooms.find((r) => r.id === roomId)?.name || 'Oda';
+        : refPhoto
+        ? `${refPhoto.label} · ${foundRoomName}`
+        : foundRoomName;
 
     const styleNote = [activePreset.note, customNote.trim()].filter(Boolean).join(' ');
     const res = await generatePhotorealRender({
