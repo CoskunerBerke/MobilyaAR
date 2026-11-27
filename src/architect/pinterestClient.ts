@@ -20,19 +20,41 @@ export interface PinterestMezzanineSpec {
   deckColorHex?: string;
 }
 
+export interface PinterestWallZoneSpec {
+  wall: WallId;
+  labelTr?: string;
+  /** 0.0 (left edge of wall) to 1.0 (right edge of wall) */
+  startRatio: number;
+  endRatio: number;
+  bottomCm?: number;
+  heightCm?: number;
+  pattern: WallPattern;
+  colorHex: string;
+}
+
 export interface PinterestRoomStyle {
   styleNameTr: string;
   summaryTr: string;
   wallColorHex: string;
   accentWallColorHex: string;
+  /** Primary wall carrying the main wall motif/cladding/TV feature (defaults to 'north') */
+  accentWall?: WallId;
   wallPattern: WallPattern;
+  /** Optional per-wall finish overrides (e.g. boiserie on both north & west walls) */
+  perWallFinishes?: Partial<Record<WallId, { colorHex?: string; pattern?: WallPattern }>>;
+  /** Partial wall cladding zones (e.g. wood acoustic slats beside TV, marble slab behind TV) */
+  wallZones?: PinterestWallZoneSpec[];
   floorMaterial: FloorMaterialKind;
   floorTintHex: string;
   curtainColorHex: string;
+  curtainStyle?: 'none' | 'sheer_and_drape' | 'sheer_only' | 'roman_blind';
   suggestedSunHour: number;
   suggestedCeilingCm?: number;
   hasVisibleWindow?: boolean;
   primaryWindowWall?: WallId;
+  /** All walls that visibly carry floor-to-ceiling windows or curtains (e.g. ['west','north'] for corner curtains) */
+  windowWalls?: WallId[];
+  hasCeilingLedCove?: boolean;
   hasMezzanine?: boolean;
   mezzanine?: PinterestMezzanineSpec;
 }
@@ -63,8 +85,12 @@ export interface PinterestDetectedObject {
 
 const VALID_PARAMETRIC_SET = new Set<ParametricFurnitureKind>([
   'fireplace_marble',
+  'linear_fireplace',
   'tv_wall_unit',
+  'tv_baza',
   'wall_tv',
+  'wall_shelf',
+  'decorative_vase',
   'rug_custom',
   'chandelier',
   'wardrobe',
@@ -116,10 +142,21 @@ export function resolvePinterestArchetype(item: PinterestDetectedObject): Parame
   if (item.mountMode === 'rug' || /hali|kilim|rug|carpet/.test(t)) return 'rug_custom';
   if (/ayna|mirror/.test(t)) return 'wall_mirror';
   if (/tablo|poster|resim|cerceve|painting|artwork|wall art/.test(t)) return 'wall_art';
-  if (/somine|fireplace/.test(t)) return 'fireplace_marble';
-  if ((/tv|televizyon|media/.test(t)) && (/unite|dolap|unit|stand|wall/.test(t))) return 'tv_wall_unit';
+  if (/somine|fireplace/.test(t)) {
+    return (item.heightCm || 0) > 0 && item.heightCm <= 105 ? 'linear_fireplace' : 'fireplace_marble';
+  }
+  if ((/tv|televizyon|media|medya/.test(t)) && (/baza|alt.*dolap|alt.*mod|konsol|sehpa|console|cabinet|stand|bench|credenza/.test(t))) {
+    return 'tv_baza';
+  }
+  if ((/tv|televizyon|media/.test(t)) && (/unite|duvar|unit|wall/.test(t))) {
+    return (item.heightCm || 0) > 0 && item.heightCm <= 80 ? 'tv_baza' : 'tv_wall_unit';
+  }
   if (/televizyon|\btv\b|oled|ekran|screen/.test(t)) return 'wall_tv';
-  if (/bitki|saksi|agac|zeytin|cicek|plant|tree|ficus|monstera/.test(t)) return 'potted_plant';
+  if (/duvar raf|floating shelf|wall shelf|\braf\b|nis raf/.test(t) && (item.heightCm || 0) <= 65) return 'wall_shelf';
+  if (/vazo|vase|tepsi|tray|mum|candle|cicek.*vazo|dekor.*obje|flower/.test(t) || ((/bitki|cicek|saksi|plant/.test(t)) && (item.relation === 'on_top_of' || ((item.heightCm || 0) > 0 && item.heightCm <= 45)))) {
+    return 'decorative_vase';
+  }
+  if (/bitki|saksi|agac|zeytin|cicek|plant|tree|ficus|monstera|palm/.test(t)) return 'potted_plant';
   if (/merdiven|stair/.test(t)) return 'stairs';
   if (/yatak|bed|mezanin/.test(t)) return 'bed_frame';
   if (/komodin|nightstand|bedside table/.test(t)) return 'nightstand';

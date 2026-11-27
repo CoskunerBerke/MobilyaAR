@@ -40,7 +40,69 @@ export function buildParametricObject3D(
     return m;
   };
 
-  if (obj.parametricKind === 'fireplace_marble') {
+  if (obj.parametricKind === 'linear_fireplace' || (obj.parametricKind === 'fireplace_marble' && H <= 1.05)) {
+    // Modern low horizontal fireplace bench / TV baza (Şömineli Alçak TV Bazası)
+    const isStone = /mermer|taş|stone|marble|beton|concrete/i.test(obj.name);
+    const bodyTex = isStone ? createFloorTexture('marble', primaryHex, W * 1.2, H * 1.4) : null;
+    const bodyMat = new THREE.MeshStandardMaterial({
+      ...(bodyTex ? { map: bodyTex } : { color: new THREE.Color(primaryHex) }),
+      roughness: isStone ? 0.3 : 0.5,
+      metalness: 0.05,
+    });
+    const darkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#1e1e20'), roughness: 0.36, metalness: 0.55 });
+    const fireGlowMat = new THREE.MeshBasicMaterial({ color: 0xff8c2b });
+    const fireCoreMat = new THREE.MeshBasicMaterial({ color: 0xffd166 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xfff5e8,
+      transparent: true,
+      opacity: 0.18,
+      roughness: 0.08,
+      metalness: 0.2,
+      depthWrite: false,
+    });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffdca8 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      darkMat.dispose();
+      fireGlowMat.dispose();
+      fireCoreMat.dispose();
+      glassMat.dispose();
+      ledMat.dispose();
+    });
+
+    const baseH = Math.max(0.08, H * 0.24);
+    const topT = Math.max(0.05, H * 0.16);
+    const fireH = Math.max(0.14, H - baseH - topT);
+    const fireW = Math.min(W * 0.62, Math.max(0.75, W * 0.48));
+    const sideW = Math.max(0.12, (W - fireW) * 0.5);
+
+    // Lower hearth plinth + top slab
+    addBox(W, baseH, D, 0, baseH * 0.5, 0, bodyMat);
+    addBox(W, topT, D, 0, H - topT * 0.5, 0, bodyMat);
+    // Flanking cabinet bays left & right of linear fire ribbon
+    addBox(sideW, fireH, D, -W * 0.5 + sideW * 0.5, baseH + fireH * 0.5, 0, bodyMat);
+    addBox(sideW, fireH, D, W * 0.5 - sideW * 0.5, baseH + fireH * 0.5, 0, bodyMat);
+    // Dark recessed burner firebox + glass shield + warm horizontal ribbon flames
+    addBox(fireW + 0.02, fireH, D * 0.55, 0, baseH + fireH * 0.5, -D * 0.18, darkMat);
+    addBox(fireW * 0.92, 0.03, D * 0.32, 0, baseH + 0.015, D * 0.05, darkMat, false);
+    const flames = Math.max(7, Math.min(13, Math.round(fireW * 9)));
+    for (let i = 0; i < flames; i++) {
+      const fx = -fireW * 0.42 + (fireW * 0.84 * i) / Math.max(1, flames - 1);
+      const fh = Math.min(fireH * 0.68, 0.09 + (i % 3) * 0.032);
+      const coneGeo = new THREE.ConeGeometry(0.026, fh, 6);
+      disposables.push(() => coneGeo.dispose());
+      const f = new THREE.Mesh(coneGeo, i % 2 === 0 ? fireGlowMat : fireCoreMat);
+      f.position.set(fx, baseH + 0.02 + fh * 0.45, D * 0.08);
+      grp.add(f);
+    }
+    addBox(fireW * 0.94, 0.018, 0.05, 0, baseH + 0.02, D * 0.08, fireGlowMat, false);
+    addBox(fireW, fireH * 0.92, 0.01, 0, baseH + fireH * 0.48, D * 0.46, glassMat, false);
+    addBox(W * 0.9, 0.012, 0.022, 0, 0.008, D * 0.35, ledMat, false);
+
+    const hearthLight = new THREE.PointLight(0xff9438, 0.95, 3.4, 1.8);
+    hearthLight.position.set(0, baseH + fireH * 0.5, D * 0.65);
+    grp.add(hearthLight);
+  } else if (obj.parametricKind === 'fireplace_marble') {
     // Pure marble fireplace monolith (TV is now a separate movable object!)
     const marbleTex = createFloorTexture('marble', primaryHex, W * 1.4, H * 1.4);
     const marbleMat = new THREE.MeshStandardMaterial({ map: marbleTex, roughness: 0.28, metalness: 0.04 });
@@ -132,6 +194,118 @@ export function buildParametricObject3D(
     const tvY = Math.min(H - tvH * 0.5 - 0.2, 1.32);
     addBox(tvW + 0.025, tvH + 0.025, 0.036, 0, tvY, -D * 0.5 + 0.07, consoleMat);
     addBox(tvW, tvH, 0.008, 0, tvY, -D * 0.5 + 0.09, screenMat, false);
+  } else if (obj.parametricKind === 'tv_baza') {
+    // Sleek modern floating or floor low TV media console / baza with minimalist doors, media niche & warm under-LED
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.48, metalness: 0.04 });
+    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex).multiplyScalar(0.76), roughness: 0.65 });
+    const nicheMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#202022'), roughness: 0.52 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffdca8 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      seamMat.dispose();
+      nicheMat.dispose();
+      ledMat.dispose();
+    });
+
+    // Main monolithic body with crisp top chamfer
+    addBox(W, H, D - 0.02, 0, H * 0.5, -0.01, bodyMat);
+    addBox(W + 0.006, 0.022, D, 0, H - 0.011, 0, bodyMat);
+
+    // 3 or 4 minimalist handleless drawer/door fronts (optionally dark open center media niche if wide)
+    const cols = W >= 2.2 ? 4 : W >= 1.45 ? 3 : 2;
+    const cw = (W - 0.03) / cols;
+    const hasOpenCenter = cols === 3 && /ceviz|ahşap|wood|walnut|meşe|open|açık/i.test(`${obj.name} ${primaryHex}`);
+    for (let i = 0; i < cols; i++) {
+      const cx = -W * 0.5 + 0.015 + cw * (i + 0.5);
+      if (hasOpenCenter && i === 1) {
+        addBox(cw - 0.02, H - 0.07, 0.04, cx, H * 0.48, D * 0.5 - 0.025, nicheMat, false);
+      } else {
+        addBox(cw - 0.01, H - 0.035, 0.02, cx, H * 0.49, D * 0.5 - 0.01, bodyMat);
+      }
+      if (i > 0) addBox(0.007, H - 0.035, 0.012, cx - cw * 0.5, H * 0.49, D * 0.5 - 0.012, seamMat, false);
+    }
+    // Subtle warm recessed under-glow strip
+    addBox(W * 0.9, 0.012, 0.022, 0, 0.008, D * 0.22, ledMat, false);
+  } else if (obj.parametricKind === 'wall_shelf') {
+    // Floating wall shelf or open box cubby with warm downward accent LED
+    const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.52 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#272624'), roughness: 0.4 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe4b8 });
+    disposables.push(() => {
+      woodMat.dispose();
+      accentMat.dispose();
+      ledMat.dispose();
+    });
+    if (H >= 0.16) {
+      // Open box cubby shelf (like Photo 2 flanking shelves!)
+      const t = 0.028;
+      addBox(W, t, D, 0, t * 0.5, 0, woodMat);
+      addBox(W, t, D, 0, H - t * 0.5, 0, woodMat);
+      addBox(t, H, D, -W * 0.5 + t * 0.5, H * 0.5, 0, woodMat);
+      addBox(t, H, D, W * 0.5 - t * 0.5, H * 0.5, 0, woodMat);
+      addBox(W - t * 2, H - t * 2, 0.018, 0, H * 0.5, -D * 0.5 + 0.01, accentMat, false);
+      addBox(W * 0.72, 0.008, 0.015, 0, H - t - 0.005, 0, ledMat, false);
+    } else {
+      // Thick architectural floating plank shelf
+      addBox(W, H, D, 0, H * 0.5, 0, woodMat);
+      addBox(W * 0.78, 0.008, 0.016, 0, 0.004, -D * 0.12, ledMat, false);
+    }
+  } else if (obj.parametricKind === 'decorative_vase') {
+    // Compact tabletop floral vase / ceramic decor / candle tray (for TV bazas, coffee tables & dining tables)
+    const vaseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#e7e2d9'), roughness: 0.38, metalness: 0.06 });
+    const foliageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#4e6847'), roughness: 0.8 });
+    const bloomMat = new THREE.MeshStandardMaterial({ color: 0xf4ede2, roughness: 0.72 });
+    const stemMat = new THREE.MeshStandardMaterial({ color: 0x3f5638, roughness: 0.85 });
+    disposables.push(() => {
+      vaseMat.dispose();
+      foliageMat.dispose();
+      bloomMat.dispose();
+      stemMat.dispose();
+    });
+    const r = Math.min(0.13, Math.max(0.055, Math.min(W, D) * 0.34));
+    const vaseH = Math.max(0.08, H * 0.52);
+    const bodyGeo = new THREE.CylinderGeometry(r * 0.62, r * 0.86, vaseH, 20);
+    const neckGeo = new THREE.CylinderGeometry(r * 0.42, r * 0.62, vaseH * 0.25, 18);
+    disposables.push(() => {
+      bodyGeo.dispose();
+      neckGeo.dispose();
+    });
+    const vase = new THREE.Mesh(bodyGeo, vaseMat);
+    vase.position.y = vaseH * 0.5;
+    vase.castShadow = true;
+    grp.add(vase);
+    const neck = new THREE.Mesh(neckGeo, vaseMat);
+    neck.position.y = vaseH + vaseH * 0.1;
+    grp.add(neck);
+
+    const isCandleTray = /mum|candle|tepsi|tray/i.test(obj.name);
+    if (isCandleTray) {
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0xffd580 });
+      disposables.push(() => glowMat.dispose());
+      addBox(Math.min(0.38, W), 0.018, Math.min(0.28, D), 0, 0.009, 0, vaseMat);
+      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.016, 10, 8), glowMat);
+      flame.position.set(0, vaseH + 0.04, 0);
+      disposables.push(() => flame.geometry.dispose());
+      grp.add(flame);
+    } else {
+      // Organic botanical stems & foliage/blossom cluster
+      const foliageH = Math.max(0.08, H - vaseH);
+      const offsets: Array<[number, number, number, number]> = [
+        [0, vaseH + foliageH * 0.58, 0, r * 0.9],
+        [-r * 0.65, vaseH + foliageH * 0.45, r * 0.32, r * 0.68],
+        [r * 0.62, vaseH + foliageH * 0.48, -r * 0.28, r * 0.72],
+        [r * 0.18, vaseH + foliageH * 0.76, r * 0.42, r * 0.56],
+      ];
+      offsets.forEach(([ox, oy, oz, rad], idx) => {
+        const g = new THREE.DodecahedronGeometry(Math.max(0.032, rad), 1);
+        disposables.push(() => g.dispose());
+        const m = new THREE.Mesh(g, idx === 3 ? bloomMat : foliageMat);
+        m.position.set(ox, oy, oz);
+        m.castShadow = true;
+        grp.add(m);
+        addBox(0.008, Math.max(0.05, oy - vaseH * 0.8), 0.008, ox * 0.45, vaseH + (oy - vaseH) * 0.45, oz * 0.45, stemMat, false);
+      });
+    }
   } else if (obj.parametricKind === 'wall_tv') {
     const bezelMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(primaryHex),
@@ -752,10 +926,36 @@ export function buildParametricObject3D(
       frameMat.dispose();
       mirrorMat.dispose();
     });
-    // Only render round/oval if genuinely circular (NOT "oval köşeli boy aynası" or tall rectangular full-length mirror!)
+    // Arched full-length mirror ("Kemerli Boy Aynası"), round mirror, or crisp rectangular mirror
+    const isArchedMirror = /kemer|arched|kavis|ark|kubbe/i.test(obj.name);
     const isTallRect = H / Math.max(0.2, W) > 1.45 || /boy|dikdörtgen|köşeli|full.?length|zemin/i.test(obj.name);
-    const isRoundMirror = !isTallRect && /yuvarlak|round|daire|circular/i.test(obj.name);
-    if (isRoundMirror) {
+    const isRoundMirror = !isArchedMirror && !isTallRect && /yuvarlak|round|daire|circular/i.test(obj.name);
+    if (isArchedMirror) {
+      const r = W * 0.5;
+      const rectH = Math.max(0.2, H - r);
+      const border = 0.024;
+      // Lower rectangular section
+      addBox(W, rectH, D, 0, rectH * 0.5, 0, frameMat);
+      addBox(Math.max(0.08, W - border * 2), Math.max(0.1, rectH - border), 0.01, 0, rectH * 0.5 + border * 0.5, D * 0.5 + 0.003, mirrorMat, false);
+      // Upper semi-circular arch crown
+      const archFrameGeo = new THREE.CylinderGeometry(r, r, D, 36, 1, false, 0, Math.PI);
+      archFrameGeo.rotateX(Math.PI / 2);
+      archFrameGeo.rotateZ(-Math.PI / 2);
+      const archGlassGeo = new THREE.CylinderGeometry(Math.max(0.06, r - border), Math.max(0.06, r - border), 0.01, 36, 1, false, 0, Math.PI);
+      archGlassGeo.rotateX(Math.PI / 2);
+      archGlassGeo.rotateZ(-Math.PI / 2);
+      disposables.push(() => {
+        archFrameGeo.dispose();
+        archGlassGeo.dispose();
+      });
+      const archFrame = new THREE.Mesh(archFrameGeo, frameMat);
+      archFrame.position.set(0, rectH, 0);
+      archFrame.castShadow = true;
+      grp.add(archFrame);
+      const archGlass = new THREE.Mesh(archGlassGeo, mirrorMat);
+      archGlass.position.set(0, rectH, D * 0.5 + 0.003);
+      grp.add(archGlass);
+    } else if (isRoundMirror) {
       const r = Math.min(W, H) * 0.5;
       const rx = W * 0.5;
       const ry = H * 0.5;

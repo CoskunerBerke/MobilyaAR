@@ -253,9 +253,13 @@ const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind, { c1:
   bookshelf: { c1: '#252527', c2: '#b8946e' },
   sideboard: { c1: '#56614d', c2: '#2b2b2b' },
   console_table: { c1: '#7d5d42', c2: '#262626' },
+  tv_baza: { c1: '#e6e2da', c2: '#232325' },
   tv_wall_unit: { c1: '#b9936c', c2: '#222224' },
   wall_tv: { c1: '#141518', c2: '#090a0d' },
+  wall_shelf: { c1: '#7c5538', c2: '#252423' },
+  linear_fireplace: { c1: '#e8e4dc', c2: '#1f1f21' },
   fireplace_marble: { c1: '#eae6de', c2: '#232220' },
+  decorative_vase: { c1: '#e6e0d5', c2: '#4d6647' },
   potted_plant: { c1: '#4b6343', c2: '#373532' },
   chandelier: { c1: '#c4a265', c2: '#ffefc8' },
   floor_lamp: { c1: '#232325', c2: '#f3e8d4' },
@@ -279,8 +283,11 @@ const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'wall_art',
   'wall_mirror',
   'wall_tv',
+  'wall_shelf',
   'fireplace_marble',
+  'linear_fireplace',
   'tv_wall_unit',
+  'tv_baza',
   'wardrobe',
   'bookshelf',
   'sideboard',
@@ -657,10 +664,15 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const activeOccupied = isUpper ? occupiedUpper : occupiedGround;
     const activeWallCursors = isUpper ? wallCursorsUpper : wallCursorsGround;
 
-    // Realistic clamped dimensions (protects against outlier AI estimates)
-    let wM = Math.max(0.25, Math.min(roomW * 0.78, (Number(item.widthCm) || 90) / 100));
-    let dM = Math.max(0.04, Math.min(roomD * 0.78, (Number(item.depthCm) || 60) / 100));
-    let hM = Math.max(0.015, Math.min(headroomM - 0.1, (Number(item.heightCm) || 85) / 100));
+    // Realistic clamped dimensions (protects against outlier AI estimates while keeping compact tabletop decor small!)
+    const isTabletopDecor =
+      archetype === 'decorative_vase' ||
+      archetype === 'table_lamp' ||
+      item.relation === 'on_top_of' ||
+      (archetype === 'potted_plant' && (Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 48);
+    let wM = Math.max(isTabletopDecor ? 0.14 : 0.25, Math.min(roomW * 0.78, (Number(item.widthCm) || (isTabletopDecor ? 24 : 90)) / 100));
+    let dM = Math.max(0.04, Math.min(roomD * 0.78, (Number(item.depthCm) || (isTabletopDecor ? 24 : 60)) / 100));
+    let hM = Math.max(0.015, Math.min(headroomM - 0.1, (Number(item.heightCm) || (isTabletopDecor ? 28 : 85)) / 100));
 
     if (archetype === 'rug_custom') {
       hM = 0.016;
@@ -670,10 +682,28 @@ export const PinterestAIPanel: React.FC<Props> = ({
       dM = Math.max(0.85, Math.min(maxRD, dM));
     } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
       dM = Math.min(0.08, Math.max(0.035, dM));
+    } else if (archetype === 'wall_shelf') {
+      wM = Math.max(0.35, Math.min(2.2, wM));
+      dM = Math.max(0.16, Math.min(0.38, dM));
+      hM = Math.max(0.04, Math.min(0.45, hM));
+    } else if (archetype === 'decorative_vase') {
+      wM = Math.max(0.14, Math.min(0.42, wM));
+      dM = Math.max(0.14, Math.min(0.42, dM));
+      hM = Math.max(0.12, Math.min(0.48, hM));
+    } else if (archetype === 'tv_baza' || archetype === 'linear_fireplace') {
+      wM = Math.max(1.1, Math.min(roomW * 0.82, wM));
+      dM = Math.max(0.32, Math.min(0.58, dM));
+      hM = Math.max(0.26, Math.min(0.68, hM));
     } else if (archetype === 'potted_plant') {
-      wM = Math.max(0.45, Math.min(1.2, wM));
-      dM = Math.max(0.45, Math.min(1.2, dM));
-      hM = Math.max(0.7, Math.min(headroomM - 0.15, hM));
+      if (isTabletopDecor) {
+        wM = Math.max(0.16, Math.min(0.42, wM));
+        dM = Math.max(0.16, Math.min(0.42, dM));
+        hM = Math.max(0.16, Math.min(0.48, hM));
+      } else {
+        wM = Math.max(0.45, Math.min(1.2, wM));
+        dM = Math.max(0.45, Math.min(1.2, dM));
+        hM = Math.max(0.7, Math.min(headroomM - 0.15, hM));
+      }
     } else if (archetype === 'stairs' && activeMezBounds) {
       // Snap stairs height flush to the 2nd floor mezzanine deck!
       hM = activeMezBounds.topY;
@@ -689,10 +719,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const isCeiling = archetype === 'chandelier' || item.mountMode === 'ceiling';
     const isFloorMirror =
       archetype === 'wall_mirror' &&
-      (hM >= 1.25 || (item.elevationCm !== undefined && item.elevationCm <= 15) || /boy|ayakta|zemin|full.?length/i.test(item.nameTr));
+      (hM >= 1.25 || (item.elevationCm !== undefined && item.elevationCm <= 15) || /boy|ayakta|zemin|full.?length|kemer/i.test(item.nameTr));
     const isHighWall =
       !isFloorMirror &&
-      (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv' || archetype === 'ac_unit');
+      (archetype === 'wall_art' ||
+        archetype === 'wall_mirror' ||
+        archetype === 'wall_tv' ||
+        archetype === 'wall_shelf' ||
+        archetype === 'ac_unit');
+    const isFloatingBaza =
+      (archetype === 'tv_baza' || archetype === 'sideboard' || archetype === 'console_table') &&
+      typeof item.elevationCm === 'number' &&
+      item.elevationCm >= 8 &&
+      item.elevationCm <= 45;
     const isWallAnchoredFloor =
       WALL_ANCHORABLE_FLOOR_KINDS.has(archetype) && Boolean(item.suggestedWall && item.suggestedWall !== 'center');
     const isWallBacked = item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype) || isWallAnchoredFloor;
@@ -767,8 +806,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
         const relElev =
           archetype === 'ac_unit'
             ? Math.max(1.75, headroomM - hM - 0.15)
-            : Math.max(0.75, Math.min(headroomM - hM - 0.08, (item.elevationCm || 125) / 100));
+            : archetype === 'wall_shelf'
+            ? Math.max(0.65, Math.min(headroomM - hM - 0.12, (item.elevationCm || 145) / 100))
+            : Math.max(0.75, Math.min(headroomM - hM - 0.08, (item.elevationCm || 115) / 100));
         y = baseFloorY + relElev;
+      } else if (isFloatingBaza) {
+        y = baseFloorY + Math.max(0.08, Math.min(0.38, (item.elevationCm || 16) / 100));
       } else {
         y = baseFloorY;
       }
@@ -1433,6 +1476,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
       const taggedObjects: PoolDetectedItem[] = res.detectedObjects.map((o) => ({
         ...o,
         id: `${curPhoto.id}-${o.id}`,
+        // Preserve parent-child anchor links after prefixing ids! (Previously broke ALL TV-above-baza & flower-on-baza anchors!)
+        anchorToId: o.anchorToId ? `${curPhoto.id}-${o.anchorToId}` : '',
         sourcePhotoId: curPhoto.id,
         sourcePhotoIndex: curPhoto.index,
       }));
@@ -1456,8 +1501,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
         return next;
       });
 
-      // Never wipe prior photos' 3D furniture when analyzing a 2nd/3rd sequential Pinterest photo!
-      const effectiveReplace = photos.length > 1 ? false : replaceExistingOnBuild;
+      // On Photo 1 into an untouched factory demo room (with no narrow focus prompt), replace default demo clutter
+      // so the Pinterest room's exact walls, wallZones, windows & furniture build cleanly;
+      // on Photo 2+ NEVER wipe prior photos' furniture!
+      const isUntouchedDemoRoom =
+        project.objects.length > 0 &&
+        project.objects.every((o) => o.source !== 'pinterest-ai' && o.source !== 'cad');
+      const effectiveReplace =
+        photos.length > 1
+          ? false
+          : replaceExistingOnBuild || (isUntouchedDemoRoom && !userFocusPrompt.trim());
 
       if (autoPopulateOnAnalyze && taggedObjects.length > 0) {
         setStatusBanner(

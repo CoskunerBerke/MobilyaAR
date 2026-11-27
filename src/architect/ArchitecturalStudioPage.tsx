@@ -104,6 +104,7 @@ import {
   type ArchSelection,
   type ArchWallZone,
   type ArchWindow,
+  type CurtainStyle,
   type DoorKind,
   type ParametricFurnitureKind,
   type PassageStyle,
@@ -2909,51 +2910,139 @@ export const ArchitecturalStudioPage: React.FC = () => {
               ? undefined
               : prev.mezzanine;
 
-            const winWall = style?.primaryWindowWall || 'west';
+            const winWalls: WallId[] =
+              style && Array.isArray(style.windowWalls) && style.windowWalls.length > 0
+                ? (style.windowWalls.filter(
+                    (w): w is WallId => w === 'north' || w === 'south' || w === 'east' || w === 'west'
+                  ) as WallId[])
+                : style?.hasVisibleWindow
+                ? [style.primaryWindowWall || 'west']
+                : [];
+            const curtainStyleVal: CurtainStyle =
+              style?.curtainStyle === 'none' ||
+              style?.curtainStyle === 'sheer_only' ||
+              style?.curtainStyle === 'sheer_and_drape' ||
+              style?.curtainStyle === 'roman_blind'
+                ? style.curtainStyle
+                : 'sheer_and_drape';
             const nextWindows =
               replaceExisting && style
-                ? style.hasVisibleWindow === false
+                ? style.hasVisibleWindow === false || winWalls.length === 0
                   ? []
-                  : [
-                      {
-                        id: `pin-win-${Date.now()}`,
-                        wall: winWall,
-                        kind: (style.hasMezzanine ? 'french' : 'triple') as WindowKind,
-                        offsetCm: Math.round(
-                          getWallLengthM(winWall, prev.widthM, prev.depthM) * (style.hasMezzanine ? 32 : 50)
+                  : winWalls.map((ww, idx) => {
+                      const wLenCm = Math.round(getWallLengthM(ww, prev.widthM, prev.depthM) * 100);
+                      const isFullSheerWall = curtainStyleVal === 'sheer_only' && winWalls.length >= 2;
+                      const winW = isFullSheerWall
+                        ? Math.min(wLenCm - 30, Math.round(wLenCm * 0.82))
+                        : style.hasMezzanine
+                        ? 150
+                        : Math.min(wLenCm - 50, 230);
+                      return {
+                        id: `pin-win-${ww}-${idx}-${Date.now()}`,
+                        wall: ww,
+                        kind: (style.hasMezzanine || isFullSheerWall ? 'french' : 'triple') as WindowKind,
+                        offsetCm: Math.round(wLenCm * (style.hasMezzanine ? 0.32 : 0.5)),
+                        widthCm: winW,
+                        heightCm: Math.min(
+                          Math.round(nextCeil * 100) - 22,
+                          style.hasMezzanine ? 340 : isFullSheerWall ? Math.round(nextCeil * 100) - 24 : 235
                         ),
-                        widthCm: style.hasMezzanine ? 150 : 210,
-                        heightCm: Math.min(Math.round(nextCeil * 100) - 35, style.hasMezzanine ? 340 : 220),
-                        sillHeightCm: style.hasMezzanine ? 25 : 40,
+                        sillHeightCm: style.hasMezzanine || isFullSheerWall ? 10 : 35,
                         frameColorHex: '#232325',
-                        hasSill: true,
-                        curtainStyle: 'sheer_and_drape' as const,
+                        hasSill: !isFullSheerWall,
+                        curtainStyle: curtainStyleVal,
                         curtainColorHex: style.curtainColorHex || '#e5dfd3',
-                        curtainOpenRatio: 0.62,
-                      },
-                    ]
+                        curtainOpenRatio: curtainStyleVal === 'sheer_only' ? 0.12 : 0.62,
+                      };
+                    })
                 : prev.windows.map((w) => ({
                     ...w,
                     curtainColorHex: style?.curtainColorHex || w.curtainColorHex,
                   }));
 
+            const coveWalls: WallId[] =
+              style?.hasCeilingLedCove
+                ? (['north', 'west', 'east'] as WallId[])
+                : winWalls;
             const nextCoves =
               replaceExisting && style
-                ? style.hasVisibleWindow === false
+                ? coveWalls.length === 0
                   ? []
-                  : [
-                      {
-                        id: `pin-cove-${winWall}-${Date.now()}`,
-                        wall: winWall,
-                        depthCm: 20,
-                        dropCm: 16,
-                        ledEnabled: true,
-                        ledColorHex: '#ffddb0',
-                        ledIntensity: 1.0,
-                        colorHex: prev.ceilingColorHex,
-                      },
-                    ]
+                  : coveWalls.map((cw, idx) => ({
+                      id: `pin-cove-${cw}-${idx}-${Date.now()}`,
+                      wall: cw,
+                      depthCm: 20,
+                      dropCm: 16,
+                      ledEnabled: true,
+                      ledColorHex: '#ffddb0',
+                      ledIntensity: 1.05,
+                      colorHex: prev.ceilingColorHex,
+                    }))
                 : prev.curtainCoves;
+
+            // Build exact architectural partial wallZones (wood acoustic slats beside TV, marble/concrete TV panel, boiserie panels!)
+            const builtWallZones: ArchWallZone[] =
+              style && Array.isArray(style.wallZones)
+                ? style.wallZones
+                    .filter(
+                      (z) =>
+                        z &&
+                        (z.wall === 'north' || z.wall === 'south' || z.wall === 'east' || z.wall === 'west') &&
+                        typeof z.startRatio === 'number' &&
+                        typeof z.endRatio === 'number' &&
+                        z.endRatio > z.startRatio + 0.04
+                    )
+                    .map((z, idx) => {
+                      const wallLenCm = Math.round(getWallLengthM(z.wall, prev.widthM, prev.depthM) * 100);
+                      const ceilCm = Math.round(nextCeil * 100);
+                      const sR = Math.max(0, Math.min(0.95, z.startRatio));
+                      const eR = Math.max(sR + 0.05, Math.min(1, z.endRatio));
+                      const widthCm = Math.max(30, Math.round((eR - sR) * wallLenCm));
+                      const offsetCm = Math.round(((sR + eR) * 0.5) * wallLenCm);
+                      const bottomCm = Math.max(0, Math.min(ceilCm - 30, Math.round(z.bottomCm || 0)));
+                      const heightCm = Math.max(
+                        30,
+                        Math.min(ceilCm - bottomCm, Math.round(z.heightCm || ceilCm))
+                      );
+                      return {
+                        id: `pin-zone-${z.wall}-${idx}-${Date.now()}`,
+                        wall: z.wall,
+                        label: z.labelTr || 'Mimari Duvar Paneli',
+                        offsetCm,
+                        widthCm,
+                        bottomCm,
+                        heightCm,
+                        pattern: z.pattern || 'slats',
+                        colorHex: /^#[0-9a-fA-F]{6}$/.test(z.colorHex || '') ? z.colorHex : style.accentWallColorHex || '#8d735b',
+                      };
+                    })
+                : [];
+
+            // Apply per-wall finishes & accentWall accurately (NEVER force north wall to 'smooth' when it has motifs!)
+            const accentWallTarget: WallId =
+              style?.accentWall === 'north' ||
+              style?.accentWall === 'south' ||
+              style?.accentWall === 'east' ||
+              style?.accentWall === 'west'
+                ? style.accentWall
+                : 'north';
+            const resolveWallFinish = (w: WallId): { colorHex: string; pattern: WallPattern } => {
+              const baseHex = style?.wallColorHex || prev.walls[w].colorHex;
+              const explicit = style?.perWallFinishes?.[w];
+              if (explicit) {
+                return {
+                  colorHex: /^#[0-9a-fA-F]{6}$/.test(explicit.colorHex || '') ? explicit.colorHex! : baseHex,
+                  pattern: explicit.pattern || 'smooth',
+                };
+              }
+              if (w === accentWallTarget && style && !style.hasMezzanine && builtWallZones.length === 0) {
+                return {
+                  colorHex: style.accentWallColorHex || baseHex,
+                  pattern: style.wallPattern || 'smooth',
+                };
+              }
+              return { colorHex: baseHex, pattern: 'smooth' };
+            };
 
             const keepOtherRoomObjs =
               replaceExisting && (prev.adjacentRooms?.length || 0) > 0
@@ -2972,19 +3061,20 @@ export const ArchitecturalStudioPage: React.FC = () => {
               ...prev,
               ceilingM: nextCeil,
               mezzanine: nextMez,
-              ...(replaceExisting ? { wallZones: [], curtainCoves: nextCoves } : {}),
+              ...(replaceExisting
+                ? { wallZones: builtWallZones, curtainCoves: nextCoves }
+                : builtWallZones.length > 0
+                ? { wallZones: [...(prev.wallZones || []), ...builtWallZones] }
+                : {}),
               ...(style
                 ? {
                     floorMaterial: style.floorMaterial || prev.floorMaterial,
                     floorTintHex: style.floorTintHex || prev.floorTintHex,
                     walls: {
-                      north: { colorHex: style.wallColorHex || prev.walls.north.colorHex, pattern: 'smooth' },
-                      south: { colorHex: style.wallColorHex || prev.walls.south.colorHex, pattern: 'smooth' },
-                      west: {
-                        colorHex: style.accentWallColorHex || style.wallColorHex || prev.walls.west.colorHex,
-                        pattern: style.hasMezzanine ? 'smooth' : style.wallPattern || 'smooth',
-                      },
-                      east: { colorHex: style.wallColorHex || prev.walls.east.colorHex, pattern: 'smooth' },
+                      north: resolveWallFinish('north'),
+                      south: resolveWallFinish('south'),
+                      west: resolveWallFinish('west'),
+                      east: resolveWallFinish('east'),
                     },
                     windows: nextWindows,
                     sun: {
@@ -3028,7 +3118,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 ? undefined
                 : prev.mezzanine;
 
-            const nextWalls =
+            const baseWalls =
               roomFixes?.wallColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.wallColorHex)
                 ? {
                     north: { ...prev.walls.north, colorHex: roomFixes.wallColorHex },
@@ -3036,7 +3126,17 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     west: { ...prev.walls.west, colorHex: roomFixes.wallColorHex },
                     east: { ...prev.walls.east, colorHex: roomFixes.wallColorHex },
                   }
-                : prev.walls;
+                : { ...prev.walls };
+            const nextWalls =
+              roomFixes?.wallPattern && roomFixes.accentWall
+                ? {
+                    ...baseWalls,
+                    [roomFixes.accentWall]: {
+                      ...baseWalls[roomFixes.accentWall],
+                      pattern: roomFixes.wallPattern,
+                    },
+                  }
+                : baseWalls;
 
             return {
               ...prev,

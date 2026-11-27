@@ -59,9 +59,13 @@ export const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind
   bookshelf: { c1: '#252527', c2: '#b8946e' },
   sideboard: { c1: '#56614d', c2: '#2b2b2b' },
   console_table: { c1: '#7d5d42', c2: '#262626' },
+  tv_baza: { c1: '#e6e2da', c2: '#232325' },
   tv_wall_unit: { c1: '#b9936c', c2: '#222224' },
   wall_tv: { c1: '#141518', c2: '#090a0d' },
+  wall_shelf: { c1: '#7c5538', c2: '#252423' },
+  linear_fireplace: { c1: '#e8e4dc', c2: '#1f1f21' },
   fireplace_marble: { c1: '#eae6de', c2: '#232220' },
+  decorative_vase: { c1: '#e6e0d5', c2: '#4d6647' },
   potted_plant: { c1: '#4b6343', c2: '#373532' },
   chandelier: { c1: '#c4a265', c2: '#ffefc8' },
   floor_lamp: { c1: '#232325', c2: '#f3e8d4' },
@@ -78,8 +82,11 @@ export const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'wall_art',
   'wall_mirror',
   'wall_tv',
+  'wall_shelf',
   'fireplace_marble',
+  'linear_fireplace',
   'tv_wall_unit',
+  'tv_baza',
   'wardrobe',
   'bookshelf',
   'sideboard',
@@ -96,6 +103,8 @@ export const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
 ]);
 
 const LAMP_SURFACE_KINDS = new Set<ParametricFurnitureKind>([
+  'tv_baza',
+  'linear_fireplace',
   'nightstand',
   'desk',
   'vanity_table',
@@ -103,6 +112,7 @@ const LAMP_SURFACE_KINDS = new Set<ParametricFurnitureKind>([
   'console_table',
   'coffee_table_round',
   'coffee_table_rect',
+  'dining_table',
 ]);
 
 export function resolveMezzaninePlan(
@@ -258,26 +268,40 @@ export function applyArchitecturalRelationships(
     });
   }
 
-  // 2) Table lamps ALWAYS sit ON TOP OF their nearest surface (nightstand, desk, vanity, console, sideboard)
-  const lampCountPerSurface = new Map<string, number>();
+  // 2) ALL tabletop decor items (table_lamp, decorative_vase, small tabletop plants, or explicit 'on_top_of' relation)
+  //    ALWAYS sit cleanly ON TOP OF their anchored or nearest surface (TV baza, fireplace bench, nightstand, coffee/dining table)!
+  const decorCountPerSurface = new Map<string, number>();
   for (const obj of result) {
-    if (obj.parametricKind !== 'table_lamp') continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    const isTabletopItem =
+      obj.parametricKind === 'table_lamp' ||
+      obj.parametricKind === 'decorative_vase' ||
+      src?.relation === 'on_top_of' ||
+      (obj.parametricKind === 'potted_plant' && obj.heightM <= 0.48);
+    if (!isTabletopItem) continue;
+
     const explicitParent = src?.anchorToId ? byPinId.get(src.anchorToId) : undefined;
     const parent =
       explicitParent && sameFloor(explicitParent, obj)
         ? explicitParent
         : findNearestOfKinds(obj, LAMP_SURFACE_KINDS, 3.8);
     if (parent) {
-      const prevCount = lampCountPerSurface.get(parent.id) || 0;
-      lampCountPerSurface.set(parent.id, prevCount + 1);
-      const sideOffset = prevCount === 0 ? 0 : (prevCount % 2 === 1 ? 1 : -1) * Math.min(parent.widthM * 0.28, 0.35);
+      const prevCount = decorCountPerSurface.get(parent.id) || 0;
+      decorCountPerSurface.set(parent.id, prevCount + 1);
       const rx = Math.cos(parent.rot);
       const rz = -Math.sin(parent.rot);
-      obj.x = parent.x + rx * sideOffset;
-      obj.z = parent.z + rz * sideOffset;
-      obj.y = parent.y + parent.heightM;
+      // Preserve item's rough left-to-right spot along a wide TV baza / fireplace console, avoiding exact overlap!
+      const rawLat = (obj.x - parent.x) * rx + (obj.z - parent.z) * rz;
+      const maxLat = Math.max(0.05, parent.widthM * 0.5 - obj.widthM * 0.5 - 0.08);
+      let lat = Math.max(-maxLat, Math.min(maxLat, rawLat));
+      if (prevCount > 0 && Math.abs(lat) < 0.14) {
+        lat = (prevCount % 2 === 1 ? 1 : -1) * Math.min(maxLat, 0.28 + prevCount * 0.12);
+      }
+      obj.x = Number((parent.x + rx * lat).toFixed(3));
+      obj.z = Number((parent.z + rz * lat).toFixed(3));
+      obj.y = Number((parent.y + parent.heightM).toFixed(3));
       obj.rot = parent.rot;
+      obj.lockedParentId = parent.id;
     }
   }
 
@@ -380,20 +404,40 @@ export function applyArchitecturalRelationships(
     }
   }
 
-  // 6) Explicit 'above' wall alignment (e.g. memo board directly above full-length mirror, TV/art above fireplace/bed/vanity!)
+  // 6) Explicit 'above' wall alignment + Automatic Wall-TV alignment above TV baza / linear fireplace on same wall!
   for (const obj of result) {
     if (obj.mountMode !== 'wall') continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
-    if (!src?.anchorToId || src.relation !== 'above') continue;
-    const parent = byPinId.get(src.anchorToId);
+    let parent: ArchPlacedObject | undefined;
+    if (src?.anchorToId && src.relation === 'above') {
+      parent = byPinId.get(src.anchorToId);
+    } else if (obj.parametricKind === 'wall_tv' && obj.attachedWall) {
+      // Auto-pair wall_tv cleanly above a tv_baza / linear_fireplace / console_table on the same wall
+      parent = result.find(
+        (c) =>
+          c.id !== obj.id &&
+          sameFloor(c, obj) &&
+          c.attachedWall === obj.attachedWall &&
+          (c.parametricKind === 'tv_baza' ||
+            c.parametricKind === 'linear_fireplace' ||
+            c.parametricKind === 'console_table' ||
+            c.parametricKind === 'sideboard')
+      );
+    }
     if (!parent || !sameFloor(parent, obj)) continue;
     if (parent.attachedWall && obj.attachedWall === parent.attachedWall) {
       const isHoriz = parent.attachedWall === 'north' || parent.attachedWall === 'south';
-      if (isHoriz) obj.x = parent.x;
-      else obj.z = parent.z;
-      const targetY = parent.y + parent.heightM + 0.14;
-      const maxY = effectiveCeilingM - obj.heightM - 0.08;
-      obj.y = Math.max(parent.y + 0.35, Math.min(maxY, targetY));
+      const parentCenter = isHoriz ? parent.x : parent.z;
+      const myAlong = isHoriz ? obj.x : obj.z;
+      const maxDrift = Math.max(0.15, (parent.widthM - obj.widthM) * 0.5 + 0.12);
+      // Keep photo's slight asymmetric TV offset if inside the baza width (like Photo 1!), else center cleanly above baza
+      const clampedAlong =
+        Math.abs(myAlong - parentCenter) <= maxDrift ? myAlong : parentCenter;
+      if (isHoriz) obj.x = clampedAlong;
+      else obj.z = clampedAlong;
+      const minClearY = parent.y + parent.heightM + 0.18;
+      const maxY = effectiveCeilingM - obj.heightM - 0.12;
+      obj.y = Math.max(minClearY, Math.min(maxY, Math.max(obj.y, minClearY + 0.14)));
     }
   }
 
@@ -432,6 +476,8 @@ export interface VisualRefineFix {
 export interface VisualRefineRoomFix {
   removeWindows?: boolean;
   wallColorHex?: string | null;
+  accentWall?: WallId | null;
+  wallPattern?: 'smooth' | 'boiserie' | 'slats' | 'concrete' | 'stone' | 'wallpaper' | 'marble' | 'mirror' | null;
   floorTintHex?: string | null;
   enableMezzanine?: boolean | null;
   mezzanineHeightCm?: number | null;
@@ -515,10 +561,17 @@ export function applyVisualCritiqueFixes(
     const isHighWallKind =
       o.parametricKind === 'wall_art' ||
       o.parametricKind === 'wall_tv' ||
+      o.parametricKind === 'wall_shelf' ||
       o.parametricKind === 'ac_unit' ||
       o.parametricKind === 'chandelier' ||
-      (o.parametricKind === 'wall_mirror' && o.heightM < 1.25 && !/boy|ayakta|zemin|full/i.test(o.name));
-    const isFloorStandingKind = !isHighWallKind && o.parametricKind !== 'table_lamp';
+      (o.parametricKind === 'wall_mirror' && o.heightM < 1.25 && !/boy|ayakta|zemin|full|kemer/i.test(o.name));
+    const isFloatingOrTabletop =
+      o.parametricKind === 'table_lamp' ||
+      o.parametricKind === 'decorative_vase' ||
+      o.parametricKind === 'tv_baza' ||
+      Boolean(o.lockedParentId) ||
+      (o.parametricKind === 'potted_plant' && o.heightM <= 0.48 && o.y > baseY + 0.15);
+    const isFloorStandingKind = !isHighWallKind && !isFloatingOrTabletop;
 
     if (isFloorStandingKind) {
       // Floor & rug items ALWAYS sit flush on their own floor level (0 or mezzanine deck top — NEVER float!)

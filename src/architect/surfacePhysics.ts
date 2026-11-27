@@ -34,7 +34,9 @@ const MAJOR_FLOOR_KINDS = new Set<string>([
   'shower_cabin',
   'toilet_wc',
   'fireplace_marble',
+  'linear_fireplace',
   'tv_wall_unit',
+  'tv_baza',
   'bookshelf',
   'stairs',
   'nightstand',
@@ -60,6 +62,7 @@ const NON_SUPPORT_KINDS = new Set<string>([
   'ac_unit',
   'floor_lamp',
   'potted_plant',
+  'decorative_vase',
   'table_lamp',
   'shower_cabin',
   'stairs',
@@ -137,7 +140,13 @@ export function isSupportSurfaceHost(host: ArchPlacedObject): boolean {
 /** True if `obj` is a tabletop / soft-furnishing / shelf / small accessory that can sit on beds, tables, nightstands, or inside shelves */
 export function isPlaceableTopItem(obj: ArchPlacedObject): boolean {
   if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling') return false;
-  if (obj.parametricKind === 'table_lamp' || obj.parametricKind === 'potted_plant') return true;
+  if (
+    obj.parametricKind === 'table_lamp' ||
+    obj.parametricKind === 'decorative_vase' ||
+    obj.parametricKind === 'potted_plant'
+  ) {
+    return true;
+  }
   if (obj.parametricKind && MAJOR_FLOOR_KINDS.has(obj.parametricKind)) return false;
 
   const text = `${obj.name} ${obj.category}`;

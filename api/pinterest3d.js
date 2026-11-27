@@ -19,9 +19,9 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Sequential fallback only if primary fails -> saves ~85% credit while staying 100% resilient.
 const VISION_WAVES = [
   ['gemini-3.8-flash'],
-  ['gemini-3.5-flash'],
-  ['gemini-3.1-flash-lite'],
-  ['gemini-3.6-flash', 'gemma-4-26b-a4b-it'],
+  ['gemini-3.1-pro-preview', 'gemini-2.5-pro'],
+  ['gemini-2.5-flash'],
+  ['gemini-3.5-flash', 'gemma-4-31b-it'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
 const IMAGE_MODELS = [
@@ -277,7 +277,7 @@ function parseJsonResponse(rawText) {
 }
 
 const VALID_ARCHETYPES =
-  '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_wall_unit" | "wall_tv" | "fireplace_marble" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
+  '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_baza" | "tv_wall_unit" | "wall_tv" | "wall_shelf" | "linear_fireplace" | "fireplace_marble" | "decorative_vase" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
 
 async function callOpenAICompatibleVision({ endpoint, apiKey, models, prompt, imageDataUrls, label, extraHeaders = {} }) {
   if (!apiKey) throw new Error(`${label} anahtarı eksik.`);
@@ -507,18 +507,39 @@ COORDINATE SYSTEM (CRITICAL — match the photo's spatial layout faithfully!):
 Return ONLY valid JSON with this exact schema:
 {
   "roomStyle": {
-    "styleNameTr": "string (e.g. İki Katlı Modern Loft Stüdyo)",
-    "summaryTr": "string (1 concise Turkish sentence describing the ambiance & layout)",
+    "styleNameTr": "string (e.g. Modern Çıtalı TV Duvarlı Salon)",
+    "summaryTr": "string (1 concise Turkish sentence describing the ambiance, wall panels & layout)",
     "wallColorHex": "#RRGGBB",
     "accentWallColorHex": "#RRGGBB",
-    "wallPattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper",
+    "accentWall": "north" | "west" | "east" | "south" (which wall has the primary feature cladding/motif — usually "north" for TV/fireplace/bed walls!),
+    "wallPattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror",
+    "perWallFinishes": {
+      "north": { "colorHex": "#RRGGBB", "pattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror" },
+      "west": { "colorHex": "#RRGGBB", "pattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror" },
+      "east": { "colorHex": "#RRGGBB", "pattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror" }
+    },
+    "wallZones": [
+      {
+        "wall": "north" | "west" | "east" | "south",
+        "labelTr": "short Turkish label (e.g. Ahşap Akustik Çıta Panel, TV Arkası Mermer/Beton Panel, Duvar Çıta Motifi)",
+        "startRatio": number (0.0 left edge to 1.0 right edge along that wall),
+        "endRatio": number (0.0 to 1.0, must be > startRatio),
+        "bottomCm": number (0 for floor-to-ceiling panel),
+        "heightCm": number (285 for full height),
+        "pattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror",
+        "colorHex": "#RRGGBB"
+      }
+    ],
     "floorMaterial": "herringbone_oak" | "plank_oak" | "plank_walnut" | "travertine" | "marble" | "microcement" | "terrazzo",
     "floorTintHex": "#RRGGBB",
     "curtainColorHex": "#RRGGBB",
+    "curtainStyle": "none" | "sheer_and_drape" | "sheer_only" | "roman_blind",
     "suggestedSunHour": number (between 9 and 18),
     "suggestedCeilingCm": number (285 for normal 1-story room, 410 for 2-story mezzanine/loft),
-    "hasVisibleWindow": boolean (true ONLY if an actual exterior window with glass/daylight is clearly visible in the photo; false if the photographed walls are solid interior walls!),
+    "hasVisibleWindow": boolean (true if exterior window OR floor-to-ceiling window curtains are clearly visible in the photo),
     "primaryWindowWall": "north" | "west" | "east" | "south",
+    "windowWalls": ["east"] (array of ALL walls visibly covered by windows or floor-to-ceiling curtains, e.g. ["west","north"] for corner curtains, [] if none),
+    "hasCeilingLedCove": boolean (true if recessed warm LED ceiling cove / perimeter lighting is visible),
     "hasMezzanine": boolean,
     "mezzanine": {
       "anchorWall": "north" | "east" | "west" | "south",
@@ -558,11 +579,27 @@ Return ONLY valid JSON with this exact schema:
 
 RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
 - ${cleanFocus ? 'STRICTLY follow the USER FOCUS & EXCLUSION INSTRUCTION above: return ONLY the requested item(s) (1..12 items) and NEVER include excluded decor/clutter.' : 'Detect 8 to 15 distinct REAL visible items in the room (NEVER invent items that aren\'t there, and DO NOT confuse objects seen ONLY inside a mirror reflection as being on the same wall as the mirror — either skip faint reflection-only clutter or place clearly reflected opposite-wall items on the OPPOSITE wall like "south" or "west"!).'}
+- WALL MOTIFS & FEATURE PANELS (CRITICAL — DO NOT MISS!):
+  * Carefully inspect EVERY visible wall for decorative wall moldings/frames ("boiserie"), vertical acoustic wood slats ("slats"), marble/travertine slabs ("marble"), textured concrete panels ("concrete"), natural stone ("stone"), or wood cladding!
+  * If ONLY PART of a wall has cladding (for example: wood slats on the right 35% of the north TV wall while left 65% is plain white, OR a central concrete/marble slab behind the TV flanked by dark walnut wood panels on left & right), emit exact entries in roomStyle.wallZones with accurate startRatio..endRatio (0.0..1.0)!
+  * If an entire wall has boiserie frames or motifs, set perWallFinishes[wall].pattern = "boiserie" AND accentWall = that wall!
+- TV WALL, LOW BAZA & FIREPLACE RULES (CRITICAL!):
+  * Low horizontal TV console / floating media baza beneath a TV (heightCm 28..55): ALWAYS use parametricKind="tv_baza" (with elevationCm=12..22 if floating off the floor, or 0 if resting on floor), mountMode="wall", suggestedWall="north" (or whichever wall the TV is on)!
+  * Low horizontal fireplace console / bench WITH a linear flame strip (heightCm 35..65): ALWAYS use parametricKind="linear_fireplace" — NEVER use "fireplace_marble" for a low horizontal fireplace!
+  * Tall floor-to-ceiling marble chimney tower (heightCm 220..280): ONLY then use parametricKind="fireplace_marble"!
+  * Separate wall-mounted TV above a tv_baza or linear_fireplace: ALWAYS emit BOTH the baza/fireplace AND a separate "wall_tv" with anchorToId="<baza id>", relation="above", elevationCm=95..120!
+  * Floating wall shelves / open wood cubby boxes beside a TV panel: use parametricKind="wall_shelf", mountMode="wall", with exact elevationCm (e.g. 125, 185)!
+- TABLETOP FLOWERS, VASES & LAMPS ON TOP OF FURNITURE:
+  * Small flowers, vases, candle trays, bowls sitting ON TOP of a TV baza, coffee table, console, or dining table: use parametricKind="decorative_vase" (compact widthCm 18..38, heightCm 18..42), anchorToId="<parent id>", relation="on_top_of"!
+  * Small table lamps sitting on a TV baza or nightstand: parametricKind="table_lamp", anchorToId="<parent id>", relation="on_top_of"!
+  * ONLY tall floor-standing trees/palms in corners (heightCm 75..180, elevationCm=0) should use parametricKind="potted_plant"!
 - SAME-WALL ADJACENCY (CRITICAL!): If multiple items appear side-by-side on the SAME primary photographed wall (for example: full-length mirror on left + framed board directly above mirror + hanging ivy/art on right + bed pushed against that wall), they MUST ALL share the EXACT SAME suggestedWall ("north") with matching left-to-right relativeX (-0.75 left -> +0.75 right)!
-- VERTICAL STACKING:
-  * Tall full-length floor-standing mirror ("Boy Aynası", heightCm 150..190): mountMode="wall", elevationCm=0!
+- VERTICAL STACKING & MIRRORS:
+  * Tall full-length floor-standing mirror ("Boy Aynası" or "Kemerli Boy Aynası" if arch-topped!, heightCm 155..200): mountMode="wall", elevationCm=0!
+  * NEVER hallucinate lamps, doors, or sofas visible ONLY inside a mirror's reflection!
   * Framed art/board hanging DIRECTLY ABOVE a mirror or bed: SAME suggestedWall AND SAME relativeX as the item below it, with elevationCm=180 (above tall mirror) or elevationCm=110..135 (above bed/sofa)!
   * Hanging ivy/wall tapestry behind a bed: parametricKind="wall_art", mountMode="wall", SAME suggestedWall and relativeX as the bed, elevationCm=85!
+- CURTAINS & WINDOWS: If floor-to-ceiling curtains cover a wall (or TWO corner walls like west + north!), set hasVisibleWindow=true, list ALL curtained walls in windowWalls (e.g. ["east"] or ["west","north"]), and set curtainStyle="sheer_only" for white sheer curtains or "sheer_and_drape" for layered curtains!
 - WALL-ANCHORED FURNITURE: For bed_frame, sofa, desk, bookshelf, wardrobe, sideboard, console_table, vanity_table, nightstand that sit against a wall, ALWAYS set suggestedWall ("north"|"east"|"west"|"south") and facingDeg pointing INTO the room away from that wall (north->0, south->180, west->90, east->-90).
 - TRUE BED COLORS: For bed_frame, primaryColorHex MUST be the MAIN DUVET/BEDDING color (e.g. white duvet -> #f4f2ed, olive duvet -> #4c5942), and accentColorHex MUST be the WOOD/BEDFRAME color (e.g. natural wood pallet -> #b88f64). NEVER use a tiny accent throw pillow's color as the entire bed's primaryColorHex!
 - If the room is a 2-story loft/mezzanine: set hasMezzanine=true, suggestedCeilingCm=410, tag EVERY upstairs object with floorLevel=1 and EVERY downstairs object with floorLevel=0!
@@ -664,6 +701,8 @@ Return ONLY valid JSON:
   "roomFixes": {
     "removeWindows": boolean,
     "wallColorHex": "#RRGGBB" | null,
+    "accentWall": "north" | "west" | "east" | "south" | null,
+    "wallPattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror" | null,
     "floorTintHex": "#RRGGBB" | null,
     "enableMezzanine": boolean | null,
     "mezzanineHeightCm": number | null

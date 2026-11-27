@@ -129,8 +129,12 @@ export const PASSAGE_STYLE_LABELS: Record<PassageStyle, string> = {
 
 export type ParametricFurnitureKind =
   | 'fireplace_marble'
+  | 'linear_fireplace'
   | 'tv_wall_unit'
+  | 'tv_baza'
   | 'wall_tv'
+  | 'wall_shelf'
+  | 'decorative_vase'
   | 'rug_custom'
   | 'chandelier'
   | 'wardrobe'
