@@ -144,7 +144,7 @@ type ActiveViewState = {
 
 export function App() {
   const [products, setProducts] = useState<Product[]>(PRODUCTS);
-  const [stageProductId, setStageProductId] = useState<string>('ikea-landskrona-sofa');
+  const [stageProductId, setStageProductId] = useState<string>('hasagac-lilac-sandalye');
 
   const [activeState, setActiveState] = useState<ActiveViewState | null>(() => {
     const q = new URLSearchParams(window.location.search);
@@ -607,17 +607,17 @@ export function App() {
   });
 
   const featuredIds = [
+    'hasagac-lilac-sandalye',
     'ikea-landskrona-sofa',
     'ikea-strandmon-chair',
     'ikea-uppland-sofa',
-    'ikea-stockholm-coffee',
   ];
   const featuredProducts = featuredIds
     .map((id) => products.find((p) => p.id === id))
     .filter((p): p is Product => Boolean(p));
   const stageProduct = products.find((p) => p.id === stageProductId) || products[0];
   const stageOrient = getOrientationGuide(stageProduct.dimensionsCm);
-  const embedSampleUrl = `${getPublicOrigin()}/?urun=ikea-landskrona-sofa&mod=ar`;
+  const embedSampleUrl = `${getPublicOrigin()}/?urun=hasagac-lilac-sandalye&mod=ar`;
 
   if (resolvingCloudLink) {
     return (

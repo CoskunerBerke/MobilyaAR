@@ -25,6 +25,16 @@ export interface Product {
 
 export const PRODUCTS: Product[] = [
   {
+    id: 'hasagac-lilac-sandalye',
+    name: 'HASAĞAÇ Lilac Modern Sandalye',
+    category: 'Sandalye',
+    dimensionsCm: '64 × 62 × 82 cm',
+    glbUrl: '/models/hasagac-lilac-sandalye.glb',
+    usdzUrl: '/models/hasagac-lilac-sandalye.usdz',
+    thumbUrl: '/ikea-thumbs/hasagac-lilac-sandalye.jpg',
+    source: 'ozel-cad',
+  },
+  {
     id: 'ikea-landskrona-sofa',
     name: 'LANDSKRONA 3’lü Kanepe',
     category: 'Kanepe',
