@@ -58,6 +58,7 @@ export interface ArchViewportHandle {
   enterFromDoor: () => void;
   walkStep: (forwardM: number, rightM: number) => void;
   turnLook: (deltaYawDeg: number) => void;
+  nudgeObjectRelative: (objId: string, forwardM: number, rightM: number) => void;
 }
 
 interface Props {
@@ -201,6 +202,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       liveZ: number;
       startClientX: number;
       startClientY: number;
+      lastClientX: number;
+      lastClientY: number;
+      useScreenDelta: boolean;
       moved: boolean;
       wasSelected: boolean;
     } | null>(null);
@@ -456,6 +460,59 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         applyFpsCameraRotation();
         engineRef.current?.scheduleRender(false);
       },
+      nudgeObjectRelative: (objId, forwardM, rightM) => {
+        const eng = engineRef.current;
+        if (!eng) return;
+        const p = projectRef.current;
+        const obj = p.objects.find((o) => o.id === objId);
+        if (!obj) return;
+        const dir = new THREE.Vector3();
+        eng.camera.getWorldDirection(dir);
+        dir.y = 0;
+        if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+        else dir.normalize();
+        const right = new THREE.Vector3(-dir.z, 0, dir.x);
+        const targetX = obj.x + dir.x * forwardM + right.x * rightM;
+        const targetZ = obj.z + dir.z * forwardM + right.z * rightM;
+
+        const hasMulti = (p.adjacentRooms?.length || 0) > 0;
+        let nextX = targetX;
+        let nextZ = targetZ;
+        if (hasMulti) {
+          const hb = getHouseBounds(p);
+          const c = clampToRoomWalls(
+            targetX - hb.centerX,
+            targetZ - hb.centerZ,
+            obj.rot,
+            obj.widthM * 0.5,
+            obj.depthM * 0.5,
+            hb.totalW,
+            hb.totalD,
+            0.01
+          );
+          nextX = c.x + hb.centerX;
+          nextZ = c.z + hb.centerZ;
+        } else {
+          const c = clampToRoomWalls(
+            targetX,
+            targetZ,
+            obj.rot,
+            obj.widthM * 0.5,
+            obj.depthM * 0.5,
+            p.widthM,
+            p.depthM,
+            0.01
+          );
+          nextX = c.x;
+          nextZ = c.z;
+        }
+        const rx = Number(nextX.toFixed(3));
+        const rz = Number(nextZ.toFixed(3));
+        const mounted = eng.mountedObjects.get(obj.id);
+        if (mounted) mounted.root.position.set(rx, obj.y, rz);
+        onMoveObject(obj.id, rx, rz);
+        eng.scheduleRender(true);
+      },
     }));
 
     // 1) Mount TRUE ON-DEMAND WebGL Engine
@@ -644,7 +701,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         if (eng.sunOrbGroup.visible) eng.haloMesh.lookAt(camera.position);
 
         const sel = selectionRef.current;
-        if (sel?.type === 'object' && mode !== 'inside') {
+        if (sel?.type === 'object') {
           const obj = p.objects.find((o) => o.id === sel.id);
           if (obj) {
             const d = dragRef.current;
@@ -1140,13 +1197,24 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     };
 
     const raycastPlaneY = (clientX: number, clientY: number, planeY = 0): THREE.Vector3 | null => {
+      const eng = engineRef.current;
       const ray = getRay(clientX, clientY);
-      if (!ray) return null;
+      if (!eng || !ray) return null;
       const hit = new THREE.Vector3();
-      return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), hit) ? hit : null;
+      const ok = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), hit);
+      if (!ok) return null;
+      // Guard against horizon blow-ups when standing at 1.65m eye height in Kapıdan Gez mode
+      if (camModeRef.current === 'inside') {
+        const toHit = hit.clone().sub(eng.camera.position);
+        if (toHit.dot(ray.ray.direction) <= 0.05) return null;
+        const p = projectRef.current;
+        const maxReach = Math.max(12, Math.max(p.widthM, p.depthM) * 3.0);
+        if (toHit.length() > maxReach) return null;
+      }
+      return hit;
     };
 
-    const pickDraggableObjectId = (clientX: number, clientY: number): string | null => {
+    const pickDraggableObjectId = (clientX: number, clientY: number, skipUnselectedRugs = false): string | null => {
       const eng = engineRef.current;
       const ray = getRay(clientX, clientY);
       if (!eng || !ray) return null;
@@ -1170,7 +1238,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
               floorOrWallHit = obj.id;
             } else if (obj.mountMode === 'ceiling' && !ceilingHit) {
               ceilingHit = obj.id;
-            } else if (obj.mountMode === 'rug' && !rugHit) {
+            } else if (obj.mountMode === 'rug' && !rugHit && !skipUnselectedRugs) {
               rugHit = obj.id;
             }
             break;
@@ -1228,52 +1296,63 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
 
-      // In First-Person Walkthrough mode: drag smoothly rotates head (360° look around!)
-      if (camModeRef.current === 'inside') {
-        if (fpsRef.current.entryAnimRaf) {
-          cancelAnimationFrame(fpsRef.current.entryAnimRaf);
-          fpsRef.current.entryAnimRaf = 0;
+      const isInside = camModeRef.current === 'inside';
+      if (isInside && fpsRef.current.entryAnimRaf) {
+        cancelAnimationFrame(fpsRef.current.entryAnimRaf);
+        fpsRef.current.entryAnimRaf = 0;
+      }
+
+      // In BOTH 3B/2D AND Kapıdan Gez (1st-person) modes: clicking/dragging a furniture piece grabs & moves it!
+      // In Kapıdan Gez, skip unselected flat floor rugs so dragging on open floor still smoothly turns your head 360°!
+      const hitObjId = pickDraggableObjectId(e.clientX, e.clientY, isInside);
+      if (hitObjId) {
+        const obj = projectRef.current.objects.find((o) => o.id === hitObjId);
+        if (obj) {
+          const pt = isInside ? null : raycastPlaneY(e.clientX, e.clientY, obj.y);
+          // In Kapıdan Gez (1.65m eye height), always use horizon-safe camera-relative screen delta (push UP = ileri, pull DOWN = geri, LEFT/RIGHT = yan)!
+          const useScreenDelta = isInside || !pt;
+          e.stopPropagation();
+          const wasSelected = selectionRef.current?.type === 'object' && selectionRef.current.id === hitObjId;
+          selectionRef.current = { type: 'object', id: hitObjId };
+          dragRef.current = {
+            id: hitObjId,
+            hx: pt ? pt.x : obj.x,
+            hz: pt ? pt.z : obj.z,
+            px: obj.x,
+            pz: obj.z,
+            liveX: obj.x,
+            liveZ: obj.z,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            lastClientX: e.clientX,
+            lastClientY: e.clientY,
+            useScreenDelta,
+            moved: false,
+            wasSelected,
+          };
+          if (!isInside) eng.controls.enabled = false;
+          hitObstacleRef.current = false;
+          try {
+            (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+          eng.scheduleRender(false);
+          return;
         }
+      }
+
+      // In First-Person Walkthrough mode on empty space/walls/floor: drag smoothly rotates head (360° look around!)
+      if (isInside) {
         fpsRef.current.looking = true;
         fpsRef.current.lastX = e.clientX;
         fpsRef.current.lastY = e.clientY;
-        (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-        return;
-      }
-
-      const hitObjId = pickDraggableObjectId(e.clientX, e.clientY);
-      if (!hitObjId) return;
-
-      const obj = projectRef.current.objects.find((o) => o.id === hitObjId);
-      if (!obj) return;
-      const pt = raycastPlaneY(e.clientX, e.clientY, obj.y);
-      if (pt) {
-        // Prevent OrbitControls from fighting finger/mouse during object dragging!
-        e.stopPropagation();
-        const wasSelected = selectionRef.current?.type === 'object' && selectionRef.current.id === hitObjId;
-        // Update WebGL wireframe immediately WITHOUT triggering a mid-drag React sidebar/sheet resize!
-        selectionRef.current = { type: 'object', id: hitObjId };
-        dragRef.current = {
-          id: hitObjId,
-          hx: pt.x,
-          hz: pt.z,
-          px: obj.x,
-          pz: obj.z,
-          liveX: obj.x,
-          liveZ: obj.z,
-          startClientX: e.clientX,
-          startClientY: e.clientY,
-          moved: false,
-          wasSelected,
-        };
-        eng.controls.enabled = false;
-        hitObstacleRef.current = false;
         try {
           (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
         } catch {
           /* ignore */
         }
-        eng.scheduleRender(false);
+        return;
       }
     };
 
@@ -1302,11 +1381,33 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const p = projectRef.current;
       const obj = p.objects.find((o) => o.id === d.id);
       if (!obj) return;
-      const pt = raycastPlaneY(e.clientX, e.clientY, obj.y);
-      if (!pt) return;
 
-      const targetX = d.px + (pt.x - d.hx);
-      const targetZ = d.pz + (pt.z - d.hz);
+      let targetX = d.liveX;
+      let targetZ = d.liveZ;
+
+      const pt = !d.useScreenDelta ? raycastPlaneY(e.clientX, e.clientY, obj.y) : null;
+      if (pt) {
+        targetX = d.px + (pt.x - d.hx);
+        targetZ = d.pz + (pt.z - d.hz);
+      } else {
+        // Smooth camera-relative screen drag fallback (push UP = forward/ileri, pull DOWN = back/geri, LEFT/RIGHT = sideways!)
+        const dxPx = e.clientX - d.lastClientX;
+        const dyPx = e.clientY - d.lastClientY;
+        const dir = new THREE.Vector3();
+        eng.camera.getWorldDirection(dir);
+        dir.y = 0;
+        if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+        else dir.normalize();
+        const right = new THREE.Vector3(-dir.z, 0, dir.x);
+        const distToObj = Math.max(1.2, Math.hypot(d.liveX - eng.camera.position.x, d.liveZ - eng.camera.position.z));
+        const scale = Math.min(0.015, Math.max(0.004, distToObj * 0.0028));
+        const forwardDelta = -dyPx * scale;
+        const rightDelta = dxPx * scale;
+        targetX = d.liveX + dir.x * forwardDelta + right.x * rightDelta;
+        targetZ = d.liveZ + dir.z * forwardDelta + right.z * rightDelta;
+      }
+      d.lastClientX = e.clientX;
+      d.lastClientY = e.clientY;
 
       // Silky-smooth continuous wall-clamped movement (NEVER freezes or teleports on tight Pinterest clusters!)
       const hasMulti = (p.adjacentRooms?.length || 0) > 0;
@@ -1377,7 +1478,18 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         } catch {
           /* ignore */
         }
+        const down = pointerDownPosRef.current;
         pointerDownPosRef.current = null;
+        // Clicking (not dragging) on a wall/floor/window/door/rug in Kapıdan Gez opens its Right Inspector too!
+        if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) {
+          const rugHit = pickDraggableObjectId(e.clientX, e.clientY, false);
+          if (rugHit) {
+            onSelect({ type: 'object', id: rugHit });
+          } else {
+            const picked = pickArchitecturalElement(e.clientX, e.clientY);
+            onSelect(picked);
+          }
+        }
         return;
       }
 
@@ -1386,7 +1498,9 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         dragRef.current = null;
         hitObstacleRef.current = false;
         if (engineRef.current) {
-          engineRef.current.controls.enabled = true;
+          if (camModeRef.current !== 'inside') {
+            engineRef.current.controls.enabled = true;
+          }
           // Refresh shadows cleanly once on drop!
           engineRef.current.scheduleRender(true);
         }

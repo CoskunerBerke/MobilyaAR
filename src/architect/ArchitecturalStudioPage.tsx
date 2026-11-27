@@ -1377,7 +1377,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
         doors: prev.doors.map((d, i) => (i === 0 ? { ...d, openAngleDeg: 82 } : d)),
       };
     });
-    setSelection(null);
+    setSelection((prev) => (prev?.type === 'object' ? prev : null));
     setMobileSidebarOpen(false);
     setCameraMode('inside');
     setTimeout(() => viewportRef.current?.enterFromDoor(), 40);
@@ -3629,7 +3629,10 @@ export const ArchitecturalStudioPage: React.FC = () => {
             autoRotate={autoRotate360}
             selection={tvPresentationMode ? null : selection}
             onSelect={(sel) => {
-              if (!tvPresentationMode) setSelection(sel);
+              if (!tvPresentationMode) {
+                setSelection(sel);
+                if (sel) setRightPanelOpen(true);
+              }
             }}
             onMoveObject={(id, x, z) =>
               setProject((prev) => ({
@@ -3804,7 +3807,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 </button>
               </div>
               <span className="text-[11px] text-stone-600 hidden lg:inline whitespace-nowrap">
-                Sürükle: Bak · <strong className="font-mono text-stone-900">WASD</strong> / Tekerlek: Yürü
+                Boş alan sürükle: Bak · Ürüne tıkla/sürükle: Taşı &amp; Düzenle · <strong className="font-mono text-stone-900">WASD</strong>: Yürü
               </span>
               <button
                 type="button"
@@ -3861,6 +3864,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 })
               }
               onSnapObjectToWall={snapObjectToWall}
+              onNudgeObject={(objId, fwdM, rightM) => viewportRef.current?.nudgeObjectRelative(objId, fwdM, rightM)}
               onMoveOpeningToWall={moveOpeningToWall}
               onDuplicateObject={duplicateObject}
               onAttachRoom={(parentRoomId, side, roomKind) =>

@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   BookmarkPlus,
   Camera,
   Check,
@@ -66,6 +70,7 @@ interface Props {
   onAddWallZone: (wall: WallId, pattern?: WallPattern, colorHex?: string) => void;
   onAddTvOnWall: (wall: WallId) => void;
   onSnapObjectToWall: (objId: string, wall: WallId) => void;
+  onNudgeObject?: (objId: string, forwardM: number, rightM: number) => void;
   onMoveOpeningToWall: (kind: 'window' | 'door' | 'wallZone', id: string, wall: WallId) => void;
   onDuplicateObject: (objId: string) => void;
   onAttachRoom?: (parentRoomId: string, side: WallId, roomKind: RoomKind) => void;
@@ -107,6 +112,7 @@ export const SelectionInspector: React.FC<Props> = ({
   onAddWallZone,
   onAddTvOnWall,
   onSnapObjectToWall,
+  onNudgeObject,
   onMoveOpeningToWall,
   onDuplicateObject,
   onAttachRoom,
@@ -115,6 +121,7 @@ export const SelectionInspector: React.FC<Props> = ({
 }) => {
   const [savingToCatalog, setSavingToCatalog] = useState(false);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
+  const [nudgeStepCm, setNudgeStepCm] = useState<number>(15);
   const headerBar = (title: string, subtitle: string, onDelete?: () => void) => (
     <div className="px-3.5 py-2.5 border-b border-stone-200 bg-[#faf9f6] flex items-center justify-between gap-2 shrink-0">
       <div className="min-w-0">
@@ -1480,6 +1487,71 @@ export const SelectionInspector: React.FC<Props> = ({
             Duvar boşlukları: Sol {clrLeft} cm · Sağ {clrRight} cm · Üst {clrNorth} cm
           </p>
         </div>
+
+        {/* Position Nudge (Forward / Back / Left / Right relative to camera — super handy in Kapıdan Gez & 3B!) */}
+        {onNudgeObject && (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                Konum (İleri / Geri / Yan)
+              </span>
+              <div className="flex gap-1">
+                {[5, 15, 30].map((cm) => (
+                  <button
+                    key={cm}
+                    type="button"
+                    onClick={() => setNudgeStepCm(cm)}
+                    className={`px-1.5 py-0.5 border font-mono text-[9px] font-semibold transition ${
+                      nudgeStepCm === cm
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-200 bg-white text-stone-600 hover:border-stone-500'
+                    }`}
+                  >
+                    {cm}cm
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              <button
+                type="button"
+                onClick={() => onNudgeObject(obj.id, 0, -nudgeStepCm / 100)}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-0.5 text-[10px] font-semibold transition"
+                title={`Sola kaydır (${nudgeStepCm} cm)`}
+              >
+                <ArrowLeft className="w-3 h-3" />
+                <span>Sol</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNudgeObject(obj.id, nudgeStepCm / 100, 0)}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-0.5 text-[10px] font-semibold transition"
+                title={`İleri it (${nudgeStepCm} cm)`}
+              >
+                <ArrowUp className="w-3 h-3" />
+                <span>İleri</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNudgeObject(obj.id, -nudgeStepCm / 100, 0)}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-0.5 text-[10px] font-semibold transition"
+                title={`Geri çek (${nudgeStepCm} cm)`}
+              >
+                <ArrowDown className="w-3 h-3" />
+                <span>Geri</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNudgeObject(obj.id, 0, nudgeStepCm / 100)}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-0.5 text-[10px] font-semibold transition"
+                title={`Sağa kaydır (${nudgeStepCm} cm)`}
+              >
+                <ArrowRight className="w-3 h-3" />
+                <span>Sağ</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Rotate & Duplicate */}
         <div className="space-y-1.5">
