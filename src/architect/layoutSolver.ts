@@ -268,10 +268,32 @@ export function applyArchitecturalRelationships(
     });
   }
 
-  // 2) ALL tabletop decor items (table_lamp, decorative_vase, small tabletop plants, or explicit 'on_top_of' relation)
+  // 2) ALL tabletop decor items (table_lamp, decorative_vase, small tabletop plants, or explicit 'on_top_of' non-rug relation)
   //    ALWAYS sit cleanly ON TOP OF their anchored or nearest surface (TV baza, fireplace bench, nightstand, coffee/dining table)!
+  const NON_TABLETOP_KINDS = new Set([
+    'sofa',
+    'armchair',
+    'coffee_table_rect',
+    'coffee_table_round',
+    'dining_table',
+    'dining_chair',
+    'bed_frame',
+    'wardrobe',
+    'bookshelf',
+    'sideboard',
+    'console_table',
+    'tv_baza',
+    'tv_wall_unit',
+    'linear_fireplace',
+    'fireplace_marble',
+    'desk',
+    'office_chair',
+    'rug_custom',
+    'stairs',
+  ]);
   const decorCountPerSurface = new Map<string, number>();
   for (const obj of result) {
+    if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
     const isTabletopItem =
       obj.parametricKind === 'table_lamp' ||
@@ -281,10 +303,14 @@ export function applyArchitecturalRelationships(
     if (!isTabletopItem) continue;
 
     const explicitParent = src?.anchorToId ? byPinId.get(src.anchorToId) : undefined;
-    const parent =
-      explicitParent && sameFloor(explicitParent, obj)
+    const validExplicit =
+      explicitParent &&
+      explicitParent.mountMode !== 'rug' &&
+      explicitParent.parametricKind !== 'rug_custom' &&
+      sameFloor(explicitParent, obj)
         ? explicitParent
-        : findNearestOfKinds(obj, LAMP_SURFACE_KINDS, 3.8);
+        : undefined;
+    const parent = validExplicit || findNearestOfKinds(obj, LAMP_SURFACE_KINDS, 3.8);
     if (parent) {
       const prevCount = decorCountPerSurface.get(parent.id) || 0;
       decorCountPerSurface.set(parent.id, prevCount + 1);

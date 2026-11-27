@@ -1530,8 +1530,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
         );
       }
     } catch (err) {
-      setStatusBanner(null);
-      onToast(err instanceof Error ? err.message : 'Pinterest analizi başarısız oldu.');
+      const msg = err instanceof Error ? err.message : 'Pinterest analizi başarısız oldu.';
+      setStatusBanner(`Hata: ${msg}`);
+      onToast(msg);
     } finally {
       setAnalyzing(false);
     }

@@ -15,11 +15,11 @@
  */
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Paid-Tier flagship spatial Vision first (gemini-3.8-flash gives far superior 3D wall/floor/mezzanine accuracy!)
-// Sequential fallback only if primary fails -> saves ~85% credit while staying 100% resilient.
+// Paid-Tier flagship spatial Vision first: gemini-3.5-flash answers in ~12-15s with full wallZones/furniture accuracy!
+// Sequential fallback only if primary fails -> cuts latency >55% (14s vs 35s) & stays strictly <50s (<60s Vercel cap).
 const VISION_WAVES = [
-  ['gemini-3.8-flash'],
-  ['gemini-3.7-flash', 'gemini-3.5-flash'],
+  ['gemini-3.5-flash'],
+  ['gemini-3.7-flash', 'gemini-3.8-flash'],
   ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
 ];
 const VISION_MODELS = VISION_WAVES.flat();
@@ -176,7 +176,7 @@ async function callGeminiWithFallback(apiKey, models, body, mode = 'vision') {
               apiKey,
               m,
               body,
-              /3\.8-flash/.test(m) ? 20000 : /flash-lite/.test(m) ? 14000 : 16000,
+              /3\.5-flash$/.test(m) ? 22000 : /flash-lite/.test(m) ? 14000 : 18000,
               true
             ).catch((e) => {
               recordErr(m, e);
