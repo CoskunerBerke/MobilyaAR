@@ -23,6 +23,13 @@ import {
   X,
 } from 'lucide-react';
 import { getWorldAABBSpan } from '../lib/collision2d';
+import {
+  detectArEnvironment,
+  exportGlbUrlToUsdzBlobUrl,
+  launchAndroidSceneViewer,
+  launchIosQuickLook,
+} from '../lib/arLauncher';
+import { buildShareUrl } from '../lib/server';
 import { NumericInput } from './NumericInput';
 import { findOpenShelvingAt, findSupportUnderObject, getBaseFloorYAt, isOpenShelvingHost } from './surfacePhysics';
 import {
@@ -1934,6 +1941,61 @@ export const SelectionInspector: React.FC<Props> = ({
             </div>
           </div>
         </div>
+
+        {/* Direct Native AR Launch (iPad/iPhone Apple ARKit Quick Look, Android ARCore Scene Viewer, Desktop QR Page) */}
+        {obj.glbUrl && (
+          <button
+            type="button"
+            onClick={async () => {
+              const env = detectArEnvironment();
+              const glb = obj.glbUrl!;
+              const staticUsdz =
+                glb.startsWith('/models/') && glb.endsWith('.glb') ? glb.replace(/\.glb$/i, '.usdz') : undefined;
+
+              if (env.isInAppBrowser) {
+                onToast(
+                  `${env.inAppBrowserName || 'Uygulama içi tarayıcı'} AR'ı engelliyor — bağlantıyı ${
+                    env.isIOS ? 'Safari' : 'Chrome'
+                  } ile açın.`
+                );
+                return;
+              }
+              if (env.isIOS) {
+                if (staticUsdz) {
+                  launchIosQuickLook(staticUsdz, { allowScaling: false, posterUrl: obj.thumbUrl });
+                  return;
+                }
+                onToast('iPad / iPhone ARKit (1:1 USDZ) hazırlanıyor...');
+                try {
+                  const blobUrl = await exportGlbUrlToUsdzBlobUrl(glb, { tintHex: obj.tintHex });
+                  launchIosQuickLook(blobUrl, { allowScaling: false, posterUrl: obj.thumbUrl });
+                } catch {
+                  onToast('USDZ dönüştürülemedi — ürün sayfasından AR deneyin.');
+                }
+                return;
+              }
+              if (env.isAndroid && !glb.startsWith('blob:')) {
+                launchAndroidSceneViewer(glb, obj.name, { allowScaling: false });
+                return;
+              }
+              const shareUrl = buildShareUrl({
+                productId: obj.productRef?.id || obj.id,
+                glbUrl: glb,
+                remoteGlbUrl: glb.startsWith('http') ? glb : obj.productRef?.remoteGlbUrl,
+                cloudStored: obj.productRef?.cloudStored,
+                productName: obj.name,
+                dimensionsCm: obj.dimensionsCm,
+                mode: 'ar',
+                colorHex: obj.tintHex,
+              });
+              window.open(shareUrl, '_blank', 'noopener,noreferrer');
+            }}
+            className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>Gerçek Odada Canlı AR Gör (1:1)</span>
+          </button>
+        )}
 
         {/* Prominent 1-Click Remove Action (e.g. "Saksıyı kaldırın!") */}
         <button

@@ -20,6 +20,14 @@
       ]
     },
     {
+      "source": "/models/(.*)\\.usdz",
+      "headers": [
+        { "key": "Content-Type", "value": "model/vnd.usdz+zip" },
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
       "source": "/runpod/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache" },

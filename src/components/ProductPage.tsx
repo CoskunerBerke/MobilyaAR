@@ -12,6 +12,7 @@ import {
   EyeOff,
   Layers,
   Loader2,
+  Lock,
   Minus,
   Plus,
   QrCode,
@@ -21,12 +22,20 @@ import {
   Smartphone,
   Sun,
   SwitchCamera,
+  Unlock,
   X,
 } from 'lucide-react';
-import type { Product } from '../lib/products';
+import { resolveStaticUsdzUrl, type Product } from '../lib/products';
 import type { DemoStudioPresetId } from '../lib/demoRooms';
 import { buildShareUrl } from '../lib/server';
 import { fetchAndNormalizeRemoteGlb } from '../lib/product3dClient';
+import {
+  buildQuickLookUrl,
+  detectArEnvironment,
+  exportGlbUrlToUsdzBlobUrl,
+  launchAndroidSceneViewer,
+  launchIosQuickLook,
+} from '../lib/arLauncher';
 import { RoomPlanner3D } from './RoomPlanner3D';
 
 interface Props {
@@ -122,15 +131,23 @@ export const ProductPage: React.FC<Props> = ({
   const [showQrModal, setShowQrModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // Orantılı ölçek (%70–%140, her eksen eşit!) + Zemin yükseklik ayarı (cm, ayakları yere bastır)
+  // Orantılı ölçek (%70–%140, her eksen eşit!) + 1:1 Gerçek Ölçü Kilidi (iPad/iPhone Quick Look & Android Scene Viewer!)
   const [scalePct, setScalePct] = useState<number>(100);
+  const [arScaleLocked, setArScaleLocked] = useState<boolean>(true);
   const [yOffsetCm, setYOffsetCm] = useState<number>(0);
   const [hideArControls, setHideArControls] = useState(false);
   const [isLandscape, setIsLandscape] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth > window.innerHeight : false
   );
 
-  // Item #8: Universal Built-In Live Camera AR Overlay (works on EVERY iPad, Samsung/Xiaomi/Huawei Tablet & Phone even without ARCore/Quick Look!)
+  // Native Apple ARKit Quick Look (.usdz) pre-baked or dynamic Blob URL (ready synchronously on tap!)
+  const arEnv = detectArEnvironment();
+  const staticUsdzUrl = resolveStaticUsdzUrl(activeProduct);
+  const [dynamicUsdzUrl, setDynamicUsdzUrl] = useState<string | null>(null);
+  const [preparingUsdz, setPreparingUsdz] = useState<boolean>(false);
+  const [showInAppBanner, setShowInAppBanner] = useState<boolean>(() => detectArEnvironment().isInAppBrowser);
+
+  // Fallback Live Camera AR Overlay (ONLY used when a device genuinely lacks ARKit & ARCore!)
   const [liveCameraAr, setLiveCameraAr] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -439,13 +456,66 @@ export const ProductPage: React.FC<Props> = ({
     colorHex,
   });
 
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-  const isIPad =
-    typeof navigator !== 'undefined' &&
-    (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1));
-  const isAndroidTablet = /Android/i.test(ua) && !/Mobile/i.test(ua);
-  const isTabletDevice = isIPad || isAndroidTablet;
-  const isMobileDevice = isIPad || /iPhone|iPod|Android/i.test(ua);
+  // iPhone / iPad için dinamik USDZ ön-hazırlığı:
+  // Katalogdaki 18 ürün zaten hazır .usdz dosyasını 0ms'de kullanır; özel AI/CAD .GLB veya özel % ölçekte ise
+  // tap anında senkron Quick Look açılabilmesi için arka planda gerçek 1:1 Y=0 .usdz hazırlanır!
+  useEffect(() => {
+    const needsDynamicUsdz =
+      arEnv.isIOS &&
+      Boolean(resolvedGlbUrl) &&
+      (!staticUsdzUrl || scalePct !== 100);
+
+    if (!needsDynamicUsdz) {
+      setDynamicUsdzUrl((prev) => {
+        if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setPreparingUsdz(false);
+      return;
+    }
+
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setPreparingUsdz(true);
+    exportGlbUrlToUsdzBlobUrl(resolvedGlbUrl, {
+      scaleFactor: scalePct / 100,
+      tintHex: colorHex,
+      maxTextureSize: 1024,
+    })
+      .then((blobUrl) => {
+        if (cancelled) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        createdUrl = blobUrl;
+        setDynamicUsdzUrl((prev) => {
+          if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return blobUrl;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setDynamicUsdzUrl(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPreparingUsdz(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [arEnv.isIOS, resolvedGlbUrl, staticUsdzUrl, scalePct, colorHex]);
+
+  const effectiveUsdzUrl = dynamicUsdzUrl || staticUsdzUrl || undefined;
+  const resolvedIosSrc = effectiveUsdzUrl
+    ? buildQuickLookUrl(effectiveUsdzUrl, !arScaleLocked)
+    : undefined;
+
+  const isTabletDevice = arEnv.isTablet;
+  const isMobileDevice = arEnv.isMobile;
+  const nativeArAvailable = Boolean(
+    canAr || (arEnv.isIOS && arEnv.supportsQuickLook && Boolean(effectiveUsdzUrl)) || (arEnv.isAndroid && !arEnv.isInAppBrowser)
+  );
 
   // Ürünün gerçek boyutuna göre akıllı AR kadraj & mesafe rehberi
   // Not: Tabletlerde yatay (showroom) kullanım serbesttir; dikey uyarısı sadece telefonlar içindir!
@@ -465,13 +535,47 @@ export const ProductPage: React.FC<Props> = ({
       stopLiveCamera();
       return;
     }
+
+    // 0) WhatsApp / Instagram / TikTok uygulama içi tarayıcılarda ARKit & ARCore engellenir -> Safari/Chrome uyarısı göster!
+    if (arEnv.isInAppBrowser) {
+      setShowInAppBanner(true);
+      setCameraError(
+        `${arEnv.inAppBrowserName || 'Uygulama içi tarayıcı'} gerçek zemin algılamalı AR'ı engelliyor. Sağ üstteki menüden "${
+          arEnv.isIOS ? "Safari'de Aç" : "Chrome'da Aç"
+        }" seçin veya linki kopyalayıp ${arEnv.isIOS ? 'Safari' : 'Chrome'}'a yapıştırın.`
+      );
+      return;
+    }
+
+    // 1) iPhone & iPad (LiDAR / ARKit Quick Look) — Doğrudan yerel Apple ARKit zemin kilidi!
+    // (iPadOS Safari kendini masaüstü gibi tanıttığı için <model-viewer> canActivateAR'a takılmadan direkt açılır!)
+    if (arEnv.isIOS) {
+      if (effectiveUsdzUrl) {
+        launchIosQuickLook(effectiveUsdzUrl, {
+          allowScaling: !arScaleLocked,
+          posterUrl: activeProduct.thumbUrl,
+        });
+        return;
+      }
+      // Dinamik USDZ henüz hazırlanıyorsa bekle veya model-viewer'a düş
+      if (preparingUsdz) {
+        setCameraError('iPad / iPhone ARKit (USDZ) dosyası hazırlanıyor, birkaç saniye sonra tekrar dokunun.');
+        return;
+      }
+    }
+
+    // 2) Android (Google ARCore Scene Viewer öncelikli!) — Gerçek zemin gridi & gölge kilidi!
     const mv = mvRef.current;
-    // 1) Native WebXR / AR Quick Look / Scene Viewer when supported
     if (mv && mv.canActivateAR && typeof mv.activateAR === 'function') {
       mv.activateAR();
       return;
     }
-    // 2) On iPad, Android Tablets & Phones where ARCore / Quick Look isn't available -> IMMEDIATELY open real Live Camera AR Overlay!
+    if (arEnv.isAndroid && resolvedGlbUrl && !resolvedGlbUrl.startsWith('blob:')) {
+      launchAndroidSceneViewer(resolvedGlbUrl, activeProduct.name, { allowScaling: !arScaleLocked });
+      return;
+    }
+
+    // 3) Son çare: ARKit/ARCore desteklemeyen eski cihazlarda basit kamera katmanı, masaüstünde QR
     if (isMobileDevice || isTabletDevice) {
       void startLiveCamera('environment');
       return;
@@ -582,13 +686,49 @@ export const ProductPage: React.FC<Props> = ({
           </div>
         )}
 
+        {showInAppBanner && arEnv.isInAppBrowser && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-md w-[94%] bg-stone-950 text-white border border-stone-700 px-3.5 py-2.5 text-[11px] shadow-xl space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <p className="leading-snug">
+                <strong>{arEnv.inAppBrowserName} içi tarayıcı</strong> gerçek zemin algılamayı engelliyor. Gerçek 1:1
+                AR için bağlantıyı <strong>{arEnv.isIOS ? 'Safari' : 'Chrome'}</strong> ile açın.
+              </p>
+              <button type="button" onClick={() => setShowInAppBanner(false)} className="shrink-0 text-stone-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={copyArLink}
+                className="flex-1 py-1.5 bg-white text-stone-950 font-bold text-[11px] flex items-center justify-center gap-1"
+              >
+                {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedLink ? 'Link Kopyalandı' : `${arEnv.isIOS ? 'Safari' : 'Chrome'} için Linki Kopyala`}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowInAppBanner(false);
+                  void startLiveCamera('environment');
+                }}
+                className="px-2.5 py-1.5 border border-stone-600 text-stone-200 text-[10px] font-semibold"
+              >
+                Basit Kamera
+              </button>
+            </div>
+          </div>
+        )}
+
         <model-viewer
           ref={mvRef}
           src={resolvedGlbUrl}
+          ios-src={resolvedIosSrc}
           alt={activeProduct.name}
           ar
-          ar-modes="webxr scene-viewer quick-look"
-          ar-scale="auto"
+          ar-modes="scene-viewer quick-look webxr"
+          quick-look-browsers="safari chrome"
+          ar-scale={arScaleLocked ? 'fixed' : 'auto'}
           ar-placement="floor"
           xr-environment
           camera-controls
@@ -835,8 +975,16 @@ export const ProductPage: React.FC<Props> = ({
               <Sun className="w-3.5 h-3.5 text-[#9c7349] shrink-0 mt-0.5" />
               <span>
                 {isWideProduct
-                  ? `Bu ürün ${baseDims.w} cm genişliğindedir. Telefonu DİKEY tutun, ışığı açıp 2.5–3 m geriden zemini 3 sn tarayın (Android'de canlı ayak/ölçek tuşları için linki Chrome ile açın).`
-                  : `Bu ürün ${baseDims.w} cm enindedir. Telefonu DİKEY tutun, ışığı açıp 1.5–2 m mesafeden zemini 3 sn tarayın (Android'de canlı ayak/ölçek tuşları için Chrome ile açın).`}
+                  ? `Bu ürün ${baseDims.w} cm genişliğindedir. ${
+                      arEnv.isIOS
+                        ? 'Apple ARKit (LiDAR) ile 1:1 gerçek ölçüde zemine kilitlenir — 2.5–3 m geriden zemini 2 sn tarayın.'
+                        : 'Google ARCore ile 1:1 gerçek ölçüde zemine kilitlenir — 2.5–3 m geriden aydınlık zemini 2 sn tarayın.'
+                    }`
+                  : `Bu ürün ${baseDims.w} cm enindedir. ${
+                      arEnv.isIOS
+                        ? 'Apple ARKit (LiDAR) ile 1:1 gerçek ölçüde zemine kilitlenir — 1.5–2 m mesafeden zemini 2 sn tarayın.'
+                        : 'Google ARCore ile 1:1 gerçek ölçüde zemine kilitlenir — 1.5–2 m mesafeden zemini 2 sn tarayın.'
+                    }`}
               </span>
             </div>
           </div>
@@ -876,8 +1024,25 @@ export const ProductPage: React.FC<Props> = ({
               </h1>
             </div>
 
-            {/* Ön-Ölçek Kontrolü (Sadece Orantılı %65–%140, iPhone Quick Look + Android WebXR uyumlu!) */}
+            {/* 1:1 Gerçek Ölçü Kilidi + Ön-Ölçek Kontrolü (iPad/iPhone Quick Look + Android Scene Viewer uyumlu!) */}
             <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setArScaleLocked((v) => !v)}
+                className={`px-2 h-7 border text-[10px] font-bold flex items-center gap-1 transition whitespace-nowrap ${
+                  arScaleLocked
+                    ? 'border-stone-950 bg-stone-950 text-white'
+                    : 'border-stone-300 bg-[#faf8f4] text-stone-700 hover:border-stone-950'
+                }`}
+                title={
+                  arScaleLocked
+                    ? 'AR açıldığında ürün 1:1 gerçek cm ölçüsünde kilitlenir (küçülüp büyümez)'
+                    : 'AR içinde iki parmakla serbest boyutlandırma açık'
+                }
+              >
+                {arScaleLocked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                <span>{arScaleLocked ? '1:1 Kilitli' : 'Serbest Ölçek'}</span>
+              </button>
               <button
                 type="button"
                 onClick={() => applyProportionalScale(scalePct - 5)}
@@ -937,18 +1102,26 @@ export const ProductPage: React.FC<Props> = ({
             <button
               type="button"
               onClick={handleLaunchAR}
-              disabled={normalizingRemote}
+              disabled={normalizingRemote || (arEnv.isIOS && preparingUsdz && !effectiveUsdzUrl)}
               className="w-full py-3.5 bg-stone-950 hover:bg-stone-800 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition disabled:opacity-50"
             >
-              <Camera className="w-4 h-4" />
+              {preparingUsdz && !effectiveUsdzUrl ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Camera className="w-4 h-4" />
+              )}
               <span>
                 {liveCameraAr
                   ? 'Canlı Kamerayı Kapat'
-                  : canAr
-                  ? `Odanda Canlı Gör (AR · ${recommendedDistanceLabel})`
+                  : preparingUsdz && !effectiveUsdzUrl
+                  ? 'iPad / iPhone AR Hazırlanıyor...'
+                  : nativeArAvailable
+                  ? arEnv.isIOS
+                    ? `Odanda Canlı Gör (Apple ARKit · 1:1)`
+                    : `Odanda Canlı Gör (ARCore · 1:1)`
                   : isMobileDevice || isTabletDevice
-                  ? 'Tablet / Telefon Canlı Kamera AR Aç'
-                  : 'Telefonda Canlı AR Aç (QR)'}
+                  ? 'Canlı Kamera Önizleme Aç'
+                  : 'Telefonda / iPad’de Canlı AR Aç (QR)'}
               </span>
             </button>
 

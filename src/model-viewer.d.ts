@@ -6,6 +6,8 @@ declare global {
       'model-viewer': React.DetailedHTMLProps<
         React.HTMLAttributes<HTMLElement> & {
           src?: string;
+          'ios-src'?: string;
+          'quick-look-browsers'?: string;
           alt?: string;
           ar?: boolean;
           'ar-modes'?: string;
