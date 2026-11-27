@@ -66,6 +66,7 @@ import {
 import { NumericInput } from './NumericInput';
 import { PinterestAIPanel, type PinterestMaterialEntry } from './PinterestAIPanel';
 import { SelectionInspector } from './SelectionInspector';
+import { autoLinkNestedAssemblies } from './surfacePhysics';
 import { ClientProjectModal } from './ClientProjectModal';
 import {
   createClientProjectRecord,
@@ -2992,7 +2993,9 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     },
                   }
                 : {}),
-              objects: replaceExisting ? [...keepOtherRoomObjs, ...objects] : [...prev.objects, ...objects],
+              objects: autoLinkNestedAssemblies(
+                replaceExisting ? [...keepOtherRoomObjs, ...objects] : [...prev.objects, ...objects]
+              ),
             };
           });
           if (replaceExisting && !isAdjTarget) {
@@ -3045,7 +3048,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   ? roomFixes.floorTintHex
                   : prev.floorTintHex,
               ...(roomFixes?.removeWindows ? { windows: [], curtainCoves: [] } : {}),
-              objects: nextObjects,
+              objects: autoLinkNestedAssemblies(nextObjects),
             };
           });
         }}
@@ -3067,6 +3070,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 depthM: cur.depthM,
                 heightM: cur.heightM,
                 tintHex: cur.tintHex,
+                lockedParentId: cur.lockedParentId,
+                allowOverlap: cur.allowOverlap,
               };
               const next = [...prev.objects];
               next[existingIdx] = replaced;
@@ -3644,6 +3649,18 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   o.id === id ? { ...o, x, z, ...(typeof y === 'number' ? { y } : {}) } : o
                 ),
               }))
+            }
+            onMoveObjectsBatch={(updates) =>
+              setProject((prev) => {
+                const map = new Map(updates.map((u) => [u.id, u]));
+                return {
+                  ...prev,
+                  objects: prev.objects.map((o) => {
+                    const u = map.get(o.id);
+                    return u ? { ...o, x: u.x, z: u.z, ...(typeof u.y === 'number' ? { y: u.y } : {}) } : o;
+                  }),
+                };
+              })
             }
             onExitWalkthrough={() => setCameraMode('free')}
             onWarningsChange={setWarnings}

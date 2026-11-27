@@ -13,16 +13,18 @@ import {
   DoorOpen,
   Layers,
   Loader2,
+  Lock,
   Move,
   Plus,
   RotateCcw,
   RotateCw,
   Trash2,
+  Unlock,
   X,
 } from 'lucide-react';
 import { getWorldAABBSpan } from '../lib/collision2d';
 import { NumericInput } from './NumericInput';
-import { findSupportUnderObject, getBaseFloorYAt } from './surfacePhysics';
+import { findOpenShelvingAt, findSupportUnderObject, getBaseFloorYAt, isOpenShelvingHost } from './surfacePhysics';
 import {
   COUNTERTOP_CATALOG,
   DOOR_PANEL_CATALOG,
@@ -1427,7 +1429,10 @@ export const SelectionInspector: React.FC<Props> = ({
   const clrLeft = Math.max(0, Math.round((obj.x - extX + project.widthM * 0.5) * 100));
   const clrRight = Math.max(0, Math.round((project.widthM * 0.5 - (obj.x + extX)) * 100));
   const clrNorth = Math.max(0, Math.round((obj.z - extZ + project.depthM * 0.5) * 100));
+  const lockedParent = obj.lockedParentId ? project.objects.find((o) => o.id === obj.lockedParentId) || null : null;
+  const shelvingHostBelow = findOpenShelvingAt(project, obj, obj.x, obj.z);
   const supportBelow = findSupportUnderObject(project, obj, obj.x, obj.z, obj.y, undefined, false);
+  const candidateParent = lockedParent || shelvingHostBelow || supportBelow?.host || null;
   const baseFloorY = getBaseFloorYAt(project, obj, obj.x, obj.z, obj.y);
   const elevCm = Math.round(obj.y * 100);
 
@@ -1505,7 +1510,9 @@ export const SelectionInspector: React.FC<Props> = ({
           </p>
           <p className="text-[10px] font-mono text-stone-600">
             Alt yüzey:{' '}
-            {supportBelow ? (
+            {shelvingHostBelow ? (
+              <strong className="text-stone-900">{shelvingHostBelow.name} (iç raf)</strong>
+            ) : supportBelow ? (
               <strong className="text-stone-900">{supportBelow.host.name} üstü</strong>
             ) : (
               <span>Zemin ({Math.round(baseFloorY * 100)} cm)</span>
@@ -1636,10 +1643,78 @@ export const SelectionInspector: React.FC<Props> = ({
                   </button>
                 </div>
                 <p className="text-[10px] text-stone-500">
-                  Yastık/lamba gibi ürünleri yatağa veya masaya sürüklediğinizde üstüne otomatik oturur; altına geçmez.
+                  Açık kitaplık/raf içine sürükleyebilir; yastık/lambayı yatağa ve masaya oturtabilirsiniz.
                 </p>
               </div>
             )}
+
+            {/* Parent-Child Lock ("İçinde Kilitle / Serbest Bırak") + Collision Boundary Override */}
+            <div className="pt-1 border-t border-stone-100 space-y-1.5">
+              {lockedParent ? (
+                <div className="flex items-center justify-between gap-1.5 bg-stone-950 text-white px-2 py-1.5">
+                  <span className="text-[10px] font-semibold truncate flex items-center gap-1">
+                    <Lock className="w-3 h-3 shrink-0" />
+                    <span className="truncate">
+                      {isOpenShelvingHost(lockedParent) ? 'İçinde' : 'Üstünde'} kilitli: {lockedParent.name}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      patchObj({ lockedParentId: undefined });
+                      onToast(`${obj.name} serbest bırakıldı — dışarı çıkarabilirsiniz.`);
+                    }}
+                    className="px-2 py-0.5 bg-white text-stone-950 hover:bg-stone-200 text-[10px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
+                  >
+                    <Unlock className="w-2.5 h-2.5" />
+                    <span>Serbest Bırak</span>
+                  </button>
+                </div>
+              ) : (
+                candidateParent && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      patchObj({ lockedParentId: candidateParent.id });
+                      onToast(
+                        `${obj.name}, ${candidateParent.name} ${
+                          isOpenShelvingHost(candidateParent) ? 'içinde' : 'üstünde'
+                        } kilitlendi — birlikte taşınır, dışarı çıkmaz.`
+                      );
+                    }}
+                    className="w-full py-1.5 px-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] flex items-center justify-center gap-1.5 text-[10px] font-semibold transition"
+                  >
+                    <Lock className="w-3 h-3 shrink-0" />
+                    <span className="truncate">
+                      {candidateParent.name} {isOpenShelvingHost(candidateParent) ? 'İçinde' : 'Üstünde'} Kilitle
+                    </span>
+                  </button>
+                )
+              )}
+
+              <div className="grid grid-cols-2 border border-stone-300">
+                <button
+                  type="button"
+                  onClick={() => patchObj({ allowOverlap: false })}
+                  className={`py-1 text-[10px] font-semibold transition ${
+                    !obj.allowOverlap ? 'bg-stone-950 text-white' : 'bg-white text-stone-600 hover:bg-stone-50'
+                  }`}
+                  title="Mobilyalar birbirinin içine/altına geçmez; yastık ve raf yuvaları otomatik çalışır"
+                >
+                  Sınır: Korumalı
+                </button>
+                <button
+                  type="button"
+                  onClick={() => patchObj({ allowOverlap: true })}
+                  className={`py-1 text-[10px] font-semibold transition ${
+                    obj.allowOverlap ? 'bg-stone-950 text-white' : 'bg-white text-stone-600 hover:bg-stone-50'
+                  }`}
+                  title="Özel iç içe geçme için bu ürünün çakışma sınırını kaldır"
+                >
+                  Sınır: Serbest (İç İçe)
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

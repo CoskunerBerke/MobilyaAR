@@ -7,7 +7,7 @@ import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
 import { computeSolarLighting } from './solarMath';
-import { resolveHorizontalMove3D, resolveVerticalMove3D } from './surfacePhysics';
+import { findAttachedChildren, resolveHorizontalMove3D, resolveVerticalMove3D } from './surfacePhysics';
 import { getHouseBounds, getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
 
 interface RoomRect2D {
@@ -75,6 +75,7 @@ interface Props {
   selection: ArchSelection;
   onSelect: (sel: ArchSelection) => void;
   onMoveObject: (id: string, x: number, z: number, y?: number) => void;
+  onMoveObjectsBatch?: (updates: Array<{ id: string; x: number; z: number; y?: number }>) => void;
   onExitWalkthrough?: () => void;
   onWarningsChange?: (warnings: string[]) => void;
   onLoadingChange?: (loadingCount: number) => void;
@@ -154,6 +155,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       selection,
       onSelect,
       onMoveObject,
+      onMoveObjectsBatch,
       onExitWalkthrough,
       onWarningsChange,
       onLoadingChange,
@@ -206,7 +208,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       verticalDrag: boolean;
       moved: boolean;
       wasSelected: boolean;
+      attachedChildren: Array<{ id: string; startX: number; startY: number; startZ: number }>;
     } | null>(null);
+
+    const commitObjectMoves = (updates: Array<{ id: string; x: number; z: number; y?: number }>) => {
+      if (updates.length === 0) return;
+      if (onMoveObjectsBatch) {
+        onMoveObjectsBatch(updates);
+      } else {
+        for (const u of updates) onMoveObject(u.id, u.x, u.z, u.y);
+      }
+    };
     const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
     const activePointersRef = useRef<Set<number>>(new Set());
     const hitObstacleRef = useRef(false);
@@ -474,11 +486,28 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const targetX = obj.x + dir.x * forwardM + right.x * rightM;
         const targetZ = obj.z + dir.z * forwardM + right.z * rightM;
 
+        const children = findAttachedChildren(p, obj);
         const res = resolveHorizontalMove3D(p, obj, obj.x, obj.y, obj.z, targetX, targetZ, eng.mountedObjects);
+        const dx = res.x - obj.x;
+        const dy = res.y - obj.y;
+        const dz = res.z - obj.z;
+        const updates: Array<{ id: string; x: number; z: number; y?: number }> = [
+          { id: obj.id, x: res.x, z: res.z, y: res.y },
+        ];
         const mounted = eng.mountedObjects.get(obj.id);
         if (mounted) mounted.root.position.set(res.x, res.y, res.z);
-        onMoveObject(obj.id, res.x, res.z, res.y);
-        if (res.support && Math.abs(res.y - obj.y) > 0.02) {
+        for (const ch of children) {
+          const cx = Number((ch.x + dx).toFixed(3));
+          const cy = Number(Math.max(0, ch.y + dy).toFixed(3));
+          const cz = Number((ch.z + dz).toFixed(3));
+          const cm = eng.mountedObjects.get(ch.id);
+          if (cm) cm.root.position.set(cx, cy, cz);
+          updates.push({ id: ch.id, x: cx, z: cz, y: cy });
+        }
+        commitObjectMoves(updates);
+        if (res.clampedInsideParent) {
+          onToast?.("Bağlı mobilya sınırı — dışarı çıkarmak için sağ panelden 'Serbest Bırak'a tıklayın.");
+        } else if (res.support && !res.support.isInteriorShelf && Math.abs(res.y - obj.y) > 0.02) {
           onToast?.(`${res.support.host.name} üst yüzeyine oturtuldu (${Math.round(res.y * 100)} cm).`);
         } else if (res.hitObstacle && Math.hypot(res.x - targetX, res.z - targetZ) > 0.03) {
           onToast?.('Mobilya sınırı: ürün diğer eşyanın içine/altına geçirilemez.');
@@ -491,10 +520,21 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const p = projectRef.current;
         const obj = p.objects.find((o) => o.id === objId);
         if (!obj) return;
+        const children = findAttachedChildren(p, obj);
         const res = resolveVerticalMove3D(p, obj, obj.y + deltaYM, eng.mountedObjects);
+        const dy = res.y - obj.y;
+        const updates: Array<{ id: string; x: number; z: number; y?: number }> = [
+          { id: obj.id, x: obj.x, z: obj.z, y: res.y },
+        ];
         const mounted = eng.mountedObjects.get(obj.id);
         if (mounted) mounted.root.position.set(obj.x, res.y, obj.z);
-        onMoveObject(obj.id, obj.x, obj.z, res.y);
+        for (const ch of children) {
+          const cy = Number(Math.max(0, ch.y + dy).toFixed(3));
+          const cm = eng.mountedObjects.get(ch.id);
+          if (cm) cm.root.position.set(ch.x, cy, ch.z);
+          updates.push({ id: ch.id, x: ch.x, z: ch.z, y: cy });
+        }
+        commitObjectMoves(updates);
         if (res.clampedBySupport && res.support) {
           onToast?.(`${res.support.host.name} üst sınırı (${Math.round(res.y * 100)} cm) — altına indirilemez.`);
         }
@@ -1335,6 +1375,12 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           e.stopPropagation();
           const wasSelected = selectionRef.current?.type === 'object' && selectionRef.current.id === hitObjId;
           selectionRef.current = { type: 'object', id: hitObjId };
+          const attachedChildren = findAttachedChildren(projectRef.current, obj).map((c) => ({
+            id: c.id,
+            startX: c.x,
+            startY: c.y,
+            startZ: c.z,
+          }));
           dragRef.current = {
             id: hitObjId,
             hx: pt ? pt.x : obj.x,
@@ -1353,6 +1399,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
             verticalDrag,
             moved: false,
             wasSelected,
+            attachedChildren,
           };
           if (!isInside) eng.controls.enabled = false;
           hitObstacleRef.current = false;
@@ -1426,6 +1473,11 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         hitObstacleRef.current = vRes.clampedBySupport;
         const mounted = eng.mountedObjects.get(d.id);
         if (mounted) mounted.root.position.set(d.liveX, d.liveY, d.liveZ);
+        const dy = d.liveY - d.py;
+        for (const ch of d.attachedChildren) {
+          const cm = eng.mountedObjects.get(ch.id);
+          if (cm) cm.root.position.set(ch.startX + (d.liveX - d.px), Math.max(0, ch.startY + dy), ch.startZ + (d.liveZ - d.pz));
+        }
         eng.scheduleRender(false);
         return;
       }
@@ -1477,6 +1529,13 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const mounted = eng.mountedObjects.get(d.id);
       if (mounted) mounted.root.position.set(hRes.x, hRes.y, hRes.z);
+      const dx = hRes.x - d.px;
+      const dy = hRes.y - d.py;
+      const dz = hRes.z - d.pz;
+      for (const ch of d.attachedChildren) {
+        const cm = eng.mountedObjects.get(ch.id);
+        if (cm) cm.root.position.set(ch.startX + dx, Math.max(0, ch.startY + dy), ch.startZ + dz);
+      }
       // 60 FPS butter-smooth drag: skip heavy shadow-map rebuild until pointerUp!
       eng.scheduleRender(false);
     };
@@ -1522,7 +1581,21 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           /* ignore */
         }
         if (d.moved) {
-          onMoveObject(d.id, Number(d.liveX.toFixed(3)), Number(d.liveZ.toFixed(3)), Number(d.liveY.toFixed(3)));
+          const dx = d.liveX - d.px;
+          const dy = d.liveY - d.py;
+          const dz = d.liveZ - d.pz;
+          const updates: Array<{ id: string; x: number; z: number; y?: number }> = [
+            { id: d.id, x: Number(d.liveX.toFixed(3)), z: Number(d.liveZ.toFixed(3)), y: Number(d.liveY.toFixed(3)) },
+          ];
+          for (const ch of d.attachedChildren) {
+            updates.push({
+              id: ch.id,
+              x: Number((ch.startX + dx).toFixed(3)),
+              z: Number((ch.startZ + dz).toFixed(3)),
+              y: Number(Math.max(0, ch.startY + dy).toFixed(3)),
+            });
+          }
+          commitObjectMoves(updates);
         }
         // Commit React selection cleanly AFTER drag completes (prevents mid-drag canvas resize jumps on phone & desktop!)
         onSelect({ type: 'object', id: d.id });

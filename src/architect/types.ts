@@ -382,6 +382,10 @@ export interface ArchPlacedObject {
   pinterestItemId?: string;
   /** 0 = Ground floor, 1 = Upper 2nd floor / mezzanine */
   floorLevel?: 0 | 1;
+  /** When set, object is locked inside/on top of this parent furniture piece (moves together & stays inside bounds) */
+  lockedParentId?: string;
+  /** When true, skips solid obstacle collision for intentional custom nesting */
+  allowOverlap?: boolean;
   x: number;
   y: number;
   z: number;
