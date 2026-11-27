@@ -3028,11 +3028,21 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 : 'north';
             const resolveWallFinish = (w: WallId): { colorHex: string; pattern: WallPattern } => {
               const baseHex = style?.wallColorHex || prev.walls[w].colorHex;
+              const zonesOnThisWall = builtWallZones.filter((z) => z.wall === w);
+              const wallLenCm = Math.round(getWallLengthM(w, prev.widthM, prev.depthM) * 100);
+              const coveredRatio = zonesOnThisWall.reduce((sum, z) => sum + z.widthCm / Math.max(100, wallLenCm), 0);
               const explicit = style?.perWallFinishes?.[w];
               if (explicit) {
+                // If this wall has partial architectural wallZones (e.g. wood slats on right 35% of white TV wall),
+                // keep the underlying base wall smooth so the plain paint around the panel stays crisp!
+                const useSmoothBase = zonesOnThisWall.length > 0 && coveredRatio < 0.85;
                 return {
-                  colorHex: /^#[0-9a-fA-F]{6}$/.test(explicit.colorHex || '') ? explicit.colorHex! : baseHex,
-                  pattern: explicit.pattern || 'smooth',
+                  colorHex: useSmoothBase
+                    ? baseHex
+                    : /^#[0-9a-fA-F]{6}$/.test(explicit.colorHex || '')
+                    ? explicit.colorHex!
+                    : baseHex,
+                  pattern: useSmoothBase ? 'smooth' : explicit.pattern || 'smooth',
                 };
               }
               if (w === accentWallTarget && style && !style.hasMezzanine && builtWallZones.length === 0) {

@@ -295,6 +295,11 @@ export function applyArchitecturalRelationships(
   for (const obj of result) {
     if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    // Never pull high wall sconces ("Duvar Apliği", elevation >= 110cm) down onto a TV baza!
+    const isWallSconce =
+      (obj.mountMode === 'wall' || (src?.elevationCm || 0) >= 110 || /aplik|sconce|duvar/i.test(obj.name)) &&
+      src?.relation !== 'on_top_of';
+    if (isWallSconce) continue;
     const isTabletopItem =
       obj.parametricKind === 'table_lamp' ||
       obj.parametricKind === 'decorative_vase' ||

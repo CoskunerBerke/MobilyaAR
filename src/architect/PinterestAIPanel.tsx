@@ -1473,7 +1473,22 @@ export const PinterestAIPanel: React.FC<Props> = ({
         geminiKey,
       });
 
-      const taggedObjects: PoolDetectedItem[] = res.detectedObjects.map((o) => ({
+      // Filter out curtains/windows emitted as fake wall_art when roomStyle already builds real 3D curtains
+      const hasArchitecturalCurtains =
+        Boolean(res.roomStyle?.hasVisibleWindow) ||
+        (Array.isArray(res.roomStyle?.windowWalls) && res.roomStyle.windowWalls.length > 0);
+      const filteredRawObjects = res.detectedObjects.filter((o) => {
+        if (
+          hasArchitecturalCurtains &&
+          (o.parametricKind === 'wall_art' || o.parametricKind === 'wall_mirror' || o.category === 'Dekor') &&
+          /(perde|curtain|drape|tül\b|pencere|window)/i.test(`${o.id} ${o.nameTr}`)
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+      const taggedObjects: PoolDetectedItem[] = filteredRawObjects.map((o) => ({
         ...o,
         id: `${curPhoto.id}-${o.id}`,
         // Preserve parent-child anchor links after prefixing ids! (Previously broke ALL TV-above-baza & flower-on-baza anchors!)
