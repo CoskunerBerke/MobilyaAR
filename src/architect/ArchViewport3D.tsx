@@ -2,7 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { clampToRoomWalls, resolveMoveOBB, type OBB2D } from '../lib/collision2d';
+import { clampToRoomWalls, type OBB2D } from '../lib/collision2d';
 import { buildContactShadow } from '../lib/contactShadow';
 import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
@@ -47,22 +47,6 @@ function getAllRoomRects(p: ArchRoomProject): RoomRect2D[] {
     });
   }
   return rects;
-}
-
-function findNearestRoomRect(rects: RoomRect2D[], x: number, z: number): RoomRect2D {
-  let best = rects[0];
-  let bestDistSq = Infinity;
-  for (const r of rects) {
-    const cx = Math.max(r.minX, Math.min(r.maxX, x));
-    const cz = Math.max(r.minZ, Math.min(r.maxZ, z));
-    const dSq = (x - cx) * (x - cx) + (z - cz) * (z - cz);
-    if (dSq < bestDistSq) {
-      bestDistSq = dSq;
-      best = r;
-      if (dSq === 0) break;
-    }
-  }
-  return best;
 }
 
 export type ArchCameraMode = 'free' | 'plan' | 'inside';
@@ -215,7 +199,10 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       pz: number;
       liveX: number;
       liveZ: number;
+      startClientX: number;
+      startClientY: number;
       moved: boolean;
+      wasSelected: boolean;
     } | null>(null);
     const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
     const activePointersRef = useRef<Set<number>>(new Set());
@@ -489,6 +476,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFShadowMap;
       renderer.shadowMap.autoUpdate = false;
+      renderer.domElement.style.touchAction = 'none';
 
       // Graceful WebGL context-loss recovery for Smart TVs & iOS Safari backgrounding
       const onContextLost = (ev: Event) => {
@@ -1164,6 +1152,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       if (!eng || !ray) return null;
 
       const hits = ray.intersectObjects(eng.objectsRoot.children, true);
+      const selectedId = selectionRef.current?.type === 'object' ? selectionRef.current.id : null;
+      let floorOrWallHit: string | null = null;
       let ceilingHit: string | null = null;
       let rugHit: string | null = null;
 
@@ -1174,15 +1164,21 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           if (typeof cur.userData?.objectId === 'string') {
             const obj = projectRef.current.objects.find((o) => o.id === cur!.userData.objectId);
             if (!obj) break;
-            if (obj.mountMode === 'floor' || obj.mountMode === 'wall') return obj.id;
-            if (obj.mountMode === 'ceiling' && !ceilingHit) ceilingHit = obj.id;
-            if (obj.mountMode === 'rug' && !rugHit) rugHit = obj.id;
+            // Always prioritize the currently selected object if under the pointer (easy grab even in tight clusters!)
+            if (selectedId && obj.id === selectedId) return obj.id;
+            if ((obj.mountMode === 'floor' || obj.mountMode === 'wall') && !floorOrWallHit) {
+              floorOrWallHit = obj.id;
+            } else if (obj.mountMode === 'ceiling' && !ceilingHit) {
+              ceilingHit = obj.id;
+            } else if (obj.mountMode === 'rug' && !rugHit) {
+              rugHit = obj.id;
+            }
             break;
           }
           cur = cur.parent;
         }
       }
-      return ceilingHit || rugHit;
+      return floorOrWallHit || ceilingHit || rugHit;
     };
 
     const pickArchitecturalElement = (clientX: number, clientY: number): ArchSelection => {
@@ -1248,11 +1244,15 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const hitObjId = pickDraggableObjectId(e.clientX, e.clientY);
       if (!hitObjId) return;
 
-      onSelect({ type: 'object', id: hitObjId });
       const obj = projectRef.current.objects.find((o) => o.id === hitObjId);
       if (!obj) return;
       const pt = raycastPlaneY(e.clientX, e.clientY, obj.y);
       if (pt) {
+        // Prevent OrbitControls from fighting finger/mouse during object dragging!
+        e.stopPropagation();
+        const wasSelected = selectionRef.current?.type === 'object' && selectionRef.current.id === hitObjId;
+        // Update WebGL wireframe immediately WITHOUT triggering a mid-drag React sidebar/sheet resize!
+        selectionRef.current = { type: 'object', id: hitObjId };
         dragRef.current = {
           id: hitObjId,
           hx: pt.x,
@@ -1261,11 +1261,19 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           pz: obj.z,
           liveX: obj.x,
           liveZ: obj.z,
+          startClientX: e.clientX,
+          startClientY: e.clientY,
           moved: false,
+          wasSelected,
         };
         eng.controls.enabled = false;
         hitObstacleRef.current = false;
-        (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+        try {
+          (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        eng.scheduleRender(false);
       }
     };
 
@@ -1285,6 +1293,12 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const d = dragRef.current;
       const eng = engineRef.current;
       if (!d || !eng) return;
+
+      // Tiny 4px deadzone prevents accidental nudging on simple taps while feeling instant when dragging
+      if (!d.moved && Math.hypot(e.clientX - d.startClientX, e.clientY - d.startClientY) < 4) {
+        return;
+      }
+
       const p = projectRef.current;
       const obj = p.objects.find((o) => o.id === d.id);
       if (!obj) return;
@@ -1293,50 +1307,55 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const targetX = d.px + (pt.x - d.hx);
       const targetZ = d.pz + (pt.z - d.hz);
+
+      // Silky-smooth continuous wall-clamped movement (NEVER freezes or teleports on tight Pinterest clusters!)
+      const hasMulti = (p.adjacentRooms?.length || 0) > 0;
       let nextX = targetX;
       let nextZ = targetZ;
-
-      const hasMulti = (p.adjacentRooms?.length || 0) > 0;
-      const activeRect = hasMulti
-        ? findNearestRoomRect(getAllRoomRects(p), targetX, targetZ)
-        : { cx: 0, cz: 0, w: p.widthM, d: p.depthM, minX: -p.widthM * 0.5, maxX: p.widthM * 0.5, minZ: -p.depthM * 0.5, maxZ: p.depthM * 0.5 };
-
-      if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling' || obj.y >= 1.0) {
+      if (hasMulti) {
+        const hb = getHouseBounds(p);
+        const cx = hb.centerX;
+        const cz = hb.centerZ;
         const c = clampToRoomWalls(
-          targetX - activeRect.cx,
-          targetZ - activeRect.cz,
+          targetX - cx,
+          targetZ - cz,
           obj.rot,
           obj.widthM * 0.5,
           obj.depthM * 0.5,
-          activeRect.w,
-          activeRect.d,
-          0.015
+          hb.totalW,
+          hb.totalD,
+          0.01
         );
-        nextX = c.x + activeRect.cx;
-        nextZ = c.z + activeRect.cz;
-        hitObstacleRef.current = c.clamped;
+        nextX = c.x + cx;
+        nextZ = c.z + cz;
       } else {
-        const others: OBB2D[] = [
-          ...p.objects
-            .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 1.0)
-            .map((o) => {
-              const obb = objectToOBB(o);
-              return { ...obb, x: obb.x - activeRect.cx, z: obb.z - activeRect.cz };
-            }),
-          ...p.columns.map((col) => ({
-            id: `col-${col.id}`,
-            x: col.xCm / 100 - activeRect.cx,
-            z: col.zCm / 100 - activeRect.cz,
-            rot: 0,
-            halfW: col.widthCm / 200,
-            halfD: col.depthCm / 200,
-          })),
-        ];
-        const curLocal = objectToOBB({ ...obj, x: d.liveX - activeRect.cx, z: d.liveZ - activeRect.cz });
-        const res = resolveMoveOBB(curLocal, targetX - activeRect.cx, targetZ - activeRect.cz, others, activeRect.w, activeRect.d);
-        nextX = res.x + activeRect.cx;
-        nextZ = res.z + activeRect.cz;
-        hitObstacleRef.current = res.hitObstacle;
+        const c = clampToRoomWalls(
+          targetX,
+          targetZ,
+          obj.rot,
+          obj.widthM * 0.5,
+          obj.depthM * 0.5,
+          p.widthM,
+          p.depthM,
+          0.01
+        );
+        nextX = c.x;
+        nextZ = c.z;
+      }
+
+      // Non-blocking visual overlap hint only (red wireframe if touching another piece, never locks movement!)
+      if (obj.mountMode !== 'rug' && obj.mountMode !== 'ceiling' && obj.y < 1.0) {
+        const curObb = objectToOBB({ ...obj, x: nextX, z: nextZ });
+        const others: OBB2D[] = p.objects
+          .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 1.0)
+          .map((o) => objectToOBB(o));
+        hitObstacleRef.current = others.some((o) => {
+          const dx = Math.abs(curObb.x - o.x);
+          const dz = Math.abs(curObb.z - o.z);
+          return dx < curObb.halfW + o.halfW - 0.04 && dz < curObb.halfD + o.halfD - 0.04;
+        });
+      } else {
+        hitObstacleRef.current = false;
       }
 
       d.liveX = nextX;
@@ -1345,7 +1364,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
 
       const mounted = eng.mountedObjects.get(d.id);
       if (mounted) mounted.root.position.set(nextX, obj.y, nextZ);
-      eng.scheduleRender(true);
+      // 60 FPS butter-smooth drag: skip heavy shadow-map rebuild until pointerUp!
+      eng.scheduleRender(false);
     };
 
     const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1365,13 +1385,21 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       if (d) {
         dragRef.current = null;
         hitObstacleRef.current = false;
-        if (engineRef.current) engineRef.current.controls.enabled = true;
+        if (engineRef.current) {
+          engineRef.current.controls.enabled = true;
+          // Refresh shadows cleanly once on drop!
+          engineRef.current.scheduleRender(true);
+        }
         try {
           (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
         } catch {
           /* ignore */
         }
-        if (d.moved) onMoveObject(d.id, d.liveX, d.liveZ);
+        if (d.moved) {
+          onMoveObject(d.id, Number(d.liveX.toFixed(3)), Number(d.liveZ.toFixed(3)));
+        }
+        // Commit React selection cleanly AFTER drag completes (prevents mid-drag canvas resize jumps on phone & desktop!)
+        onSelect({ type: 'object', id: d.id });
         pointerDownPosRef.current = null;
         return;
       }

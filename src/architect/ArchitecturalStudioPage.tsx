@@ -36,6 +36,8 @@ import {
   Sparkles,
   Sun,
   Upload,
+  User,
+  Users,
   X,
 } from 'lucide-react';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
@@ -62,8 +64,18 @@ import {
   type WallPanelCatalogItem,
 } from './materialCatalogs';
 import { NumericInput } from './NumericInput';
-import { PinterestAIPanel } from './PinterestAIPanel';
+import { PinterestAIPanel, type PinterestMaterialEntry } from './PinterestAIPanel';
 import { SelectionInspector } from './SelectionInspector';
+import { ClientProjectModal } from './ClientProjectModal';
+import {
+  createClientProjectRecord,
+  loadActiveClientId,
+  loadClientProjects,
+  saveActiveClientId,
+  saveClientProjects,
+  updateRecordWithProject,
+  type ClientProjectRecord,
+} from './clientProjects';
 import { QUICK_ADD_SUGGESTIONS, parseQuickAddQuery } from './quickAddParser';
 import { runUniversalSearch, type UniversalSearchGroup, type UniversalSearchResult } from './universalSearch';
 import {
@@ -147,7 +159,31 @@ const PARAMETRIC_CARDS: Array<{
 
 export const ArchitecturalStudioPage: React.FC = () => {
   const [catalog, setCatalog] = useState<Product[]>(PRODUCTS);
-  const [project, setProject] = useState<ArchRoomProject>(() => createDefaultArchitectProject(PRODUCTS));
+  const [clientProjects, setClientProjects] = useState<ClientProjectRecord[]>(() => loadClientProjects());
+  const [activeClientId, setActiveClientId] = useState<string | null>(() => {
+    const saved = loadClientProjects();
+    const lastId = loadActiveClientId();
+    return lastId && saved.some((c) => c.id === lastId) ? lastId : null;
+  });
+  const [clientModalOpen, setClientModalOpen] = useState<boolean>(true);
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saved'>('idle');
+  const [project, setProject] = useState<ArchRoomProject>(() => {
+    const saved = loadClientProjects();
+    const lastId = loadActiveClientId();
+    const matched = lastId ? saved.find((c) => c.id === lastId) : null;
+    if (matched?.project) {
+      return {
+        ...matched.project,
+        wallZones: matched.project.wallZones || [],
+        adjacentRooms: matched.project.adjacentRooms || [],
+      };
+    }
+    return createDefaultArchitectProject(PRODUCTS);
+  });
+  const activeClient = useMemo(
+    () => clientProjects.find((c) => c.id === activeClientId) || null,
+    [clientProjects, activeClientId]
+  );
   const [activeTab, setActiveTab] = useState<StudioTab>('room');
   // Single-open accordion prevents giant vertical scroll walls while keeping every feature 1 tap away
   const [openRoomSection, setOpenRoomSection] = useState<RoomAccordion | null>('dims');
@@ -224,6 +260,161 @@ export const ArchitecturalStudioPage: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  // Auto-save active customer's room whenever project changes (debounced 550ms)
+  useEffect(() => {
+    if (!activeClientId) return;
+    const timer = window.setTimeout(() => {
+      setClientProjects((prev) => {
+        const idx = prev.findIndex((c) => c.id === activeClientId);
+        if (idx < 0) return prev;
+        const updated = updateRecordWithProject(prev[idx], project);
+        const next = [updated, ...prev.filter((c) => c.id !== activeClientId)];
+        saveClientProjects(next);
+        return next;
+      });
+      setAutoSaveState('saved');
+    }, 550);
+    return () => window.clearTimeout(timer);
+  }, [project, activeClientId]);
+
+  const handleSelectClient = useCallback(
+    (client: ClientProjectRecord) => {
+      // Flush current active client before switching so zero edits are ever lost
+      if (activeClientId && activeClientId !== client.id) {
+        setClientProjects((prev) => {
+          const curIdx = prev.findIndex((c) => c.id === activeClientId);
+          if (curIdx < 0) return prev;
+          const next = prev.map((c) => (c.id === activeClientId ? updateRecordWithProject(c, project) : c));
+          saveClientProjects(next);
+          return next;
+        });
+      }
+      setActiveClientId(client.id);
+      saveActiveClientId(client.id);
+      setProject({
+        ...client.project,
+        wallZones: client.project.wallZones || [],
+        adjacentRooms: client.project.adjacentRooms || [],
+      });
+      setSelection(null);
+      setClientModalOpen(false);
+      setAutoSaveState('saved');
+      setTimeout(() => viewportRef.current?.resetCamera('free'), 90);
+      showToast(`${client.clientName} · ${client.roomTitle} odasına geçildi.`);
+    },
+    [activeClientId, project, showToast]
+  );
+
+  const handleCreateClient = useCallback(
+    (opts: {
+      clientName: string;
+      roomTitle: string;
+      phone?: string;
+      note?: string;
+      preset: ApartmentPresetId | 'keep_current';
+    }) => {
+      const baseProject: ArchRoomProject =
+        opts.preset === 'keep_current'
+          ? { ...project, wallZones: project.wallZones || [], adjacentRooms: project.adjacentRooms || [] }
+          : opts.preset === 'single'
+          ? createDefaultArchitectProject(catalog)
+          : buildApartmentPreset(opts.preset, catalog);
+
+      const newRec = createClientProjectRecord({
+        clientName: opts.clientName,
+        roomTitle: opts.roomTitle,
+        phone: opts.phone,
+        note: opts.note,
+        project: baseProject,
+      });
+
+      setClientProjects((prev) => {
+        const flushed = activeClientId
+          ? prev.map((c) => (c.id === activeClientId ? updateRecordWithProject(c, project) : c))
+          : prev;
+        const next = [newRec, ...flushed];
+        saveClientProjects(next);
+        return next;
+      });
+      setActiveClientId(newRec.id);
+      saveActiveClientId(newRec.id);
+      setProject(newRec.project);
+      setSelection(null);
+      setClientModalOpen(false);
+      setAutoSaveState('saved');
+      if (opts.preset !== 'keep_current') {
+        setTimeout(() => viewportRef.current?.resetCamera('free'), 90);
+      }
+      showToast(`${newRec.clientName} · ${newRec.roomTitle} oluşturuldu ve kaydedildi.`);
+    },
+    [activeClientId, catalog, project, showToast]
+  );
+
+  const handleRenameClient = useCallback(
+    (id: string, clientName: string, roomTitle: string, phone?: string, note?: string) => {
+      setClientProjects((prev) => {
+        const next = prev.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                clientName,
+                roomTitle,
+                phone: phone || undefined,
+                note: note || undefined,
+                project: { ...c.project, projectName: `${clientName} · ${roomTitle}` },
+              }
+            : c
+        );
+        saveClientProjects(next);
+        return next;
+      });
+      showToast('Müşteri bilgileri güncellendi.');
+    },
+    [showToast]
+  );
+
+  const handleDuplicateClient = useCallback(
+    (id: string) => {
+      const src = clientProjects.find((c) => c.id === id);
+      if (!src) return;
+      const copy = createClientProjectRecord({
+        clientName: `${src.clientName} (Alternatif)`,
+        roomTitle: src.roomTitle,
+        phone: src.phone,
+        note: src.note,
+        project: JSON.parse(JSON.stringify(src.project)) as ArchRoomProject,
+      });
+      setClientProjects((prev) => {
+        const next = [copy, ...prev];
+        saveClientProjects(next);
+        return next;
+      });
+      setActiveClientId(copy.id);
+      saveActiveClientId(copy.id);
+      setProject(copy.project);
+      setSelection(null);
+      setClientModalOpen(false);
+      showToast(`${copy.clientName} kopyalandı ve açıldı.`);
+    },
+    [clientProjects, showToast]
+  );
+
+  const handleDeleteClient = useCallback(
+    (id: string) => {
+      setClientProjects((prev) => {
+        const next = prev.filter((c) => c.id !== id);
+        saveClientProjects(next);
+        return next;
+      });
+      if (activeClientId === id) {
+        setActiveClientId(null);
+        saveActiveClientId(null);
+      }
+      showToast('Müşteri projesi silindi.');
+    },
+    [activeClientId, showToast]
+  );
 
   // Re-open right inspector panel smoothly whenever user clicks a new element in 3D
   useEffect(() => {
@@ -2550,6 +2741,75 @@ export const ArchitecturalStudioPage: React.FC = () => {
       <PinterestAIPanel
         project={project}
         activeTargetRoomId={selection?.type === 'adjacentRoom' ? selection.id : undefined}
+        onApplySingleMaterial={(mat: PinterestMaterialEntry, targetRoomId?: string) => {
+          setProject((prev) => {
+            if (targetRoomId && targetRoomId !== 'main') {
+              return {
+                ...prev,
+                adjacentRooms: (prev.adjacentRooms || []).map((r) => {
+                  if (r.id !== targetRoomId) return r;
+                  if (mat.kind === 'floor') {
+                    return {
+                      ...r,
+                      floorMaterial: mat.floorMaterial || r.floorMaterial,
+                      floorTintHex: mat.colorHex,
+                    };
+                  }
+                  if (mat.kind === 'wall' || mat.kind === 'accentWall') {
+                    return {
+                      ...r,
+                      wallColorHex: mat.colorHex,
+                      wallPattern: mat.wallPattern || r.wallPattern,
+                    };
+                  }
+                  return r;
+                }),
+              };
+            }
+            if (mat.kind === 'floor') {
+              return {
+                ...prev,
+                floorMaterial: mat.floorMaterial || prev.floorMaterial,
+                floorTintHex: mat.colorHex,
+                floorBrandLabel: `${mat.sourceLabel} · ${mat.label}`,
+              };
+            }
+            if (mat.kind === 'curtain') {
+              return {
+                ...prev,
+                windows: prev.windows.map((w) => ({
+                  ...w,
+                  curtainStyle: w.curtainStyle === 'none' ? 'sheer_and_drape' : w.curtainStyle,
+                  curtainColorHex: mat.colorHex,
+                })),
+              };
+            }
+            if (mat.kind === 'accentWall') {
+              return {
+                ...prev,
+                walls: {
+                  ...prev.walls,
+                  [activeWall]: {
+                    colorHex: mat.colorHex,
+                    pattern: mat.wallPattern || 'slats',
+                    brandLabel: `${mat.sourceLabel} · ${mat.label}`,
+                  },
+                },
+              };
+            }
+            // kind === 'wall': apply to all 4 walls
+            return {
+              ...prev,
+              walls: {
+                north: { colorHex: mat.colorHex, pattern: mat.wallPattern || 'smooth', brandLabel: `${mat.sourceLabel} · ${mat.label}` },
+                east: { colorHex: mat.colorHex, pattern: mat.wallPattern || 'smooth', brandLabel: `${mat.sourceLabel} · ${mat.label}` },
+                south: { colorHex: mat.colorHex, pattern: mat.wallPattern || 'smooth', brandLabel: `${mat.sourceLabel} · ${mat.label}` },
+                west: { colorHex: mat.colorHex, pattern: mat.wallPattern || 'smooth', brandLabel: `${mat.sourceLabel} · ${mat.label}` },
+              },
+            };
+          });
+          showToast(`${mat.sourceLabel} · ${mat.label} uygulandı.`);
+        }}
         onApplyRoomStyle={(style, targetRoomId) => {
           setProject((prev) => {
             if (targetRoomId && targetRoomId !== 'main') {
@@ -2866,6 +3126,30 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   : `${project.widthM.toFixed(1)}×${project.depthM.toFixed(1)} m · ${solar.formattedTime} (${bearingToShortCode(project.sun.northAngleDeg)})`}
               </p>
             </div>
+
+            {/* Active Customer Project Switcher Button */}
+            <button
+              type="button"
+              onClick={() => setClientModalOpen(true)}
+              className={`ml-1 px-2.5 py-1.5 border text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition max-w-[165px] sm:max-w-[215px] ${
+                activeClient
+                  ? 'border-stone-950 bg-stone-950 text-white hover:bg-stone-800'
+                  : 'border-stone-300 bg-[#faf9f6] text-stone-900 hover:border-stone-950'
+              }`}
+              title={
+                activeClient
+                  ? `Aktif Müşteri: ${activeClient.clientName} (${activeClient.roomTitle}) — Değiştirmek için tıklayın`
+                  : 'Müşteri odası seçin veya yeni müşteri oluşturun'
+              }
+            >
+              {activeClient ? <User className="w-3.5 h-3.5 shrink-0" /> : <Users className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">
+                {activeClient ? activeClient.clientName : `Müşteriler${clientProjects.length > 0 ? ` (${clientProjects.length})` : ''}`}
+              </span>
+              {activeClient && autoSaveState === 'saved' && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Otomatik kaydedildi" />
+              )}
+            </button>
           </div>
 
           {/* Center: Universal Smart Search Bar (Colors, codes, nearest shades, 3D furniture, windows, doors, 3+1 rooms!) */}
@@ -3588,6 +3872,20 @@ export const ArchitecturalStudioPage: React.FC = () => {
           </aside>
         )}
       </div>
+
+      {/* Customer Project Picker & Auto-Save Manager Modal */}
+      <ClientProjectModal
+        open={clientModalOpen}
+        clients={clientProjects}
+        activeClientId={activeClientId}
+        hasUnsavedWork={!activeClientId && (project.objects.length > 0 || (project.adjacentRooms?.length || 0) > 0)}
+        onClose={() => setClientModalOpen(false)}
+        onSelectClient={handleSelectClient}
+        onCreateClient={handleCreateClient}
+        onRenameClient={handleRenameClient}
+        onDuplicateClient={handleDuplicateClient}
+        onDeleteClient={handleDeleteClient}
+      />
     </div>
   );
 };

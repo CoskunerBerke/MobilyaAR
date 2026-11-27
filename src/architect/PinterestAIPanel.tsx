@@ -12,6 +12,7 @@ import {
   Layers,
   Loader2,
   MousePointerClick,
+  Palette,
   Plus,
   SlidersHorizontal,
   Sparkles,
@@ -56,14 +57,116 @@ import {
   type ArchMezzanine,
   type ArchPlacedObject,
   type ArchRoomProject,
+  type FloorMaterialKind,
   type MezzanineBounds,
   type ParametricFurnitureKind,
   type WallId,
+  type WallPattern,
 } from './types';
+
+export interface PinterestMaterialEntry {
+  id: string;
+  sourcePhotoId: string;
+  sourceLabel: string;
+  kind: 'wall' | 'accentWall' | 'floor' | 'curtain';
+  label: string;
+  colorHex: string;
+  wallPattern?: WallPattern;
+  floorMaterial?: FloorMaterialKind;
+}
+
+interface PinterestSourcePhoto {
+  id: string;
+  index: number;
+  dataUrl: string;
+  style: PinterestRoomStyle | null;
+  analyzed: boolean;
+}
+
+type PoolDetectedItem = PinterestDetectedObject & {
+  sourcePhotoId?: string;
+  sourcePhotoIndex?: number;
+};
+
+const FLOOR_LABELS_TR: Record<FloorMaterialKind, string> = {
+  herringbone_oak: 'Balıksırtı Meşe',
+  plank_oak: 'Doğal Meşe Parke',
+  plank_walnut: 'Ceviz Parke',
+  travertine: 'Traverten Taş',
+  marble: 'Doğal Mermer',
+  microcement: 'Mikrosement',
+  terrazzo: 'Terrazzo',
+};
+
+const WALL_PATTERN_LABELS_TR: Record<WallPattern, string> = {
+  smooth: 'Düz Mat Boya',
+  slats: 'Ahşap Çıta Panel',
+  boiserie: 'Çerçeve / Boiserie',
+  marble: 'Mermer Kaplama',
+  concrete: 'Brüt Beton',
+  stone: 'Doğal Taş',
+  wallpaper: 'Duvar Kağıdı',
+  mirror: 'Dekoratif Ayna',
+};
+
+function buildMaterialEntriesFromStyle(
+  photoId: string,
+  sourceLabel: string,
+  style: PinterestRoomStyle
+): PinterestMaterialEntry[] {
+  const entries: PinterestMaterialEntry[] = [];
+  if (isValidHexColor(style.wallColorHex)) {
+    entries.push({
+      id: `${photoId}-mat-wall`,
+      sourcePhotoId: photoId,
+      sourceLabel,
+      kind: 'wall',
+      label: `Duvar Boyası (${style.styleNameTr})`,
+      colorHex: style.wallColorHex,
+      wallPattern: 'smooth',
+    });
+  }
+  if (isValidHexColor(style.accentWallColorHex) || (style.wallPattern && style.wallPattern !== 'smooth')) {
+    const pat = style.wallPattern || 'slats';
+    entries.push({
+      id: `${photoId}-mat-accent`,
+      sourcePhotoId: photoId,
+      sourceLabel,
+      kind: 'accentWall',
+      label: `Vurgu Duvar · ${WALL_PATTERN_LABELS_TR[pat] || 'Panel'}`,
+      colorHex: isValidHexColor(style.accentWallColorHex) ? style.accentWallColorHex : style.wallColorHex || '#b9936c',
+      wallPattern: pat,
+    });
+  }
+  if (isValidHexColor(style.floorTintHex) || style.floorMaterial) {
+    const fm = style.floorMaterial || 'herringbone_oak';
+    entries.push({
+      id: `${photoId}-mat-floor`,
+      sourcePhotoId: photoId,
+      sourceLabel,
+      kind: 'floor',
+      label: `Zemin · ${FLOOR_LABELS_TR[fm] || 'Parke'}`,
+      colorHex: isValidHexColor(style.floorTintHex) ? style.floorTintHex : '#c5a57d',
+      floorMaterial: fm,
+    });
+  }
+  if (isValidHexColor(style.curtainColorHex)) {
+    entries.push({
+      id: `${photoId}-mat-curtain`,
+      sourcePhotoId: photoId,
+      sourceLabel,
+      kind: 'curtain',
+      label: 'Perde Kumaşı',
+      colorHex: style.curtainColorHex,
+    });
+  }
+  return entries;
+}
 
 interface Props {
   project: ArchRoomProject;
   activeTargetRoomId?: string;
+  onApplySingleMaterial?: (mat: PinterestMaterialEntry, targetRoomId?: string) => void;
   onApplyRoomStyle: (style: PinterestRoomStyle, targetRoomId?: string) => void;
   onApplyPinterestScene: (
     objects: ArchPlacedObject[],
@@ -197,6 +300,7 @@ const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
 export const PinterestAIPanel: React.FC<Props> = ({
   project,
   activeTargetRoomId,
+  onApplySingleMaterial,
   onApplyRoomStyle,
   onApplyPinterestScene,
   onRefinePinterestScene,
@@ -219,13 +323,29 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [testingKey, setTestingKey] = useState(false);
   const [keyTestResult, setKeyTestResult] = useState<string | null>(null);
 
-  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
+  // Multi-photo cumulative Pinterest inspiration & material pool!
+  const [photos, setPhotos] = useState<PinterestSourcePhoto[]>([]);
+  const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
+  const nextPhotoNumRef = useRef(1);
+  const [materialPool, setMaterialPool] = useState<PinterestMaterialEntry[]>([]);
+  const [poolFilter, setPoolFilter] = useState<'all' | string>('all');
+  const [showAddMaterialForm, setShowAddMaterialForm] = useState(false);
+  const [customMatKind, setCustomMatKind] = useState<PinterestMaterialEntry['kind']>('accentWall');
+  const [customMatName, setCustomMatName] = useState('');
+  const [customMatHex, setCustomMatHex] = useState('#b89268');
+  const [customMatWallPat, setCustomMatWallPat] = useState<WallPattern>('slats');
+  const [customMatFloor, setCustomMatFloor] = useState<FloorMaterialKind>('herringbone_oak');
+
+  const activePhoto = photos.find((p) => p.id === activePhotoId) || photos[photos.length - 1] || null;
+  const photoDataUrl = activePhoto?.dataUrl || null;
+  const roomStyle = activePhoto?.style || null;
+
   const [userFocusPrompt, setUserFocusPrompt] = useState<string>('');
   const [targetRoomId, setTargetRoomId] = useState<string>(activeTargetRoomId || 'main');
   const [analyzing, setAnalyzing] = useState(false);
   const [refining, setRefining] = useState(false);
   const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
-  // Default FALSE so adding a second Pinterest piece NEVER wipes previously built cabinets/furniture!
+  // Default FALSE so adding a second Pinterest photo NEVER wipes previously built cabinets/furniture!
   const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(false);
   const [autoVerifyAfterBuild, setAutoVerifyAfterBuild] = useState(true);
   const [qaResult, setQaResult] = useState<{
@@ -247,14 +367,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
   } | null>(null);
   const [savingCatalogId, setSavingCatalogId] = useState<string | null>(null);
   const [savedCatalogIds, setSavedCatalogIds] = useState<Record<string, boolean>>({});
-  const [roomStyle, setRoomStyle] = useState<PinterestRoomStyle | null>(null);
-  const [detected, setDetected] = useState<PinterestDetectedObject[]>([]);
+  const [detected, setDetected] = useState<PoolDetectedItem[]>([]);
   const [jobs, setJobs] = useState<Record<string, ItemJobState>>({});
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [geminiImageQuotaNote, setGeminiImageQuotaNote] = useState(false);
   const geminiImageQuotaBlockedRef = useRef(false);
+
+  const getPhotoUrlForItem = (item: PoolDetectedItem): string | null =>
+    (item.sourcePhotoId ? photos.find((p) => p.id === item.sourcePhotoId)?.dataUrl : null) || photoDataUrl;
 
   // Auto-sync target room when user selects an adjacent room in 3D or sidebar
   useEffect(() => {
@@ -858,9 +980,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const jobPatches: Record<string, Partial<ItemJobState>> = {};
 
     for (const item of ordered) {
+      const itemImgUrl = getPhotoUrlForItem(item as PoolDetectedItem) || imgUrl;
       const res = await buildInstant3DObject(
         item,
-        imgUrl,
+        itemImgUrl,
         occupiedGround,
         wallCursorsGround,
         occupiedUpper,
@@ -1201,10 +1324,22 @@ export const PinterestAIPanel: React.FC<Props> = ({
     if (!file) return;
     try {
       const norm = await normalizeRoomPhoto(file, 1400);
-      setPhotoDataUrl(norm.dataUrl);
-      setRoomStyle(null);
-      setDetected([]);
-      setJobs({});
+      const photoIdx = nextPhotoNumRef.current++;
+      const newPhoto: PinterestSourcePhoto = {
+        id: `ph-${Date.now()}-${photoIdx}`,
+        index: photoIdx,
+        dataUrl: norm.dataUrl,
+        style: null,
+        analyzed: false,
+      };
+      const hadExisting = photos.length > 0;
+      setPhotos((prev) => [...prev, newPhoto]);
+      setActivePhotoId(newPhoto.id);
+      if (hadExisting) {
+        // Sequential multi-photo workflow: keep Foto 1's 3D furniture & materials intact!
+        setReplaceExistingOnBuild(false);
+        onToast(`Foto ${photoIdx} eklendi — önceki fotoğrafların malzeme ve eşyaları korundu!`);
+      }
       setQaResult(null);
       bestQaRef.current = null;
       setDrawMode('off');
@@ -1215,47 +1350,127 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
   };
 
+  const removeSourcePhoto = (photoId: string) => {
+    const remaining = photos.filter((p) => p.id !== photoId);
+    setPhotos(remaining);
+    if (activePhotoId === photoId) {
+      setActivePhotoId(remaining[remaining.length - 1]?.id || null);
+    }
+    if (poolFilter === photoId) setPoolFilter('all');
+    setDetected((prev) => prev.filter((d) => d.sourcePhotoId !== photoId));
+    setMaterialPool((prev) => prev.filter((m) => m.sourcePhotoId !== photoId));
+    setDrawMode('off');
+    if (remaining.length === 0) {
+      nextPhotoNumRef.current = 1;
+      setQaResult(null);
+      setStatusBanner(null);
+    }
+  };
+
+  const clearAllPhotos = () => {
+    setPhotos([]);
+    setActivePhotoId(null);
+    setDetected([]);
+    setMaterialPool([]);
+    setJobs({});
+    setPoolFilter('all');
+    setQaResult(null);
+    bestQaRef.current = null;
+    setDrawMode('off');
+    setStatusBanner(null);
+    nextPhotoNumRef.current = 1;
+  };
+
+  const handleAddCustomMaterial = () => {
+    const defaultLabel =
+      customMatKind === 'floor'
+        ? `Özel Zemin · ${FLOOR_LABELS_TR[customMatFloor]}`
+        : customMatKind === 'curtain'
+        ? 'Özel Perde Kumaşı'
+        : customMatKind === 'accentWall'
+        ? `Özel Panel · ${WALL_PATTERN_LABELS_TR[customMatWallPat]}`
+        : `Özel Duvar · ${WALL_PATTERN_LABELS_TR[customMatWallPat]}`;
+    const entry: PinterestMaterialEntry = {
+      id: `custom-mat-${Date.now()}`,
+      sourcePhotoId: activePhoto?.id || 'custom',
+      sourceLabel: activePhoto ? `Foto ${activePhoto.index} +` : 'Özel',
+      kind: customMatKind,
+      label: customMatName.trim() || defaultLabel,
+      colorHex: customMatHex,
+      wallPattern: customMatKind === 'wall' || customMatKind === 'accentWall' ? customMatWallPat : undefined,
+      floorMaterial: customMatKind === 'floor' ? customMatFloor : undefined,
+    };
+    setMaterialPool((prev) => [entry, ...prev]);
+    onApplySingleMaterial?.(entry, targetRoomId);
+    setCustomMatName('');
+    setShowAddMaterialForm(false);
+  };
+
   const handleAnalyze = async () => {
-    if (!photoDataUrl) return;
+    if (!photoDataUrl || !activePhoto) return;
     if (!hasGeminiAccess) {
       setShowKeyBox(true);
       onToast('Önce motor bağlantı anahtarını girin.');
       return;
     }
+    const curPhoto = activePhoto;
     const tRoom = getTargetRoomRect();
     setAnalyzing(true);
     setQaResult(null);
     bestQaRef.current = null;
     setDrawMode('off');
-    setStatusBanner(`Adım 1/3 · MekanAR Mimari Motoru (${tRoom.name}) görseli analiz ediyor...`);
+    setStatusBanner(`Adım 1/3 · Foto ${curPhoto.index} analiz ediliyor (${tRoom.name})...`);
     try {
       const res = await analyzePinterestRoom({
-        imageDataUrl: photoDataUrl,
+        imageDataUrl: curPhoto.dataUrl,
         roomWidthM: tRoom.w,
         roomDepthM: tRoom.d,
         roomCeilingM: project.ceilingM,
         userPrompt: userFocusPrompt,
         geminiKey,
       });
-      setRoomStyle(res.roomStyle);
-      setDetected(res.detectedObjects);
-      const initJobs: Record<string, ItemJobState> = {};
-      res.detectedObjects.forEach((o) => {
-        initJobs[o.id] = { selected: true, status: 'idle' };
-      });
-      setJobs(initJobs);
 
-      if (autoPopulateOnAnalyze && res.detectedObjects.length > 0) {
-        setStatusBanner('Adım 2/3 · Mimari İlişki Motoru: Eşyalar doğru duvarlara, katlara ve hizalara kuruluyor...');
-        await assembleAllInstantIn3D(res.detectedObjects, res.roomStyle, photoDataUrl, replaceExistingOnBuild);
+      const taggedObjects: PoolDetectedItem[] = res.detectedObjects.map((o) => ({
+        ...o,
+        id: `${curPhoto.id}-${o.id}`,
+        sourcePhotoId: curPhoto.id,
+        sourcePhotoIndex: curPhoto.index,
+      }));
+      const extractedMaterials = res.roomStyle
+        ? buildMaterialEntriesFromStyle(curPhoto.id, `Foto ${curPhoto.index}`, res.roomStyle)
+        : [];
+
+      setPhotos((prev) =>
+        prev.map((p) => (p.id === curPhoto.id ? { ...p, style: res.roomStyle, analyzed: true } : p))
+      );
+      setDetected((prev) => [...prev.filter((d) => d.sourcePhotoId !== curPhoto.id), ...taggedObjects]);
+      setMaterialPool((prev) => [
+        ...prev.filter((m) => m.sourcePhotoId !== curPhoto.id),
+        ...extractedMaterials,
+      ]);
+      setJobs((prev) => {
+        const next = { ...prev };
+        taggedObjects.forEach((o) => {
+          next[o.id] = { selected: true, status: 'idle' };
+        });
+        return next;
+      });
+
+      // Never wipe prior photos' 3D furniture when analyzing a 2nd/3rd sequential Pinterest photo!
+      const effectiveReplace = photos.length > 1 ? false : replaceExistingOnBuild;
+
+      if (autoPopulateOnAnalyze && taggedObjects.length > 0) {
+        setStatusBanner(
+          `Adım 2/3 · Foto ${curPhoto.index} içindeki ${taggedObjects.length} parça ve ${extractedMaterials.length} malzeme odaya ekleniyor...`
+        );
+        await assembleAllInstantIn3D(taggedObjects, res.roomStyle, curPhoto.dataUrl, effectiveReplace);
       } else {
         setStatusBanner(
-          `${res.detectedObjects.length} parça ve oda stili tespit edildi (${res.model}). "Tüm Odayı 3B'ye Kur" butonuyla hepsini anında yerleştirebilirsin.`
+          `Foto ${curPhoto.index}: ${taggedObjects.length} eşya ve ${extractedMaterials.length} malzeme havuza eklendi. İstediğini seçip odaya koyabilirsin.`
         );
-        // Hydrate thumbnails in background
         void Promise.all(
-          res.detectedObjects.map(async (item) => {
-            const url = await cropBoxFromDataUrl(photoDataUrl, item.box2d, 0.025).catch(() => undefined);
+          taggedObjects.map(async (item) => {
+            const url = await cropBoxFromDataUrl(curPhoto.dataUrl, item.box2d, 0.025).catch(() => undefined);
             if (!url) return;
             setJobs((prev) => (prev[item.id] ? { ...prev, [item.id]: { ...prev[item.id], cropPreviewUrl: url } } : prev));
           })
@@ -1350,12 +1565,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
       return;
     }
 
-    const newId = `drawn-${Date.now()}`;
+    const newId = `${activePhoto?.id || 'ph'}-drawn-${Date.now()}`;
     const cx = ((xmin + xmax) * 0.5) / 1000;
     const cy = ((ymin + ymax) * 0.5) / 1000;
     const sampled = preview ? await sampleDominantHexFromDataUrl(preview) : '#8b7f70';
-    const placeholder: PinterestDetectedObject = {
+    const placeholder: PoolDetectedItem = {
       id: newId,
+      sourcePhotoId: activePhoto?.id,
+      sourcePhotoIndex: activePhoto?.index,
       nameTr: 'Seçilen Parça (Tanımlanıyor...)',
       category: 'Dekor',
       primaryColorHex: sampled,
@@ -1435,8 +1652,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
   /**
    * Instant 0.1s placement of a single item into the chosen target 3D room!
    */
-  const placeSingleInstantIn3D = async (item: PinterestDetectedObject) => {
-    if (!photoDataUrl) return;
+  const placeSingleInstantIn3D = async (item: PoolDetectedItem) => {
+    const itemPhotoUrl = getPhotoUrlForItem(item);
+    if (!itemPhotoUrl) return;
     const tRoom = getTargetRoomRect();
     const occupied: OBB2D[] = project.objects
       .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
@@ -1448,7 +1666,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         halfW: o.widthM * 0.5,
         halfD: o.depthM * 0.5,
       }));
-    const built = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
+    const built = await buildInstant3DObject(item, itemPhotoUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
     onAddGeneratedObject(built.obj);
     setJobs((prev) => ({
       ...prev,
@@ -1466,8 +1684,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
   /**
    * Optional High-Detail Sculptural Upgrade: replaces an item in-place with a RunPod Hunyuan3D-2.1 2K PBR .GLB!
    */
-  const upgradeItemWithRunPod3D = async (item: PinterestDetectedObject) => {
-    if (!photoDataUrl) return;
+  const upgradeItemWithRunPod3D = async (item: PoolDetectedItem) => {
+    const itemPhotoUrl = getPhotoUrlForItem(item);
+    if (!itemPhotoUrl) return;
     setJobs((prev) => ({
       ...prev,
       [item.id]: {
@@ -1479,14 +1698,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }));
 
     try {
-      const croppedUrl = await cropBoxFromDataUrl(photoDataUrl, item.box2d, 0.025);
+      const croppedUrl = await cropBoxFromDataUrl(itemPhotoUrl, item.box2d, 0.025);
       let modelInputImage = croppedUrl;
       let usedDirectCrop = false;
 
       if (hasGeminiAccess && !geminiImageQuotaBlockedRef.current) {
         try {
           const iso = await isolatePinterestObject({
-            fullRoomImageDataUrl: photoDataUrl,
+            fullRoomImageDataUrl: itemPhotoUrl,
             croppedImageDataUrl: croppedUrl,
             item,
             geminiKey,
@@ -1562,7 +1781,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
           halfW: o.widthM * 0.5,
           halfD: o.depthM * 0.5,
         }));
-      const base = await buildInstant3DObject(item, photoDataUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
+      const base = await buildInstant3DObject(item, itemPhotoUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
       const upgradedObj: ArchPlacedObject = {
         ...base.obj,
         glbUrl,
@@ -1595,14 +1814,16 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   const handleRebuildSelectedInstant = async () => {
     if (!photoDataUrl) return;
-    const targets = detected.filter((d) => jobs[d.id]?.selected);
+    const targets = detected.filter(
+      (d) => jobs[d.id]?.selected && (poolFilter === 'all' || d.sourcePhotoId === poolFilter)
+    );
     if (targets.length === 0) {
       onToast('Önce odaya kurulacak en az bir parça seçin.');
       return;
     }
     setBatchRunning(true);
     try {
-      await assembleAllInstantIn3D(targets, roomStyle, photoDataUrl, replaceExistingOnBuild);
+      await assembleAllInstantIn3D(targets, roomStyle, photoDataUrl, photos.length > 1 ? false : replaceExistingOnBuild);
     } finally {
       setBatchRunning(false);
     }
@@ -1792,11 +2013,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Step 1: Upload Reference Photo */}
+      {/* Step 1: Multi-Photo Reference Upload & Switcher */}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-            Referans Fotoğraf (Pinterest / Kamera)
+            Referans Fotoğraflar {photos.length > 0 ? `(${photos.length})` : '(Pinterest / Kamera)'}
           </span>
           {photoDataUrl && (
             <div className="flex items-center gap-2">
@@ -1811,23 +2032,82 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 title="Fotoğrafın üstünde dikdörtgen çizerek eksik kalan eşyayı ekle"
               >
                 <Crop className="w-3 h-3" />
-                <span>{drawMode === 'new' ? 'Çizimi İptal' : 'Alan Çiz'}</span>
+                <span>{drawMode === 'new' ? 'İptal' : 'Alan Çiz'}</span>
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setPhotoDataUrl(null);
-                  setDetected([]);
-                  setRoomStyle(null);
-                  setDrawMode('off');
-                }}
-                className="text-[11px] text-stone-500 hover:text-stone-950 underline"
+                onClick={clearAllPhotos}
+                className="text-[10px] text-stone-500 hover:text-red-700 underline"
+                title="Tüm referans fotoğrafları ve havuzu temizle"
               >
-                Değiştir
+                Temizle
               </button>
             </div>
           )}
         </div>
+
+        {/* Sequential Multi-Photo Thumbnail Strip: Add Photo 2, Photo 3... while keeping Photo 1's materials & items! */}
+        {photos.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            {photos.map((ph) => {
+              const isCur = activePhoto?.id === ph.id;
+              return (
+                <div
+                  key={ph.id}
+                  className={`relative shrink-0 border transition ${
+                    isCur ? 'border-stone-950 ring-1 ring-stone-950' : 'border-stone-300 hover:border-stone-600'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePhotoId(ph.id);
+                      setDrawMode('off');
+                    }}
+                    className="block w-14 h-12 bg-stone-100 overflow-hidden"
+                    title={`Foto ${ph.index} — tıklayıp görüntüle`}
+                  >
+                    <img src={ph.dataUrl} alt={`Foto ${ph.index}`} className="w-full h-full object-cover" />
+                    <span
+                      className={`absolute bottom-0 left-0 right-0 text-[9px] font-mono font-bold text-center leading-tight py-0.5 ${
+                        isCur ? 'bg-stone-950/90 text-white' : 'bg-white/85 text-stone-900'
+                      }`}
+                    >
+                      Foto {ph.index}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeSourcePhoto(ph.id);
+                    }}
+                    className="absolute -top-1 -right-1 w-4 h-4 bg-stone-950 text-white flex items-center justify-center hover:bg-red-700"
+                    title={`Foto ${ph.index} kaldır`}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              );
+            })}
+            <label
+              className="shrink-0 w-16 h-12 border border-dashed border-stone-400 hover:border-stone-950 bg-[#faf9f6] hover:bg-white flex flex-col items-center justify-center gap-0.5 cursor-pointer text-[9px] font-semibold text-stone-700 hover:text-stone-950 transition"
+              title="Art arda 2. veya 3. Pinterest fotoğrafı ekle (önceki malzeme ve eşyalar korunur)"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>+ Foto</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  handleUploadInspiration(e.target.files?.[0] || null);
+                  e.currentTarget.value = '';
+                }}
+              />
+            </label>
+          </div>
+        )}
 
         {!photoDataUrl ? (
           <div className="space-y-2">
@@ -1902,7 +2182,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
               <img src={photoDataUrl} alt="Pinterest referans" className="w-full h-auto block pointer-events-none" />
 
               {drawMode === 'off' &&
-                detected.map((item, i) => {
+                detected
+                  .filter((it) => !it.sourcePhotoId || it.sourcePhotoId === activePhoto?.id)
+                  .map((item, i) => {
                   const [ymin, xmin, ymax, xmax] = item.box2d;
                   const isSel = jobs[item.id]?.selected;
                   const isHov = hoveredId === item.id;
@@ -2186,58 +2468,166 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Step 2: Extracted Room Style */}
-      {roomStyle && (
-        <div className="border border-stone-200 bg-white p-3 space-y-2">
+      {/* Step 2: Cumulative Materials Pool across ALL Pinterest Photos + Custom Material Adder! */}
+      {(materialPool.length > 0 || photos.length > 0) && (
+        <div className="border border-stone-200 bg-white p-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              02 · Mimari Renk &amp; Zemin Stili
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-800 flex items-center gap-1">
+              <Palette className="w-3.5 h-3.5 text-stone-600" />
+              <span>Malzeme Havuzu ({materialPool.length})</span>
             </span>
-            <span className="font-semibold text-stone-900 truncate">{roomStyle.styleNameTr}</span>
+            <button
+              type="button"
+              onClick={() => setShowAddMaterialForm((v) => !v)}
+              className={`px-2 py-0.5 border text-[10px] font-semibold flex items-center gap-0.5 transition ${
+                showAddMaterialForm
+                  ? 'border-stone-950 bg-stone-950 text-white'
+                  : 'border-stone-300 bg-[#faf9f6] text-stone-800 hover:border-stone-950'
+              }`}
+            >
+              <Plus className="w-3 h-3" />
+              <span>Malzeme Ekle</span>
+            </button>
           </div>
-          <p className="text-[11px] text-stone-600 leading-relaxed">{roomStyle.summaryTr}</p>
-          <div className="flex items-center gap-2 text-[10px] font-mono text-stone-600">
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 border border-black/20" style={{ backgroundColor: roomStyle.wallColorHex }} />
-              Duvar
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 border border-black/20" style={{ backgroundColor: roomStyle.floorTintHex }} />
-              Zemin
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-3 border border-black/20" style={{ backgroundColor: roomStyle.curtainColorHex }} />
-              Perde
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onApplyRoomStyle(roomStyle, targetRoomId);
-              onToast(`${getTargetRoomRect().name} duvar, zemin ve perde tonları güncellendi.`);
-            }}
-            className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-900 font-semibold transition"
-          >
-            Duvar, Zemin &amp; Perde Stilini {getTargetRoomRect().name} İçin Uygula
-          </button>
+
+          {showAddMaterialForm && (
+            <div className="border border-stone-200 bg-[#faf9f6] p-2 space-y-2 text-[11px]">
+              <div className="grid grid-cols-2 gap-1.5">
+                <select
+                  value={customMatKind}
+                  onChange={(e) => setCustomMatKind(e.target.value as PinterestMaterialEntry['kind'])}
+                  className="px-1.5 py-1 border border-stone-300 bg-white text-[11px] font-semibold"
+                >
+                  <option value="wall">Duvar Boyası (4 Duvar)</option>
+                  <option value="accentWall">Vurgu Duvarı / Panel</option>
+                  <option value="floor">Zemin Parke / Taş</option>
+                  <option value="curtain">Perde Kumaşı</option>
+                </select>
+                {customMatKind === 'floor' ? (
+                  <select
+                    value={customMatFloor}
+                    onChange={(e) => setCustomMatFloor(e.target.value as FloorMaterialKind)}
+                    className="px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                  >
+                    {(Object.keys(FLOOR_LABELS_TR) as FloorMaterialKind[]).map((fm) => (
+                      <option key={fm} value={fm}>
+                        {FLOOR_LABELS_TR[fm]}
+                      </option>
+                    ))}
+                  </select>
+                ) : customMatKind === 'wall' || customMatKind === 'accentWall' ? (
+                  <select
+                    value={customMatWallPat}
+                    onChange={(e) => setCustomMatWallPat(e.target.value as WallPattern)}
+                    className="px-1.5 py-1 border border-stone-300 bg-white text-[11px]"
+                  >
+                    {(Object.keys(WALL_PATTERN_LABELS_TR) as WallPattern[]).map((wp) => (
+                      <option key={wp} value={wp}>
+                        {WALL_PATTERN_LABELS_TR[wp]}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="px-1.5 py-1 text-[10px] text-stone-500 flex items-center">Tül + Fon Perde</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="color"
+                  value={customMatHex}
+                  onChange={(e) => setCustomMatHex(e.target.value)}
+                  className="w-8 h-7 border border-stone-300 bg-white cursor-pointer shrink-0"
+                  title="Renk seç"
+                />
+                <input
+                  type="text"
+                  value={customMatName}
+                  onChange={(e) => setCustomMatName(e.target.value)}
+                  placeholder="Malzeme adı (örn. Ceviz Çıta, Kaşmir...)"
+                  className="flex-1 min-w-0 px-2 py-1 border border-stone-300 bg-white text-[11px]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleAddCustomMaterial}
+                className="w-full py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[10px] font-bold transition"
+              >
+                Havuza Ekle &amp; {getTargetRoomRect().name} İçin Uygula
+              </button>
+            </div>
+          )}
+
+          {materialPool.length > 0 ? (
+            <div className="space-y-1 max-h-48 overflow-y-auto pr-0.5">
+              {materialPool
+                .filter((m) => poolFilter === 'all' || m.sourcePhotoId === poolFilter || m.sourcePhotoId === 'custom')
+                .map((mat) => (
+                  <div
+                    key={mat.id}
+                    className="flex items-center justify-between gap-2 px-2 py-1.5 border border-stone-200 hover:border-stone-500 bg-[#faf9f6]"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-5 h-5 border border-black/20 shrink-0"
+                        style={{ backgroundColor: mat.colorHex }}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold text-stone-900 truncate leading-tight">{mat.label}</p>
+                        <p className="text-[9px] font-mono text-stone-500">
+                          {mat.sourceLabel} · {mat.colorHex.toUpperCase()}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onApplySingleMaterial?.(mat, targetRoomId)}
+                      className="px-2 py-1 border border-stone-950 bg-white hover:bg-stone-950 text-stone-950 hover:text-white text-[10px] font-semibold whitespace-nowrap shrink-0 transition"
+                    >
+                      Uygula
+                    </button>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <p className="text-[10px] text-stone-500 leading-snug">
+              Fotoğrafı analiz ettiğinde duvar, parke, panel ve perde malzemeleri burada birikir; 2. fotoğraf eklediğinde farklı fotoğraflardan malzemeleri karıştırıp uygulayabilirsin.
+            </p>
+          )}
+
+          {roomStyle && (
+            <button
+              type="button"
+              onClick={() => {
+                onApplyRoomStyle(roomStyle, targetRoomId);
+                onToast(`${getTargetRoomRect().name} için Foto ${activePhoto?.index || 1} tüm stili uygulandı.`);
+              }}
+              className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-900 text-[11px] font-semibold transition"
+            >
+              Foto {activePhoto?.index || 1} Tüm Stilini {getTargetRoomRect().name} İçin Uygula
+            </button>
+          )}
         </div>
       )}
 
-      {/* Step 3: Live Editable Pinterest Objects inside the 3D Room */}
-      {detected.length > 0 && (
+      {/* Step 3: Cumulative Live Editable Pinterest Objects across ALL Photos */}
+      {detected.length > 0 && (() => {
+        const visibleDetected =
+          poolFilter === 'all' ? detected : detected.filter((d) => d.sourcePhotoId === poolFilter);
+        const visibleSelectedCount = visibleDetected.filter((d) => jobs[d.id]?.selected).length;
+        return (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-1">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-              03 · Odadaki Pinterest Parçaları ({detected.length})
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-700">
+              Çıkarılan Eşyalar ({visibleDetected.length})
             </span>
             <div className="flex items-center gap-2 text-[10px]">
               <button
                 type="button"
                 onClick={() => {
-                  const allSelected = detected.every((d) => jobs[d.id]?.selected);
+                  const allSelected = visibleDetected.every((d) => jobs[d.id]?.selected);
                   setJobs((prev) => {
                     const next = { ...prev };
-                    detected.forEach((d) => {
+                    visibleDetected.forEach((d) => {
                       next[d.id] = { ...(next[d.id] || { status: 'idle', selected: false }), selected: !allSelected };
                     });
                     return next;
@@ -2245,7 +2635,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 }}
                 className="text-stone-600 hover:text-stone-950 underline"
               >
-                {detected.every((d) => jobs[d.id]?.selected) ? 'Kaldır' : 'Tümü'}
+                {visibleDetected.every((d) => jobs[d.id]?.selected) ? 'Kaldır' : 'Tümü'}
               </button>
               <button
                 type="button"
@@ -2257,18 +2647,55 @@ export const PinterestAIPanel: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* Filter Strip when 2+ Pinterest photos are loaded sequentially */}
+          {photos.length > 1 && (
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                onClick={() => setPoolFilter('all')}
+                className={`px-2 py-0.5 border text-[10px] font-semibold transition ${
+                  poolFilter === 'all'
+                    ? 'border-stone-950 bg-stone-950 text-white'
+                    : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-600'
+                }`}
+              >
+                Tümü ({detected.length})
+              </button>
+              {photos.map((ph) => {
+                const cnt = detected.filter((d) => d.sourcePhotoId === ph.id).length;
+                return (
+                  <button
+                    key={ph.id}
+                    type="button"
+                    onClick={() => {
+                      setPoolFilter(ph.id);
+                      setActivePhotoId(ph.id);
+                    }}
+                    className={`px-2 py-0.5 border text-[10px] font-semibold transition ${
+                      poolFilter === ph.id
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-600'
+                    }`}
+                  >
+                    Foto {ph.index} ({cnt})
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <button
             type="button"
-            disabled={batchRunning || selectedCount === 0}
+            disabled={batchRunning || visibleSelectedCount === 0}
             onClick={handleRebuildSelectedInstant}
             className="w-full py-2 bg-stone-950 hover:bg-stone-800 disabled:opacity-45 text-white font-semibold flex items-center justify-center gap-1.5 transition"
           >
             {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
-            <span>Seçili {selectedCount} Parçayı 3B Odaya Anında Kur</span>
+            <span>Seçili {visibleSelectedCount} Parçayı {getTargetRoomRect().name} İçine Kur</span>
           </button>
 
           <div className="space-y-2">
-            {detected.map((item, idx) => {
+            {visibleDetected.map((item, idx) => {
               const st = jobs[item.id] || { selected: false, status: 'idle' };
               const placed = findPlacedObjForItem(item.id);
               const col = BOX_COLORS[idx % BOX_COLORS.length];
@@ -2317,6 +2744,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
                         >
                           {idx + 1}
                         </span>
+                        {photos.length > 1 && item.sourcePhotoIndex && (
+                          <span className="px-1 py-0.5 bg-stone-100 border border-stone-300 text-[8px] font-mono font-bold text-stone-700 shrink-0">
+                            F{item.sourcePhotoIndex}
+                          </span>
+                        )}
                         <span
                           className="w-3 h-3 border border-black/25 shrink-0"
                           style={{ backgroundColor: liveColor }}
@@ -2487,7 +2919,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
             })}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {geminiImageQuotaNote && (
         <div className="border border-amber-300 bg-amber-50 p-2.5 text-[10px] text-amber-950 leading-relaxed">
