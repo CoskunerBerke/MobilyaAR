@@ -593,10 +593,11 @@ export async function isolatePinterestObject(params: {
 
 export async function generatePhotorealRender(params: {
   snapshotDataUrl: string;
+  referencePhotoDataUrl?: string;
   styleNote: string;
   roomSummary: string;
   geminiKey?: string;
-}): Promise<{ renderImageDataUrl: string; model: string }> {
+}): Promise<{ renderImageDataUrl: string; model: string; usedReferenceTransfer?: boolean }> {
   const key = (params.geminiKey || getSavedGeminiKey()).trim();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (key) headers['x-gemini-key'] = key;
@@ -606,6 +607,7 @@ export async function generatePhotorealRender(params: {
     headers,
     body: JSON.stringify({
       snapshotDataUrl: params.snapshotDataUrl,
+      referencePhotoDataUrl: params.referencePhotoDataUrl || '',
       styleNote: params.styleNote,
       roomSummary: params.roomSummary,
     }),
@@ -614,27 +616,31 @@ export async function generatePhotorealRender(params: {
   if (resp.ok) {
     const data = await resp.json();
     if (!data.ok || !data.renderImageDataUrl) throw new Error(data.error || 'Render başarısız');
-    return { renderImageDataUrl: data.renderImageDataUrl, model: data.model || 'gemini-2.5-flash-image' };
+    return {
+      renderImageDataUrl: data.renderImageDataUrl,
+      model: data.model || 'gemini-3.1-flash-image',
+      usedReferenceTransfer: Boolean(data.usedReferenceTransfer),
+    };
   }
 
   if (resp.status === 404 && key) {
     const snap = splitDataUrl(params.snapshotDataUrl);
+    const refImg = params.referencePhotoDataUrl ? splitDataUrl(params.referencePhotoDataUrl) : null;
     if (!snap) throw new Error('Sahne görüntüsü alınamadı');
+    const parts: any[] = [
+      {
+        text: refImg
+          ? `Turn Image 1 (3D room layout & camera angle) into an ultra-photorealistic V-Ray interior architectural photograph while faithfully transferring the EXACT furniture silhouettes, lighting fixtures, upholstery, wall panels, artwork, and materials from Image 2 (Pinterest reference). Keep Image 1's exact room layout & camera angle. Context: ${params.roomSummary}. Note: ${params.styleNote}`
+          : `Turn this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray interior architectural photograph. Preserve EVERY wall, window, door, column, beam, curtain cove, LED glow, sun direction, and furniture position strictly. Context: ${params.roomSummary}. Note: ${params.styleNote}`,
+      },
+      { inlineData: { mimeType: snap.mimeType, data: snap.data } },
+    ];
+    if (refImg) parts.push({ inlineData: { mimeType: refImg.mimeType, data: refImg.data } });
     const { model, json } = await callDirectGemini(
       key,
       DIRECT_IMAGE_MODELS,
       {
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `Turn this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray interior architectural photograph. Preserve EVERY wall, window, door, column, beam, curtain cove, LED glow, sun direction, and furniture position strictly. Context: ${params.roomSummary}. Note: ${params.styleNote}`,
-              },
-              { inlineData: { mimeType: snap.mimeType, data: snap.data } },
-            ],
-          },
-        ],
+        contents: [{ role: 'user', parts }],
         generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
       }
     );
@@ -642,7 +648,11 @@ export async function generatePhotorealRender(params: {
     for (const p of candParts) {
       const inl = p.inlineData || p.inline_data;
       if (inl?.data) {
-        return { renderImageDataUrl: `data:${inl.mimeType || 'image/png'};base64,${inl.data}`, model };
+        return {
+          renderImageDataUrl: `data:${inl.mimeType || 'image/png'};base64,${inl.data}`,
+          model,
+          usedReferenceTransfer: Boolean(refImg),
+        };
       }
     }
     throw new Error('Render görseli üretilemedi');

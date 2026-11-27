@@ -116,6 +116,7 @@ export const RenderStudioModal: React.FC<Props> = ({
 
   const [targetRoomId, setTargetRoomId] = useState<string>('current');
   const [cameraAngle, setCameraAngle] = useState<'corner' | 'eye'>('eye');
+  const [usePinterestTransfer, setUsePinterestTransfer] = useState<boolean>(true);
   const [presetId, setPresetId] = useState<string>('daylight');
   const [customNote, setCustomNote] = useState<string>('');
   const [activeRenderId, setActiveRenderId] = useState<string | null>(null);
@@ -142,6 +143,9 @@ export const RenderStudioModal: React.FC<Props> = ({
     }
     if (launchOpts?.angle === 'eye' || launchOpts?.angle === 'corner') {
       setCameraAngle(launchOpts.angle);
+    }
+    if (launchOpts?.referencePhoto) {
+      setUsePinterestTransfer(true);
     }
     if (history.length > 0 && !activeRenderId) {
       setActiveRenderId(history[0].id);
@@ -193,8 +197,10 @@ export const RenderStudioModal: React.FC<Props> = ({
         : foundRoomName;
 
     const styleNote = [activePreset.note, customNote.trim()].filter(Boolean).join(' ');
+    const transferRefUrl = usePinterestTransfer && refPhoto?.dataUrl ? refPhoto.dataUrl : undefined;
     const res = await generatePhotorealRender({
       snapshotDataUrl: snap,
+      referencePhotoDataUrl: transferRefUrl,
       styleNote,
       roomSummary: buildRoomSummary(roomId === 'current' ? 'main' : roomId),
       geminiKey: getSavedGeminiKey(),
@@ -221,19 +227,28 @@ export const RenderStudioModal: React.FC<Props> = ({
     return item;
   };
 
-  const handleRunSingleRender = async () => {
+  const handleRunSingleRender = async (
+    overrideRoomId?: string,
+    overrideAngle?: 'current' | 'corner' | 'eye'
+  ) => {
     if (busyMsg) return;
     setErrorMsg(null);
-    const chosenAngle: 'current' | 'corner' | 'eye' = targetRoomId === 'current' ? 'current' : cameraAngle;
+    const activeRoomId = overrideRoomId || targetRoomId;
+    const chosenAngle: 'current' | 'corner' | 'eye' =
+      overrideAngle || (activeRoomId === 'current' ? 'current' : cameraAngle);
     const label =
-      targetRoomId === 'current'
+      activeRoomId === 'current'
         ? launchOpts?.referencePhoto
           ? launchOpts.referencePhoto.label
           : 'Mevcut 3B Açı'
-        : rooms.find((r) => r.id === targetRoomId)?.name || 'Oda';
-    setBusyMsg(`${label} için fotogerçekçi V-Ray render üretiliyor...`);
+        : rooms.find((r) => r.id === activeRoomId)?.name || 'Oda';
+    setBusyMsg(
+      launchOpts?.referencePhoto && usePinterestTransfer
+        ? `${label} · Birebir Pinterest tasarımlı V-Ray render üretiliyor...`
+        : `${label} için fotogerçekçi V-Ray render üretiliyor...`
+    );
     try {
-      await renderSingleTarget(targetRoomId, chosenAngle, launchOpts?.referencePhoto || null);
+      await renderSingleTarget(activeRoomId, chosenAngle, launchOpts?.referencePhoto || null);
       onToast(`${label} fotogerçekçi renderı hazır!`);
     } catch (err) {
       const raw = err instanceof Error ? err.message : 'Render üretilemedi.';
@@ -279,7 +294,10 @@ export const RenderStudioModal: React.FC<Props> = ({
     if (autoStartConsumedRef.current === key) return;
     autoStartConsumedRef.current = key;
     const timer = setTimeout(() => {
-      void handleRunSingleRender();
+      void handleRunSingleRender(
+        launchOpts.roomId || 'current',
+        launchOpts.angle || (launchOpts.roomId && launchOpts.roomId !== 'current' ? 'eye' : 'current')
+      );
     }, 180);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -347,20 +365,34 @@ export const RenderStudioModal: React.FC<Props> = ({
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 overflow-y-auto lg:overflow-hidden">
           {/* Left Panel: Room, Angle, Lighting Presets & Batch Actions */}
           <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-stone-200 bg-[#faf9f6] p-4 sm:p-5 space-y-5 lg:overflow-y-auto">
-            {/* Reference photo badge if launched from Pinterest photo */}
+            {/* Reference photo badge & Dual-Reference Transfer Toggle */}
             {launchOpts?.referencePhoto && (
-              <div className="border border-stone-300 bg-white p-2.5 flex items-center gap-2.5">
-                <img
-                  src={launchOpts.referencePhoto.dataUrl}
-                  alt={launchOpts.referencePhoto.label}
-                  className="w-12 h-10 object-cover border border-stone-200 shrink-0"
-                />
-                <div className="min-w-0">
-                  <p className="text-[10px] font-mono uppercase text-stone-500">Bağlı Pinterest Fotoğrafı</p>
-                  <p className="text-xs font-bold text-stone-950 truncate">
-                    {launchOpts.referencePhoto.label}
-                  </p>
+              <div className="border border-stone-300 bg-white p-2.5 space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <img
+                    src={launchOpts.referencePhoto.dataUrl}
+                    alt={launchOpts.referencePhoto.label}
+                    className="w-12 h-10 object-cover border border-stone-200 shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-mono uppercase text-stone-500">Bağlı Pinterest Fotoğrafı</p>
+                    <p className="text-xs font-bold text-stone-950 truncate">
+                      {launchOpts.referencePhoto.label}
+                    </p>
+                  </div>
                 </div>
+                <label className="flex items-start gap-2 pt-1.5 border-t border-stone-200 cursor-pointer text-[11px] leading-snug text-stone-800">
+                  <input
+                    type="checkbox"
+                    checked={usePinterestTransfer}
+                    disabled={Boolean(busyMsg)}
+                    onChange={(e) => setUsePinterestTransfer(e.target.checked)}
+                    className="mt-0.5 accent-stone-950 shrink-0"
+                  />
+                  <span>
+                    <strong className="text-stone-950">Birebir Pinterest Tasarım Aktarımı</strong> — mobilya formu, avize ve dokuyu referanstan birebir aktarır
+                  </span>
+                </label>
               </div>
             )}
 

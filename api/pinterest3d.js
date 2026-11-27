@@ -912,33 +912,63 @@ CRITICAL RULES:
     }
 
     if (action === 'photorealRender') {
-      const { snapshotDataUrl, styleNote = '', roomSummary = '' } = req.body || {};
+      const { snapshotDataUrl, referencePhotoDataUrl = '', styleNote = '', roomSummary = '' } = req.body || {};
       const snap = splitDataUrl(snapshotDataUrl);
       if (!snap) {
         return res.status(400).json({ ok: false, error: '3B sahne görüntüsü alınamadı.' });
       }
+      const refImg = referencePhotoDataUrl ? splitDataUrl(referencePhotoDataUrl) : null;
 
-      const { model, json } = await callGeminiWithFallback(
-        apiKey,
-        IMAGE_MODELS,
-        {
-          contents: [
+      // When a Pinterest reference photo is attached, use flagship high-fidelity image models first so
+      // exact furniture silhouettes, chandeliers, wall motifs, and textures transfer faithfully!
+      const renderModels = refImg
+        ? [
+            'gemini-3.1-flash-image',
+            'gemini-3-pro-image',
+            'gemini-3.1-flash-lite-image',
+            'gemini-3.1-flash-image-preview',
+            'gemini-nano-banana-2.1',
+            'gemini-2.5-flash-image',
+          ]
+        : IMAGE_MODELS;
+
+      const parts = refImg
+        ? [
             {
-              role: 'user',
-              parts: [
-                {
-                  text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photograph (Architectural Digest quality).
+              text: `You are a master V-Ray / Corona architectural visualization artist. You are given TWO images:
+- IMAGE 1 (3D STUDIO LAYOUT): Our live 3D room viewport defining the EXACT camera viewpoint, room dimensions, wall/window geometry, and furniture placement coordinates.
+- IMAGE 2 (PINTEREST REFERENCE PHOTO): The client's EXACT target interior design showing the true designer furniture silhouettes, upholstery/tufting, sculpted chairs/sofas/beds, lighting fixtures/chandeliers, wall moldings/wood-slats/marble veining, fireplace burner & flame, artwork, rug weave, and color palette.
+
+TASK — Produce ONE ultra-photorealistic Architectural Digest V-Ray photograph matching the EXACT camera perspective and room layout of IMAGE 1, while FAITHFULLY TRANSFERRING EVERY DESIGN DETAIL, FURNITURE SILHOUETTE, MATERIAL, CHANDELIER/LAMP FORM, WALL PANEL/MOLDING, AND COLOR PALETTE FROM IMAGE 2 onto every corresponding element in IMAGE 1!
+
+CRITICAL RULES:
+- CAMERA & LAYOUT LOCK: Strictly keep IMAGE 1's camera angle, room walls, floor, ceiling, and the position/scale of every object (so the client sees the EXACT Pinterest design adapted cleanly inside THEIR 3D room!).
+- EXACT DESIGN TRANSFER FROM IMAGE 2: Replace the simplified boxy 3D placeholders in IMAGE 1 with the EXACT real-world designer forms seen in IMAGE 2 — curved chair backs, tufted bouclé/velvet upholstery, sculptural wire/globe chandeliers, organic wavy/arched mirrors, fluted headboards, recessed linear fireplace flames, realistic framed art, and authentic travertine/walnut/oak textures!
+- ZERO UI, ZERO TEXT LABELS, ZERO WATERMARKS, ZERO SPLIT LINES — output 100% pure full-bleed architectural photography with physically accurate V-Ray global illumination, soft window daylight bounce, warm cove LED glow, and crisp contact shadows.
+Room context: ${roomSummary}
+Lighting & atmosphere direction: ${styleNote || 'Doğal gün ışığı, referans fotoğrafın birebir mobilya tasarımı ve sıcak mimari atmosferi.'}`,
+            },
+            { inlineData: { mimeType: snap.mimeType, data: snap.data } },
+            { inlineData: { mimeType: refImg.mimeType, data: refImg.data } },
+          ]
+        : [
+            {
+              text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photograph (Architectural Digest quality).
 STRICT GEOMETRY & COMPOSITION PRESERVATION RULES:
 - Keep EVERY wall, partial wall panel (wood slats, concrete slab, marble, boiserie), window shape/count, door, column, ceiling beam, recessed curtain cove, hidden warm LED strip, sunlight beam direction, and EVERY furniture & decor item in the EXACT same position, color, and proportions.
 - NEVER add extra unrequested furniture, people, watermarks, text labels, or UI bars — output 100% pure full-bleed architectural photography.
 - Upgrade ONLY realism and light physics: physically accurate global illumination, soft window daylight bounce, crisp natural wood parquet grain, realistic bouclé/velvet/linen fabric weave, authentic stone/concrete patina, natural sheer curtain translucency, warm cove LED glow, realistic glass reflections, 24mm tilt-shift architectural camera lens.
 Room context: ${roomSummary}
 Lighting & styling direction: ${styleNote || 'Doğal gün ışığı, sıcak mimari atmosfer, foto-gerçekçi malzeme kalitesi.'}`,
-                },
-                { inlineData: { mimeType: snap.mimeType, data: snap.data } },
-              ],
             },
-          ],
+            { inlineData: { mimeType: snap.mimeType, data: snap.data } },
+          ];
+
+      const { model, json } = await callGeminiWithFallback(
+        apiKey,
+        renderModels,
+        {
+          contents: [{ role: 'user', parts }],
           generationConfig: {
             responseModalities: ['TEXT', 'IMAGE'],
           },
@@ -954,6 +984,7 @@ Lighting & styling direction: ${styleNote || 'Doğal gün ışığı, sıcak mim
       return res.status(200).json({
         ok: true,
         model,
+        usedReferenceTransfer: Boolean(refImg),
         renderImageDataUrl,
       });
     }

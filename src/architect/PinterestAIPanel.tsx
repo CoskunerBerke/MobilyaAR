@@ -385,6 +385,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [jobs, setJobs] = useState<Record<string, ItemJobState>>({});
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [heroUpgrading, setHeroUpgrading] = useState<{ done: number; total: number } | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [geminiImageQuotaNote, setGeminiImageQuotaNote] = useState(false);
   const geminiImageQuotaBlockedRef = useRef(false);
@@ -1612,16 +1613,13 @@ export const PinterestAIPanel: React.FC<Props> = ({
         return next;
       });
 
-      // On Photo 1 into an untouched factory demo room (with no narrow focus prompt), replace default demo clutter
-      // so the Pinterest room's exact walls, wallZones, windows & furniture build cleanly;
+      // On Photo 1 (with no narrow focus prompt), cleanly replace ONLY this target room's old furniture
+      // so leftover objects from previous rooms/demos never pollute the new Pinterest reconstruction;
       // on Photo 2+ NEVER wipe prior photos' furniture!
-      const isUntouchedDemoRoom =
-        project.objects.length > 0 &&
-        project.objects.every((o) => o.source !== 'pinterest-ai' && o.source !== 'cad');
       const effectiveReplace =
         photos.length > 1
           ? false
-          : replaceExistingOnBuild || (isUntouchedDemoRoom && !userFocusPrompt.trim());
+          : replaceExistingOnBuild || !userFocusPrompt.trim();
 
       if (autoPopulateOnAnalyze && taggedObjects.length > 0) {
         setStatusBanner(
@@ -1977,6 +1975,74 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
   };
 
+  const HERO_RUNPOD_PRIORITY: Partial<Record<ParametricFurnitureKind, number>> = {
+    sofa: 1,
+    bed_frame: 2,
+    armchair: 3,
+    chandelier: 4,
+    dining_table: 5,
+    coffee_table_rect: 6,
+    coffee_table_round: 6,
+    fireplace_marble: 7,
+    linear_fireplace: 7,
+    dining_chair: 8,
+    vanity_table: 9,
+    desk: 9,
+    ottoman: 10,
+    sideboard: 11,
+    console_table: 11,
+    decorative_vase: 12,
+    potted_plant: 13,
+  };
+
+  const heroRunPodCandidates = detected
+    .filter((d) => {
+      if (activePhoto && d.sourcePhotoId && d.sourcePhotoId !== activePhoto.id) return false;
+      const arch = resolvePinterestArchetype(d);
+      if (!(arch in HERO_RUNPOD_PRIORITY)) return false;
+      const placed = findPlacedObjForItem(d.id);
+      if (placed?.glbUrl) return false;
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        (HERO_RUNPOD_PRIORITY[resolvePinterestArchetype(a)] || 99) -
+        (HERO_RUNPOD_PRIORITY[resolvePinterestArchetype(b)] || 99)
+    )
+    .slice(0, 4);
+
+  const handleAutoUpgradeHero3D = async () => {
+    if (heroUpgrading || heroRunPodCandidates.length === 0) return;
+    const queue = [...heroRunPodCandidates];
+    let doneCount = 0;
+    setHeroUpgrading({ done: 0, total: queue.length });
+    setStatusBanner(
+      `RunPod RTX 4090 · ${queue.length} ana mobilya fotoğraftan birebir 3B (.GLB) olarak örülüyor...`
+    );
+    try {
+      const worker = async () => {
+        while (queue.length > 0) {
+          const nextItem = queue.shift();
+          if (!nextItem) break;
+          await upgradeItemWithRunPod3D(nextItem);
+          doneCount += 1;
+          setHeroUpgrading({ done: doneCount, total: heroRunPodCandidates.length });
+          setStatusBanner(
+            `Birebir 3B Mesh: ${doneCount}/${heroRunPodCandidates.length} ana mobilya sahnede güncellendi...`
+          );
+        }
+      };
+      // 2 parallel RTX 4090 serverless workers cut total wall time in half (~60-90s for 4 hero pieces!)
+      await Promise.all([worker(), worker()]);
+      setStatusBanner(
+        `✓ ${doneCount} ana mobilya fotoğraftan birebir 2K PBR 3B (.GLB) olarak sahneye yerleştirildi!`
+      );
+      onToast(`${doneCount} ana mobilya birebir 3B (.GLB) modele yükseltildi!`);
+    } finally {
+      setHeroUpgrading(null);
+    }
+  };
+
   const handleRebuildSelectedInstant = async () => {
     if (!photoDataUrl) return;
     const targets = detected.filter(
@@ -2012,6 +2078,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       } recessed LED curtain coves, sun hour ${project.sun.hour.toFixed(1)}.`;
       const res = await generatePhotorealRender({
         snapshotDataUrl: snap,
+        referencePhotoDataUrl: photoDataUrl || undefined,
         styleNote: renderStyleNote,
         roomSummary: summary,
         geminiKey,
@@ -2663,7 +2730,27 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
               >
                 <Camera className="w-3.5 h-3.5" />
-                <span>Foto {activePhoto.index} İçin V-Ray Render Al</span>
+                <span>Foto {activePhoto.index} İçin Birebir V-Ray Render Al</span>
+              </button>
+            )}
+            {runpodReady && heroRunPodCandidates.length > 0 && (
+              <button
+                type="button"
+                disabled={analyzing || refining || Boolean(heroUpgrading)}
+                onClick={() => void handleAutoUpgradeHero3D()}
+                className="w-full py-2 border border-stone-950 bg-white hover:bg-stone-100 text-stone-950 text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+                title="Fotoğraftaki ana mobilyaları (koltuk, sehpa, avize, berjer vb.) RunPod RTX 4090 ile gerçek 1:1 3B .GLB olarak sahneye yerleştirir"
+              >
+                {heroUpgrading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {heroUpgrading
+                    ? `Birebir 3B Örülüyor (${heroUpgrading.done}/${heroUpgrading.total})...`
+                    : `Birebir 3B Mobilya Üret (2K PBR · ${heroRunPodCandidates.length} Parça)`}
+                </span>
               </button>
             )}
             <button

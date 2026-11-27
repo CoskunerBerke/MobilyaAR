@@ -450,14 +450,54 @@ export function buildParametricObject3D(
       seatMat.dispose();
       legMat.dispose();
     });
-    const seatY = Math.min(0.47, H * 0.54);
-    addBox(W * 0.9, 0.065, D * 0.84, 0, seatY, 0.02, seatMat);
-    addBox(W * 0.88, H - seatY, 0.065, 0, seatY + (H - seatY) * 0.5, -D * 0.38, seatMat);
-    const ix = W * 0.38;
-    const iz = D * 0.35;
-    for (const sx of [-ix, ix]) {
-      for (const sz of [-iz, iz]) {
-        addBox(0.032, seatY, 0.032, sx, seatY * 0.5, sz, legMat);
+    const seatY = Math.min(0.47, H * 0.56);
+    const isCurved = /kavis|yuvarlak|buklet|boucl|kadife|velvet|curved|organic|oval|döşemeli|ahşap/i.test(obj.name);
+    if (isCurved) {
+      const sr = Math.min(W, D) * 0.46;
+      const seatGeo = new THREE.CylinderGeometry(sr, sr * 0.96, 0.068, 28);
+      const backH = Math.max(0.18, H - seatY - 0.02);
+      const backGeo = new THREE.CylinderGeometry(sr * 1.02, sr * 1.02, backH, 28, 1, true, Math.PI * 0.58, Math.PI * 0.84);
+      const backMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(accentHex),
+        roughness: 0.55,
+        side: THREE.DoubleSide,
+      });
+      const legGeo = new THREE.CylinderGeometry(0.017, 0.013, seatY, 12);
+      disposables.push(() => {
+        seatGeo.dispose();
+        backGeo.dispose();
+        backMat.dispose();
+        legGeo.dispose();
+      });
+      const seat = new THREE.Mesh(seatGeo, seatMat);
+      seat.position.set(0, seatY, 0.02);
+      seat.scale.set(W / (sr * 2), 1, D / (sr * 2));
+      seat.castShadow = true;
+      seat.receiveShadow = true;
+      grp.add(seat);
+      const back = new THREE.Mesh(backGeo, backMat);
+      back.position.set(0, seatY + backH * 0.52, 0.01);
+      back.castShadow = true;
+      grp.add(back);
+      const ix = W * 0.34;
+      const iz = D * 0.32;
+      for (const sx of [-ix, ix]) {
+        for (const sz of [-iz, iz]) {
+          const leg = new THREE.Mesh(legGeo, legMat);
+          leg.position.set(sx, seatY * 0.5, sz);
+          leg.castShadow = true;
+          grp.add(leg);
+        }
+      }
+    } else {
+      addBox(W * 0.9, 0.065, D * 0.84, 0, seatY, 0.02, seatMat);
+      addBox(W * 0.88, H - seatY, 0.065, 0, seatY + (H - seatY) * 0.5, -D * 0.38, seatMat);
+      const ix = W * 0.38;
+      const iz = D * 0.35;
+      for (const sx of [-ix, ix]) {
+        for (const sz of [-iz, iz]) {
+          addBox(0.032, seatY, 0.032, sx, seatY * 0.5, sz, legMat);
+        }
       }
     }
   } else if (obj.parametricKind === 'sofa') {
@@ -910,11 +950,32 @@ export function buildParametricObject3D(
     });
     const isLowPallet = H < 0.72;
     const hbH = isLowPallet ? Math.max(0.45, H) : Math.max(0.88, H);
-    // Clean wood or upholstered headboard at -Z
+    // Clean wood or vertical fluted upholstered headboard at -Z
+    const isFlutedUpholstered = /oluklu|kadife|döşemeli|dosemeli|kiremit|terracotta|fluted|velvet|upholstered|tufted|yeşil|yesil/i.test(
+      obj.name
+    );
     if (!isLowPallet) {
-      addBox(W + 0.08, hbH, 0.09, 0, hbH * 0.5, -D * 0.5 + 0.045, frameWoodMat);
-      addBox(W * 0.45, hbH * 0.5, 0.045, -W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
-      addBox(W * 0.45, hbH * 0.5, 0.045, W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
+      if (isFlutedUpholstered) {
+        const hbMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.88 });
+        disposables.push(() => hbMat.dispose());
+        addBox(W + 0.1, hbH, 0.08, 0, hbH * 0.5, -D * 0.5 + 0.04, hbMat);
+        const channels = Math.max(8, Math.min(16, Math.round(W / 0.14)));
+        const chW = (W + 0.04) / channels;
+        const fluteGeo = new THREE.CylinderGeometry(chW * 0.46, chW * 0.46, hbH - 0.06, 12);
+        disposables.push(() => fluteGeo.dispose());
+        for (let i = 0; i < channels; i++) {
+          const fx = -(W + 0.04) * 0.5 + chW * (i + 0.5);
+          const fl = new THREE.Mesh(fluteGeo, hbMat);
+          fl.position.set(fx, hbH * 0.5, -D * 0.5 + 0.085);
+          fl.scale.set(1, 1, 0.45);
+          fl.castShadow = true;
+          grp.add(fl);
+        }
+      } else {
+        addBox(W + 0.08, hbH, 0.09, 0, hbH * 0.5, -D * 0.5 + 0.045, frameWoodMat);
+        addBox(W * 0.45, hbH * 0.5, 0.045, -W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
+        addBox(W * 0.45, hbH * 0.5, 0.045, W * 0.24, hbH * 0.64, -D * 0.5 + 0.105, sheetMat);
+      }
     }
     // Natural wood bed/pallet base frame (uses accentHex instead of harsh black!)
     addBox(W + 0.04, 0.2, D - 0.04, 0, 0.1, 0.02, frameWoodMat);
@@ -973,10 +1034,10 @@ export function buildParametricObject3D(
       frameMat.dispose();
       mirrorMat.dispose();
     });
-    // Arched full-length mirror ("Kemerli Boy Aynası"), round mirror, or crisp rectangular mirror
-    const isArchedMirror = /kemer|arched|kavis|ark|kubbe/i.test(obj.name);
-    const isTallRect = H / Math.max(0.2, W) > 1.45 || /boy|dikdörtgen|köşeli|full.?length|zemin/i.test(obj.name);
-    const isRoundMirror = !isArchedMirror && !isTallRect && /yuvarlak|round|daire|circular/i.test(obj.name);
+    // Arched/organic/wavy full-length mirror, round mirror, or crisp rectangular mirror
+    const isArchedMirror = /kemer|arched|kavis|ark|kubbe|dalga|organik|wavy|organic|asimetrik|kaps[üu]l/i.test(obj.name);
+    const isTallRect = !isArchedMirror && (H / Math.max(0.2, W) > 1.45 || /boy|dikdörtgen|köşeli|full.?length|zemin/i.test(obj.name));
+    const isRoundMirror = !isArchedMirror && !isTallRect && /yuvarlak|round|daire|circular|oval/i.test(obj.name);
     if (isArchedMirror) {
       const r = W * 0.5;
       const rectH = Math.max(0.2, H - r);
@@ -1321,69 +1382,108 @@ export function buildParametricObject3D(
       addBox(W, rugH, D, 0, rugH * 0.5, 0, rugMat, false);
     }
   } else if (obj.parametricKind === 'chandelier') {
+    const isPendantCluster = /tel|kablo|sark[ıi]t|k[üu]re|çoklu|coklu|wire|pendant|cluster|globe|siyah/i.test(obj.name);
     const brassMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(primaryHex),
-      roughness: 0.25,
-      metalness: 0.88,
+      roughness: 0.28,
+      metalness: 0.82,
     });
-    const glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(accentHex) });
-    const wireMat = new THREE.MeshBasicMaterial({ color: 0x2c2b29 });
+    const glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(accentHex || '#fff2d2') });
+    const wireMat = new THREE.MeshBasicMaterial({ color: 0x222224 });
     disposables.push(() => {
       brassMat.dispose();
       glowMat.dispose();
       wireMat.dispose();
     });
 
-    const outerR = Math.min(W, D) * 0.48;
-    const innerR = outerR * 0.62;
-
-    const canGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.03, 20);
-    const ring1Geo = new THREE.TorusGeometry(outerR, 0.016, 10, 36);
-    ring1Geo.rotateX(Math.PI / 2);
-    const ring2Geo = new THREE.TorusGeometry(innerR, 0.013, 10, 32);
-    ring2Geo.rotateX(Math.PI / 2);
-    const glow1Geo = new THREE.TorusGeometry(outerR - 0.008, 0.008, 8, 36);
-    glow1Geo.rotateX(Math.PI / 2);
-    const glow2Geo = new THREE.TorusGeometry(innerR - 0.007, 0.007, 8, 32);
-    glow2Geo.rotateX(Math.PI / 2);
-
-    disposables.push(() => {
-      canGeo.dispose();
-      ring1Geo.dispose();
-      ring2Geo.dispose();
-      glow1Geo.dispose();
-      glow2Geo.dispose();
-    });
-
+    const canGeo = new THREE.CylinderGeometry(0.11, 0.11, 0.03, 20);
+    disposables.push(() => canGeo.dispose());
     const can = new THREE.Mesh(canGeo, brassMat);
     can.position.set(0, H - 0.015, 0);
     grp.add(can);
 
-    const ring1 = new THREE.Mesh(ring1Geo, brassMat);
-    ring1.position.y = 0.06;
-    grp.add(ring1);
-    const glow1 = new THREE.Mesh(glow1Geo, glowMat);
-    glow1.position.y = 0.052;
-    grp.add(glow1);
-
-    const ring2 = new THREE.Mesh(ring2Geo, brassMat);
-    ring2.position.y = 0.17;
-    grp.add(ring2);
-    const glow2 = new THREE.Mesh(glow2Geo, glowMat);
-    glow2.position.y = 0.163;
-    grp.add(glow2);
-
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      const pts = [
-        new THREE.Vector3(Math.cos(a) * 0.06, H - 0.02, Math.sin(a) * 0.06),
-        new THREE.Vector3(Math.cos(a) * outerR, 0.06, Math.sin(a) * outerR),
+    if (isPendantCluster) {
+      // Sculptural multi-drop architectural wire/globe pendant cluster!
+      const drops: Array<[number, number, number, number]> = [
+        [0, 0, 0.14, 0.13],
+        [-W * 0.28, -D * 0.14, 0.34, 0.1],
+        [W * 0.26, D * 0.16, 0.24, 0.11],
+        [-W * 0.16, D * 0.26, 0.44, 0.09],
+        [W * 0.18, -D * 0.24, 0.38, 0.095],
       ];
-      const wGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      disposables.push(() => wGeo.dispose());
-      const wire = new THREE.Line(wGeo, wireMat);
-      wire.raycast = () => {};
-      grp.add(wire);
+      const cageMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(primaryHex || '#1e1e20'),
+        roughness: 0.32,
+        metalness: 0.78,
+        wireframe: true,
+      });
+      disposables.push(() => cageMat.dispose());
+      drops.forEach(([dx, dz, yBottom, r]) => {
+        const dropY = Math.min(H - 0.18, Math.max(0.08, yBottom));
+        const cordPts = [new THREE.Vector3(dx * 0.3, H - 0.02, dz * 0.3), new THREE.Vector3(dx, dropY + r, dz)];
+        const cordGeo = new THREE.BufferGeometry().setFromPoints(cordPts);
+        const cageGeo = new THREE.IcosahedronGeometry(r, 1);
+        const bulbGeo = new THREE.SphereGeometry(r * 0.42, 14, 12);
+        disposables.push(() => {
+          cordGeo.dispose();
+          cageGeo.dispose();
+          bulbGeo.dispose();
+        });
+        const cord = new THREE.Line(cordGeo, wireMat);
+        cord.raycast = () => {};
+        grp.add(cord);
+        const cage = new THREE.Mesh(cageGeo, cageMat);
+        cage.position.set(dx, dropY + r * 0.6, dz);
+        grp.add(cage);
+        const bulb = new THREE.Mesh(bulbGeo, glowMat);
+        bulb.position.set(dx, dropY + r * 0.6, dz);
+        grp.add(bulb);
+      });
+    } else {
+      const outerR = Math.min(W, D) * 0.48;
+      const innerR = outerR * 0.62;
+      const ring1Geo = new THREE.TorusGeometry(outerR, 0.016, 10, 36);
+      ring1Geo.rotateX(Math.PI / 2);
+      const ring2Geo = new THREE.TorusGeometry(innerR, 0.013, 10, 32);
+      ring2Geo.rotateX(Math.PI / 2);
+      const glow1Geo = new THREE.TorusGeometry(outerR - 0.008, 0.008, 8, 36);
+      glow1Geo.rotateX(Math.PI / 2);
+      const glow2Geo = new THREE.TorusGeometry(innerR - 0.007, 0.007, 8, 32);
+      glow2Geo.rotateX(Math.PI / 2);
+
+      disposables.push(() => {
+        ring1Geo.dispose();
+        ring2Geo.dispose();
+        glow1Geo.dispose();
+        glow2Geo.dispose();
+      });
+
+      const ring1 = new THREE.Mesh(ring1Geo, brassMat);
+      ring1.position.y = 0.06;
+      grp.add(ring1);
+      const glow1 = new THREE.Mesh(glow1Geo, glowMat);
+      glow1.position.y = 0.052;
+      grp.add(glow1);
+
+      const ring2 = new THREE.Mesh(ring2Geo, brassMat);
+      ring2.position.y = 0.17;
+      grp.add(ring2);
+      const glow2 = new THREE.Mesh(glow2Geo, glowMat);
+      glow2.position.y = 0.163;
+      grp.add(glow2);
+
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2;
+        const pts = [
+          new THREE.Vector3(Math.cos(a) * 0.06, H - 0.02, Math.sin(a) * 0.06),
+          new THREE.Vector3(Math.cos(a) * outerR, 0.06, Math.sin(a) * outerR),
+        ];
+        const wGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        disposables.push(() => wGeo.dispose());
+        const wire = new THREE.Line(wGeo, wireMat);
+        wire.raycast = () => {};
+        grp.add(wire);
+      }
     }
   }
 
