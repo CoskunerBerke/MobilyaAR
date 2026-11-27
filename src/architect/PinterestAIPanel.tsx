@@ -572,6 +572,40 @@ export const PinterestAIPanel: React.FC<Props> = ({
   // Progressive disclosure toggles (keeps main flow clean with zero feature loss)
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [showPhotorealSection, setShowPhotorealSection] = useState(false);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const [importingUrl, setImportingUrl] = useState(false);
+
+  const importImageFromUrl = async (rawUrl: string) => {
+    const clean = String(rawUrl || '').trim();
+    if (!/^https:\/\//i.test(clean)) {
+      onToast('Geçerli bir HTTPS görsel bağlantısı yapıştırın.');
+      return;
+    }
+    setImportingUrl(true);
+    try {
+      const proxyRes = await fetch('/api/pinterest3d?action=fetchImage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: clean }),
+      });
+      const proxyJson = await proxyRes.json().catch(() => null);
+      if (proxyRes.ok && proxyJson?.ok && proxyJson?.dataUrl) {
+        const r = await fetch(proxyJson.dataUrl);
+        const blob = await r.blob();
+        await handleUploadInspiration(
+          new File([blob], 'pinterest-link.jpg', { type: blob.type || 'image/jpeg' })
+        );
+        setImageUrlInput('');
+        onToast('Pinterest görseli bağlantıdan yüklendi!');
+      } else {
+        onToast(proxyJson?.error || 'Görsel bağlantıdan alınamadı.');
+      }
+    } catch {
+      onToast('Görsel bağlantıdan alınamadı.');
+    } finally {
+      setImportingUrl(false);
+    }
+  };
 
   // Photoreal V-Ray style render state
   const [renderStyleNote, setRenderStyleNote] = useState(
@@ -591,20 +625,27 @@ export const PinterestAIPanel: React.FC<Props> = ({
     });
   }, []);
 
-  // Support Ctrl+V direct paste from Pinterest browser tab!
+  // Support Ctrl+V direct paste (both copied image AND copied https:// image URL!) from Pinterest browser tab!
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const it of Array.from(items)) {
-        if (it.type.startsWith('image/')) {
-          const f = it.getAsFile();
-          if (f) {
-            handleUploadInspiration(f);
-            onToast('Panodan Pinterest görseli yapıştırıldı.');
-            break;
+      if (items) {
+        for (const it of Array.from(items)) {
+          if (it.type.startsWith('image/')) {
+            const f = it.getAsFile();
+            if (f) {
+              handleUploadInspiration(f);
+              onToast('Panodan Pinterest görseli yapıştırıldı.');
+              return;
+            }
           }
         }
+      }
+      const pastedText = e.clipboardData?.getData('text/plain')?.trim() || '';
+      if (/^https:\/\/\S+/i.test(pastedText)) {
+        void importImageFromUrl(pastedText);
       }
     };
     window.addEventListener('paste', onPaste);
@@ -2216,6 +2257,28 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 }}
               />
             </label>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void importImageFromUrl(imageUrlInput);
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="url"
+                value={imageUrlInput}
+                onChange={(e) => setImageUrlInput(e.target.value)}
+                placeholder="Pinterest / görsel linki yapıştır (https://...)"
+                className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-stone-300 text-[11px] text-stone-900 placeholder:text-stone-400 focus:outline-none focus:border-stone-950"
+              />
+              <button
+                type="submit"
+                disabled={importingUrl || !imageUrlInput.trim()}
+                className="px-2.5 py-1.5 border border-stone-950 bg-white hover:bg-stone-100 disabled:opacity-40 text-stone-950 text-[11px] font-semibold whitespace-nowrap shrink-0 transition"
+              >
+                {importingUrl ? '...' : 'Getir'}
+              </button>
+            </form>
           </div>
         ) : (
           <div className="space-y-2">
