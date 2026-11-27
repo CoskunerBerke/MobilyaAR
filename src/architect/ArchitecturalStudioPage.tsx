@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ArrowUp,
   Building2,
+  Camera,
   ChevronDown,
   ChevronRight,
   DoorOpen,
@@ -53,6 +54,7 @@ import { buildParametricObject3D } from './parametricFurniture';
 import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
+import { RenderStudioModal, type RenderStudioLaunchOpts, type StudioRenderItem } from './RenderStudioModal';
 import { BrandCatalogPanel } from './BrandCatalogPanel';
 import {
   SUPPLIER_SHORT,
@@ -168,6 +170,13 @@ export const ArchitecturalStudioPage: React.FC = () => {
     return lastId && saved.some((c) => c.id === lastId) ? lastId : null;
   });
   const [clientModalOpen, setClientModalOpen] = useState<boolean>(true);
+  const [renderModalOpen, setRenderModalOpen] = useState<boolean>(false);
+  const [renderLaunchOpts, setRenderLaunchOpts] = useState<RenderStudioLaunchOpts | null>(null);
+  const [renderHistory, setRenderHistory] = useState<StudioRenderItem[]>([]);
+  const openRenderStudio = useCallback((opts?: RenderStudioLaunchOpts) => {
+    setRenderLaunchOpts(opts || { roomId: 'current', angle: 'current', autoStart: false });
+    setRenderModalOpen(true);
+  }, []);
   const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saved'>('idle');
   const [project, setProject] = useState<ArchRoomProject>(() => {
     const saved = loadClientProjects();
@@ -1571,38 +1580,59 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     Evdeki Odalar (Düzenlemek İçin Seç)
                   </span>
                   <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setSelection({ type: 'floor' })}
-                      className={`w-full px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
-                        selection?.type === 'floor'
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-200 hover:border-stone-950 bg-[#faf9f6] text-stone-900'
-                      }`}
-                    >
-                      <span className="font-semibold">Ana Salon</span>
-                      <span className="font-mono text-[10px] opacity-75">
-                        {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {(project.widthM * project.depthM).toFixed(0)} m²
-                      </span>
-                    </button>
+                    <div className="flex items-stretch gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setSelection({ type: 'floor' })}
+                        className={`flex-1 min-w-0 px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
+                          selection?.type === 'floor'
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-200 hover:border-stone-950 bg-[#faf9f6] text-stone-900'
+                        }`}
+                      >
+                        <span className="font-semibold truncate">Ana Salon</span>
+                        <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
+                          {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m · {(project.widthM * project.depthM).toFixed(0)} m²
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openRenderStudio({ roomId: 'main', angle: 'corner', autoStart: true })}
+                        className="px-2 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-700 shrink-0 transition"
+                        title="Ana Salon için V-Ray Render Al"
+                        aria-label="Ana Salon için Render Al"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                     {adjList.map((r) => {
                       const active = selection?.type === 'adjacentRoom' && selection.id === r.id;
                       return (
-                        <button
-                          key={r.id}
-                          type="button"
-                          onClick={() => setSelection({ type: 'adjacentRoom', id: r.id })}
-                          className={`w-full px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
-                            active
-                              ? 'border-stone-950 bg-stone-950 text-white'
-                              : 'border-stone-200 bg-white hover:border-stone-950 text-stone-900'
-                          }`}
-                        >
-                          <span className="truncate font-medium">{r.name}</span>
-                          <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
-                            {r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m · {(r.widthM * r.depthM).toFixed(0)} m²
-                          </span>
-                        </button>
+                        <div key={r.id} className="flex items-stretch gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setSelection({ type: 'adjacentRoom', id: r.id })}
+                            className={`flex-1 min-w-0 px-2.5 py-1.5 border flex items-center justify-between text-[11px] transition ${
+                              active
+                                ? 'border-stone-950 bg-stone-950 text-white'
+                                : 'border-stone-200 bg-white hover:border-stone-950 text-stone-900'
+                            }`}
+                          >
+                            <span className="truncate font-medium">{r.name}</span>
+                            <span className="font-mono text-[10px] opacity-75 shrink-0 ml-2">
+                              {r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m · {(r.widthM * r.depthM).toFixed(0)} m²
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openRenderStudio({ roomId: r.id, angle: 'corner', autoStart: true })}
+                            className="px-2 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-700 shrink-0 transition"
+                            title={`${r.name} için V-Ray Render Al`}
+                            aria-label={`${r.name} için Render Al`}
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -3203,6 +3233,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
         }}
         onSaveToCatalog={handleSaveObjectToCatalog}
         onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
+        onOpenRenderStudio={openRenderStudio}
         onToast={showToast}
       />
     </div>
@@ -3574,8 +3605,18 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </label>
             <button
               type="button"
+              onClick={() => openRenderStudio({ roomId: 'current', angle: 'current', autoStart: false })}
+              className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+              title="Mevcut açıdan veya tüm odalardan V-Ray Fotogerçekçi Render Al"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Render{renderHistory.length > 0 ? ` (${renderHistory.length})` : ''}</span>
+            </button>
+            <button
+              type="button"
               onClick={handleDownloadSnapshot}
-              className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+              className="px-2.5 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
+              title="3B sahneyi ham PNG olarak indir"
             >
               <Download className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">PNG</span>
@@ -4026,6 +4067,23 @@ export const ArchitecturalStudioPage: React.FC = () => {
         onRenameClient={handleRenameClient}
         onDuplicateClient={handleDuplicateClient}
         onDeleteClient={handleDeleteClient}
+      />
+
+      {/* Photoreal V-Ray Render Studio Modal (Per-Room, Multi-Room Batch, Per-Photo, Before/After Slider) */}
+      <RenderStudioModal
+        open={renderModalOpen}
+        project={project}
+        launchOpts={renderLaunchOpts}
+        history={renderHistory}
+        onAddRender={(item) => setRenderHistory((prev) => [item, ...prev])}
+        onDeleteRender={(id) => setRenderHistory((prev) => prev.filter((r) => r.id !== id))}
+        onFocusRoom={(roomId, angle) => {
+          setCameraMode('free');
+          viewportRef.current?.focusRoom(roomId, angle);
+        }}
+        onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
+        onClose={() => setRenderModalOpen(false)}
+        onToast={showToast}
       />
     </div>
   );

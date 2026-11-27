@@ -925,12 +925,13 @@ CRITICAL RULES:
               role: 'user',
               parts: [
                 {
-                  text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photography render (Architectural Digest quality).
-STRICT GEOMETRY PRESERVATION RULES:
-- Keep EVERY wall, window shape/count, door position/swing, column, ceiling beam, recessed curtain cove, hidden warm LED strip, sunlight beam direction, and furniture placement in the EXACT same position and proportions.
-- Upgrade ONLY realism: physically accurate global illumination, soft window daylight bounce, crisp wood parquet grain, realistic fabric weave, real marble reflections, natural curtain translucency, warm cove LED glow, realistic glass reflections, 24mm tilt-shift architectural lens.
+                  text: `Convert this 3D architectural viewport screenshot into an ultra-photorealistic V-Ray / Corona interior architectural photograph (Architectural Digest quality).
+STRICT GEOMETRY & COMPOSITION PRESERVATION RULES:
+- Keep EVERY wall, partial wall panel (wood slats, concrete slab, marble, boiserie), window shape/count, door, column, ceiling beam, recessed curtain cove, hidden warm LED strip, sunlight beam direction, and EVERY furniture & decor item in the EXACT same position, color, and proportions.
+- NEVER add extra unrequested furniture, people, watermarks, text labels, or UI bars — output 100% pure full-bleed architectural photography.
+- Upgrade ONLY realism and light physics: physically accurate global illumination, soft window daylight bounce, crisp natural wood parquet grain, realistic bouclé/velvet/linen fabric weave, authentic stone/concrete patina, natural sheer curtain translucency, warm cove LED glow, realistic glass reflections, 24mm tilt-shift architectural camera lens.
 Room context: ${roomSummary}
-Additional architect styling note: ${styleNote || 'Doğal gün ışığı, sıcak mimari atmosfer, foto-gerçekçi malzeme kalitesi.'}`,
+Lighting & styling direction: ${styleNote || 'Doğal gün ışığı, sıcak mimari atmosfer, foto-gerçekçi malzeme kalitesi.'}`,
                 },
                 { inlineData: { mimeType: snap.mimeType, data: snap.data } },
               ],

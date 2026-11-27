@@ -55,6 +55,7 @@ export interface ArchViewportHandle {
   captureSnapshot: (hideSelection?: boolean) => string | null;
   resetCamera: (mode?: ArchCameraMode) => void;
   focusWall: (wall: WallId) => void;
+  focusRoom: (roomId: string, angle?: 'corner' | 'eye') => void;
   enterFromDoor: () => void;
   walkStep: (forwardM: number, rightM: number) => void;
   turnLook: (deltaYawDeg: number) => void;
@@ -463,6 +464,42 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       },
       resetCamera: (mode) => applyCameraPreset(mode || camModeRef.current),
       focusWall: (wall) => focusOnWall(wall),
+      focusRoom: (roomId, angle = 'corner') => {
+        const eng = engineRef.current;
+        if (!eng) return;
+        const p = projectRef.current;
+        const adj = roomId !== 'main' ? (p.adjacentRooms || []).find((r) => r.id === roomId) : null;
+        const cx = adj ? adj.centerXM : 0;
+        const cz = adj ? adj.centerZM : 0;
+        const rw = adj ? adj.widthM : p.widthM;
+        const rd = adj ? adj.depthM : p.depthM;
+        const maxSpan = Math.max(rw, rd);
+        eng.camera.rotation.order = 'XYZ';
+        eng.controls.enabled = true;
+        eng.controls.maxPolarAngle = Math.PI * 0.495;
+        if (angle === 'eye') {
+          const eyeY = Math.min(1.55, Math.max(1.15, p.ceilingM * 0.55));
+          eng.camera.fov = 56;
+          eng.camera.near = 0.08;
+          eng.camera.far = Math.max(90, maxSpan * 12);
+          eng.camera.updateProjectionMatrix();
+          eng.camera.position.set(cx + rw * 0.34, eyeY, cz + rd * 0.38);
+          eng.controls.target.set(cx - rw * 0.08, p.ceilingM * 0.42, cz - rd * 0.25);
+        } else {
+          eng.camera.fov = 42;
+          eng.camera.near = 0.08;
+          eng.camera.far = Math.max(90, maxSpan * 12);
+          eng.camera.updateProjectionMatrix();
+          eng.camera.position.set(
+            cx + rw * 0.92,
+            Math.max(3.6, maxSpan * 0.84),
+            cz + rd * 1.02
+          );
+          eng.controls.target.set(cx, p.ceilingM * 0.34, cz);
+        }
+        eng.controls.update();
+        eng.scheduleRender(true);
+      },
       enterFromDoor: () => enterFromDoorway(true),
       walkStep: (f, r) => moveFpsBy(f, r),
       turnLook: (deltaYawDeg) => {

@@ -184,6 +184,12 @@ interface Props {
   onRemoveObjectInRoom: (objId: string) => void;
   onSaveToCatalog?: (obj: ArchPlacedObject, thumbDataUrl?: string) => Promise<boolean>;
   onCaptureViewport: () => string | null;
+  onOpenRenderStudio?: (opts?: {
+    roomId?: string;
+    angle?: 'current' | 'corner' | 'eye';
+    referencePhoto?: { id: string; label: string; dataUrl: string };
+    autoStart?: boolean;
+  }) => void;
   onToast: (msg: string) => void;
 }
 
@@ -316,6 +322,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
   onRemoveObjectInRoom,
   onSaveToCatalog,
   onCaptureViewport,
+  onOpenRenderStudio,
   onToast,
 }) => {
   const [serverCfg, setServerCfg] = useState<PinterestServerConfig>({
@@ -2588,15 +2595,39 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </span>
             </p>
           )}
-          <button
-            type="button"
-            disabled={analyzing || refining}
-            onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl, undefined, undefined, undefined, false)}
-            className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
-          >
-            <Check className="w-3.5 h-3.5" />
-            <span>İnce Ayar Tekrarla (Geri Düşme Korumalı)</span>
-          </button>
+          <div className="grid grid-cols-1 gap-1.5">
+            {onOpenRenderStudio && activePhoto && (
+              <button
+                type="button"
+                disabled={analyzing || refining}
+                onClick={() =>
+                  onOpenRenderStudio({
+                    roomId: targetRoomId === 'main' ? 'current' : targetRoomId,
+                    angle: targetRoomId === 'main' ? 'current' : 'corner',
+                    referencePhoto: {
+                      id: activePhoto.id,
+                      label: `Foto ${activePhoto.index}`,
+                      dataUrl: activePhoto.dataUrl,
+                    },
+                    autoStart: true,
+                  })
+                }
+                className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>Foto {activePhoto.index} İçin V-Ray Render Al</span>
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={analyzing || refining}
+              onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl, undefined, undefined, undefined, false)}
+              className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>İnce Ayar Tekrarla (Geri Düşme Korumalı)</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -3061,29 +3092,38 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Bonus: Collapsible 1-Click V-Ray Style Photoreal Render */}
+      {/* Bonus: 1-Click V-Ray Style Photoreal Render Studio Launcher */}
       <div className="border border-stone-200 bg-[#faf9f6]">
         <button
           type="button"
-          onClick={() => setShowPhotorealSection((v) => !v)}
+          onClick={() => {
+            if (onOpenRenderStudio) {
+              onOpenRenderStudio({
+                roomId: targetRoomId === 'main' ? 'current' : targetRoomId,
+                angle: targetRoomId === 'main' ? 'current' : 'corner',
+                referencePhoto: activePhoto
+                  ? { id: activePhoto.id, label: `Foto ${activePhoto.index}`, dataUrl: activePhoto.dataUrl }
+                  : undefined,
+                autoStart: false,
+              });
+            } else {
+              setShowPhotorealSection((v) => !v);
+            }
+          }}
           className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-stone-100/70 transition"
         >
           <span className="flex items-center gap-2 min-w-0">
             <Camera className="w-3.5 h-3.5 text-stone-700 shrink-0" />
             <span className="min-w-0">
               <span className="block font-semibold text-stone-900 text-[11px] truncate">
-                Fotogerçekçi Sunum Renderı
+                Fotogerçekçi Render Stüdyosu (V-Ray)
               </span>
               <span className="block text-[10px] text-stone-500 truncate">
-                Mevcut 3B açıdan V-Ray kalitesinde fotoğraf üret
+                Her oda ve fotoğraf için 4 ışık modu · Önce/Sonra karşılaştır
               </span>
             </span>
           </span>
-          {showPhotorealSection || renderingPhoto || renderError ? (
-            <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
-          ) : (
-            <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
-          )}
+          <ChevronRight className="w-4 h-4 text-stone-500 shrink-0" />
         </button>
 
         {(showPhotorealSection || renderingPhoto || renderError) && (
