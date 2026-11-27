@@ -1429,7 +1429,6 @@ export const SelectionInspector: React.FC<Props> = ({
   const clrNorth = Math.max(0, Math.round((obj.z - extZ + project.depthM * 0.5) * 100));
   const supportBelow = findSupportUnderObject(project, obj, obj.x, obj.z, obj.y, undefined, false);
   const baseFloorY = getBaseFloorYAt(project, obj, obj.x, obj.z, obj.y);
-  const minSurfaceCm = Math.round(Math.max(baseFloorY, supportBelow ? supportBelow.surfaceY : 0) * 100);
   const elevCm = Math.round(obj.y * 100);
 
   const patchObj = (patch: Partial<ArchPlacedObject>) =>
@@ -1492,7 +1491,7 @@ export const SelectionInspector: React.FC<Props> = ({
             <label className="text-[10px] text-stone-600">
               Yerden Y (cm)
               <NumericInput
-                min={minSurfaceCm}
+                min={0}
                 max={Math.round(Math.max(0.05, project.ceilingM - obj.heightM) * 100)}
                 step={5}
                 value={elevCm}
@@ -1505,15 +1504,13 @@ export const SelectionInspector: React.FC<Props> = ({
             Duvar boşlukları: Sol {clrLeft} cm · Sağ {clrRight} cm · Üst {clrNorth} cm
           </p>
           <p className="text-[10px] font-mono text-stone-600">
-            Yüzey sınırı:{' '}
+            Alt yüzey:{' '}
             {supportBelow ? (
-              <strong className="text-stone-900">
-                {supportBelow.host.name} üstü ({Math.round(supportBelow.surfaceY * 100)} cm)
-              </strong>
+              <strong className="text-stone-900">{supportBelow.host.name} üstü</strong>
             ) : (
               <span>Zemin ({Math.round(baseFloorY * 100)} cm)</span>
             )}{' '}
-            · Şu an: <strong className="text-stone-900">{elevCm} cm</strong>
+            · Yükseklik: <strong className="text-stone-900">{elevCm} cm</strong>
           </p>
         </div>
 
