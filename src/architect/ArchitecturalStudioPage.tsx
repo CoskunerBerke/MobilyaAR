@@ -3128,7 +3128,10 @@ export const ArchitecturalStudioPage: React.FC = () => {
               ),
             };
           });
-          if (replaceExisting && !isAdjTarget) {
+          if (isAdjTarget || (project.adjacentRooms?.length || 0) > 0) {
+            const focusId = targetRoomId || 'main';
+            setTimeout(() => viewportRef.current?.focusRoom(focusId, 'corner'), 120);
+          } else if (replaceExisting) {
             setTimeout(() => viewportRef.current?.resetCamera('free'), 120);
           }
           if (objects[0]) {

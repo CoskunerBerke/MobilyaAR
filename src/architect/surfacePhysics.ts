@@ -377,6 +377,9 @@ export function findSupportUnderObject(
   mountedMap?: Map<string, { root: THREE.Group }>,
   requireStackable = true
 ): SupportSurfaceHit | null {
+  if (obj.mountMode === 'rug' || obj.mountMode === 'ceiling' || obj.parametricKind === 'rug_custom') {
+    return null;
+  }
   const candOBB = objToOBB2D(obj, x, z);
   const edgeGrace = Math.min(0.08, Math.min(obj.widthM, obj.depthM) * 0.28);
   let best: SupportSurfaceHit | null = null;

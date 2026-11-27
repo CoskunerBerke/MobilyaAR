@@ -2648,18 +2648,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
               <button
                 type="button"
                 disabled={analyzing || refining}
-                onClick={() =>
+                onClick={() => {
+                  const hasMultiRooms = (project.adjacentRooms?.length || 0) > 0;
                   onOpenRenderStudio({
-                    roomId: targetRoomId === 'main' ? 'current' : targetRoomId,
-                    angle: targetRoomId === 'main' ? 'current' : 'corner',
+                    roomId: hasMultiRooms || targetRoomId !== 'main' ? targetRoomId : 'current',
+                    angle: hasMultiRooms || targetRoomId !== 'main' ? 'corner' : 'current',
                     referencePhoto: {
                       id: activePhoto.id,
                       label: `Foto ${activePhoto.index}`,
                       dataUrl: activePhoto.dataUrl,
                     },
                     autoStart: true,
-                  })
-                }
+                  });
+                }}
                 className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
               >
                 <Camera className="w-3.5 h-3.5" />
