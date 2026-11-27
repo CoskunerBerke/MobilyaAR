@@ -713,13 +713,50 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const activeWallCursors = isUpper ? wallCursorsUpper : wallCursorsGround;
 
     // Realistic clamped dimensions (protects against outlier AI estimates while keeping compact tabletop decor small!)
+    const isTabletopBurner =
+      archetype === 'linear_fireplace' &&
+      (item.relation === 'on_top_of' || ((Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 24));
+    const isWallSconce =
+      archetype === 'table_lamp' &&
+      (item.mountMode === 'wall' || (Number(item.elevationCm) || 0) >= 110 || /aplik|sconce|duvar/i.test(item.nameTr)) &&
+      item.relation !== 'on_top_of';
     const isTabletopDecor =
+      isTabletopBurner ||
       archetype === 'decorative_vase' ||
-      archetype === 'table_lamp' ||
+      (archetype === 'table_lamp' && !isWallSconce) ||
       item.relation === 'on_top_of' ||
       (archetype === 'potted_plant' && (Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 48);
-    let wM = Math.max(isTabletopDecor ? 0.14 : 0.25, Math.min(roomW * 0.78, (Number(item.widthCm) || (isTabletopDecor ? 24 : 90)) / 100));
-    let dM = Math.max(0.04, Math.min(roomD * 0.78, (Number(item.depthCm) || (isTabletopDecor ? 24 : 60)) / 100));
+
+    // Side-wall W×D auto-swap: if Vision reported world X×Z instead of local W×D for elongated furniture on west/east wall
+    // (e.g. a 180cm wide, 60cm deep wardrobe reported as 60×180 on west wall!), swap so wide face runs ALONG the wall!
+    let rawW = Number(item.widthCm) || (isTabletopDecor ? 24 : 90);
+    let rawD = Number(item.depthCm) || (isTabletopDecor ? 24 : 60);
+    const SIDE_WALL_SWAP_KINDS = new Set<ParametricFurnitureKind>([
+      'wardrobe',
+      'bookshelf',
+      'sideboard',
+      'console_table',
+      'tv_baza',
+      'tv_wall_unit',
+      'linear_fireplace',
+      'sofa',
+      'desk',
+      'vanity_table',
+      'wall_tv',
+      'wall_art',
+      'wall_mirror',
+      'wall_shelf',
+    ]);
+    if (
+      (item.suggestedWall === 'west' || item.suggestedWall === 'east') &&
+      SIDE_WALL_SWAP_KINDS.has(archetype) &&
+      rawD > rawW * 1.35
+    ) {
+      [rawW, rawD] = [rawD, rawW];
+    }
+
+    let wM = Math.max(isTabletopDecor ? 0.14 : 0.25, Math.min(roomW * 0.78, rawW / 100));
+    let dM = Math.max(0.04, Math.min(roomD * 0.78, rawD / 100));
     let hM = Math.max(0.015, Math.min(headroomM - 0.1, (Number(item.heightCm) || (isTabletopDecor ? 28 : 85)) / 100));
 
     if (archetype === 'rug_custom') {
@@ -731,13 +768,17 @@ export const PinterestAIPanel: React.FC<Props> = ({
     } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
       dM = Math.min(0.08, Math.max(0.035, dM));
     } else if (archetype === 'wall_shelf') {
-      wM = Math.max(0.35, Math.min(2.2, wM));
-      dM = Math.max(0.16, Math.min(0.38, dM));
-      hM = Math.max(0.04, Math.min(0.45, hM));
+      wM = Math.max(0.35, Math.min(2.4, wM));
+      dM = Math.max(0.16, Math.min(0.42, dM));
+      hM = Math.max(0.04, Math.min(0.95, hM));
     } else if (archetype === 'decorative_vase') {
       wM = Math.max(0.14, Math.min(0.42, wM));
       dM = Math.max(0.14, Math.min(0.42, dM));
       hM = Math.max(0.12, Math.min(0.48, hM));
+    } else if (isTabletopBurner) {
+      wM = Math.max(0.45, Math.min(1.45, wM));
+      dM = Math.max(0.14, Math.min(0.34, dM));
+      hM = Math.max(0.1, Math.min(0.24, hM));
     } else if (archetype === 'tv_baza' || archetype === 'linear_fireplace') {
       wM = Math.max(1.1, Math.min(roomW * 0.82, wM));
       dM = Math.max(0.32, Math.min(0.58, dM));
@@ -769,20 +810,26 @@ export const PinterestAIPanel: React.FC<Props> = ({
       archetype === 'wall_mirror' &&
       (hM >= 1.25 || (item.elevationCm !== undefined && item.elevationCm <= 15) || /boy|ayakta|zemin|full.?length|kemer/i.test(item.nameTr));
     const isHighWall =
-      !isFloorMirror &&
-      (archetype === 'wall_art' ||
-        archetype === 'wall_mirror' ||
-        archetype === 'wall_tv' ||
-        archetype === 'wall_shelf' ||
-        archetype === 'ac_unit');
+      isWallSconce ||
+      (!isFloorMirror &&
+        (archetype === 'wall_art' ||
+          archetype === 'wall_mirror' ||
+          archetype === 'wall_tv' ||
+          archetype === 'wall_shelf' ||
+          archetype === 'ac_unit'));
     const isFloatingBaza =
-      (archetype === 'tv_baza' || archetype === 'sideboard' || archetype === 'console_table') &&
+      (archetype === 'tv_baza' ||
+        archetype === 'sideboard' ||
+        archetype === 'console_table' ||
+        archetype === 'wardrobe' ||
+        archetype === 'bookshelf') &&
       typeof item.elevationCm === 'number' &&
       item.elevationCm >= 8 &&
-      item.elevationCm <= 45;
+      item.elevationCm <= 135;
     const isWallAnchoredFloor =
       WALL_ANCHORABLE_FLOOR_KINDS.has(archetype) && Boolean(item.suggestedWall && item.suggestedWall !== 'center');
-    const isWallBacked = item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype) || isWallAnchoredFloor;
+    const isWallBacked =
+      !isTabletopBurner && (isWallSconce || item.mountMode === 'wall' || WALL_BACKED_KINDS.has(archetype) || isWallAnchoredFloor);
 
     const mountMode: ArchPlacedObject['mountMode'] = isRug
       ? 'rug'
@@ -859,7 +906,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
             : Math.max(0.75, Math.min(headroomM - hM - 0.08, (item.elevationCm || 115) / 100));
         y = baseFloorY + relElev;
       } else if (isFloatingBaza) {
-        y = baseFloorY + Math.max(0.08, Math.min(0.38, (item.elevationCm || 16) / 100));
+        const maxFloat = archetype === 'bookshelf' ? Math.max(0.5, headroomM - hM - 0.06) : 0.45;
+        y = baseFloorY + Math.max(0.08, Math.min(maxFloat, (item.elevationCm || 16) / 100));
       } else {
         y = baseFloorY;
       }

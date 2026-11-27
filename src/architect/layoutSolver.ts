@@ -230,6 +230,83 @@ export function applyArchitecturalRelationships(
     return best;
   };
 
+  // 0) Sofa vs TV/Fireplace Same-Wall Collision Guard:
+  //    A sofa MUST NEVER sit flat on the exact same wall colliding with a TV baza / wall TV / fireplace!
+  //    If Vision assigns both to the same wall (e.g. north), swing the sofa cleanly to the perpendicular side wall
+  //    (matching its left/right offset) or face the focal wall from across the room!
+  const FOCAL_TV_KINDS = new Set<ParametricFurnitureKind>([
+    'tv_baza',
+    'tv_wall_unit',
+    'wall_tv',
+    'linear_fireplace',
+    'fireplace_marble',
+  ]);
+  for (const sofa of result) {
+    if (sofa.parametricKind !== 'sofa' || !sofa.attachedWall) continue;
+    const sameWallFocal = result.find(
+      (f) =>
+        f.id !== sofa.id &&
+        sameFloor(f, sofa) &&
+        f.attachedWall === sofa.attachedWall &&
+        Boolean(f.parametricKind && FOCAL_TV_KINDS.has(f.parametricKind))
+    );
+    if (!sameWallFocal) continue;
+    const wall = sofa.attachedWall;
+    const isUpper = (sofa.floorLevel || 0) === 1;
+    const inset = 0.05;
+    if (wall === 'north' || wall === 'south') {
+      const dx = sofa.x - sameWallFocal.x;
+      if (dx < -0.25) {
+        sofa.attachedWall = 'west';
+        sofa.rot = Math.PI / 2;
+        const cl = clampInsideFloor(
+          -project.widthM * 0.5 + sofa.depthM * 0.5 + inset,
+          Math.max(-project.depthM * 0.12, Math.min(project.depthM * 0.25, sofa.z + 0.45)),
+          sofa.depthM * 0.5,
+          sofa.widthM * 0.5,
+          project.widthM,
+          project.depthM,
+          mezBounds,
+          isUpper
+        );
+        sofa.x = cl.x;
+        sofa.z = cl.z;
+      } else if (dx > 0.25) {
+        sofa.attachedWall = 'east';
+        sofa.rot = -Math.PI / 2;
+        const cl = clampInsideFloor(
+          project.widthM * 0.5 - sofa.depthM * 0.5 - inset,
+          Math.max(-project.depthM * 0.12, Math.min(project.depthM * 0.25, sofa.z + 0.45)),
+          sofa.depthM * 0.5,
+          sofa.widthM * 0.5,
+          project.widthM,
+          project.depthM,
+          mezBounds,
+          isUpper
+        );
+        sofa.x = cl.x;
+        sofa.z = cl.z;
+      } else {
+        const opp: WallId = wall === 'north' ? 'south' : 'north';
+        sofa.attachedWall = opp;
+        sofa.rot = opp === 'south' ? Math.PI : 0;
+        sofa.z =
+          opp === 'south'
+            ? project.depthM * 0.5 - sofa.depthM * 0.5 - 0.35
+            : -project.depthM * 0.5 + sofa.depthM * 0.5 + 0.35;
+      }
+    } else {
+      // Focal unit on west/east wall -> put sofa facing it from across or perpendicular south wall
+      const opp: WallId = wall === 'west' ? 'east' : 'west';
+      sofa.attachedWall = opp;
+      sofa.rot = opp === 'east' ? -Math.PI / 2 : Math.PI / 2;
+      sofa.x =
+        opp === 'east'
+          ? project.widthM * 0.5 - sofa.depthM * 0.5 - 0.35
+          : -project.widthM * 0.5 + sofa.depthM * 0.5 + 0.35;
+    }
+  }
+
   // 1) Nightstands flank bed_frame on the same floor
   const beds = result.filter((o) => o.parametricKind === 'bed_frame');
   const assignedNightstands = new Set<string>();
@@ -293,14 +370,20 @@ export function applyArchitecturalRelationships(
   ]);
   const decorCountPerSurface = new Map<string, number>();
   for (const obj of result) {
-    if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    // Allow sleek tabletop glass bioethanol linear burners (H <= 28cm, on_top_of) to sit directly on top of consoles!
+    const isTabletopBurner =
+      obj.parametricKind === 'linear_fireplace' &&
+      obj.heightM <= 0.28 &&
+      src?.relation === 'on_top_of';
+    if (!isTabletopBurner && obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) continue;
     // Never pull high wall sconces ("Duvar Apliği", elevation >= 110cm) down onto a TV baza!
     const isWallSconce =
       (obj.mountMode === 'wall' || (src?.elevationCm || 0) >= 110 || /aplik|sconce|duvar/i.test(obj.name)) &&
       src?.relation !== 'on_top_of';
     if (isWallSconce) continue;
     const isTabletopItem =
+      isTabletopBurner ||
       obj.parametricKind === 'table_lamp' ||
       obj.parametricKind === 'decorative_vase' ||
       src?.relation === 'on_top_of' ||
@@ -336,14 +419,24 @@ export function applyArchitecturalRelationships(
     }
   }
 
-  // 3) Office chairs sit cleanly in front of their desk / vanity_table facing the tabletop!
+  // 3) Office chairs, vanity chairs & vanity poufs sit cleanly in front of their desk / vanity_table facing the tabletop!
   const desks = result.filter((o) => o.parametricKind === 'desk' || o.parametricKind === 'vanity_table');
+  const claimedByDeskOrVanity = new Set<string>();
   for (const chair of result) {
-    if (chair.parametricKind !== 'office_chair') continue;
     const src = chair.pinterestItemId ? sourceItems.get(chair.pinterestItemId) : undefined;
     const explicit = src?.anchorToId ? byPinId.get(src.anchorToId) : undefined;
+    const anchoredToDesk =
+      explicit &&
+      sameFloor(explicit, chair) &&
+      (explicit.parametricKind === 'desk' || explicit.parametricKind === 'vanity_table') &&
+      src?.relation === 'in_front_of';
+    const isDeskSeat =
+      chair.parametricKind === 'office_chair' ||
+      ((chair.parametricKind === 'dining_chair' || chair.parametricKind === 'ottoman') && Boolean(anchoredToDesk));
+    if (!isDeskSeat) continue;
+
     const desk =
-      explicit && sameFloor(explicit, chair)
+      anchoredToDesk && explicit
         ? explicit
         : desks
             .filter((d) => sameFloor(d, chair))
@@ -365,17 +458,29 @@ export function applyArchitecturalRelationships(
       chair.x = cl.x;
       chair.z = cl.z;
       chair.y = desk.y;
-      chair.rot = desk.rot + Math.PI; // face the desk!
+      chair.rot = desk.rot + Math.PI; // face the desk/vanity!
+      claimedByDeskOrVanity.add(chair.id);
     }
   }
 
-  // 4) Dining chairs arrange cleanly around dining_table facing inward!
+  // 4) Dining chairs arrange cleanly around their dining_table facing inward (respecting explicit anchorToId & skipping kitchen islands!)
   const tables = result.filter((o) => o.parametricKind === 'dining_table');
+  const assignedDiningChairs = new Set<string>();
   for (const tbl of tables) {
-    const chairs = result.filter(
-      (o) => o.parametricKind === 'dining_chair' && sameFloor(o, tbl) && Math.hypot(o.x - tbl.x, o.z - tbl.z) < 3.2
-    );
+    const isIslandCounter = /ada|island|tezgah|bar|counter/i.test(tbl.name);
+    const chairs = result.filter((o) => {
+      if (o.parametricKind !== 'dining_chair' || !sameFloor(o, tbl)) return false;
+      if (claimedByDeskOrVanity.has(o.id) || assignedDiningChairs.has(o.id)) return false;
+      const src = o.pinterestItemId ? sourceItems.get(o.pinterestItemId) : undefined;
+      if (src?.anchorToId) {
+        const exp = byPinId.get(src.anchorToId);
+        if (exp) return exp.id === tbl.id;
+      }
+      if (isIslandCounter) return false;
+      return Math.hypot(o.x - tbl.x, o.z - tbl.z) < 3.2;
+    });
     if (chairs.length === 0) continue;
+    chairs.forEach((c) => assignedDiningChairs.add(c.id));
     const n = chairs.length;
     const isRound = /yuvarlak|round|daire/i.test(tbl.name);
     chairs.forEach((ch, i) => {
@@ -435,6 +540,33 @@ export function applyArchitecturalRelationships(
     }
   }
 
+  // 5b) Rugs explicitly anchored 'under' a bed_frame / dining_table / sofa center cleanly beneath their parent!
+  for (const rug of result) {
+    if (rug.parametricKind !== 'rug_custom') continue;
+    const src = rug.pinterestItemId ? sourceItems.get(rug.pinterestItemId) : undefined;
+    const parent = src?.anchorToId ? byPinId.get(src.anchorToId) : undefined;
+    if (!parent || !sameFloor(parent, rug)) continue;
+    const rel = String(src?.relation || '');
+    if (rel === 'under' || rel === 'in_front_of') {
+      const fx = Math.sin(parent.rot);
+      const fz = Math.cos(parent.rot);
+      const shift = parent.parametricKind === 'bed_frame' ? 0.35 : 0;
+      const cl = clampInsideFloor(
+        parent.x + fx * shift,
+        parent.z + fz * shift,
+        rug.widthM * 0.5,
+        rug.depthM * 0.5,
+        project.widthM,
+        project.depthM,
+        mezBounds,
+        (rug.floorLevel || 0) === 1
+      );
+      rug.x = cl.x;
+      rug.z = cl.z;
+      rug.y = parent.y + 0.004;
+    }
+  }
+
   // 6) Explicit 'above' wall alignment + Automatic Wall-TV alignment above TV baza / linear fireplace on same wall!
   for (const obj of result) {
     if (obj.mountMode !== 'wall') continue;
@@ -466,9 +598,13 @@ export function applyArchitecturalRelationships(
         Math.abs(myAlong - parentCenter) <= maxDrift ? myAlong : parentCenter;
       if (isHoriz) obj.x = clampedAlong;
       else obj.z = clampedAlong;
-      const minClearY = parent.y + parent.heightM + 0.18;
-      const maxY = effectiveCeilingM - obj.heightM - 0.12;
-      obj.y = Math.max(minClearY, Math.min(maxY, Math.max(obj.y, minClearY + 0.14)));
+      // Built-in upper bookshelf rests flush atop its lower sideboard cabinet; wall TV/art floats with clean breathing gap
+      const isFlushUpperCabinet = obj.parametricKind === 'bookshelf';
+      const minClearY = parent.y + parent.heightM + (isFlushUpperCabinet ? 0.0 : 0.18);
+      const maxY = effectiveCeilingM - obj.heightM - 0.08;
+      obj.y = isFlushUpperCabinet
+        ? Math.max(parent.y + parent.heightM, Math.min(maxY, obj.y))
+        : Math.max(minClearY, Math.min(maxY, Math.max(obj.y, minClearY + 0.14)));
     }
   }
 
@@ -595,11 +731,13 @@ export function applyVisualCritiqueFixes(
       o.parametricKind === 'wall_shelf' ||
       o.parametricKind === 'ac_unit' ||
       o.parametricKind === 'chandelier' ||
+      (o.parametricKind === 'table_lamp' && (o.mountMode === 'wall' || /aplik|sconce|duvar/i.test(o.name))) ||
       (o.parametricKind === 'wall_mirror' && o.heightM < 1.25 && !/boy|ayakta|zemin|full|kemer/i.test(o.name));
     const isFloatingOrTabletop =
       o.parametricKind === 'table_lamp' ||
       o.parametricKind === 'decorative_vase' ||
       o.parametricKind === 'tv_baza' ||
+      ((o.parametricKind === 'wardrobe' || o.parametricKind === 'bookshelf') && o.y > baseY + 0.08) ||
       Boolean(o.lockedParentId) ||
       (o.parametricKind === 'potted_plant' && o.heightM <= 0.48 && o.y > baseY + 0.15);
     const isFloorStandingKind = !isHighWallKind && !isFloatingOrTabletop;

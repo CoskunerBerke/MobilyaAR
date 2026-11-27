@@ -40,7 +40,54 @@ export function buildParametricObject3D(
     return m;
   };
 
-  if (obj.parametricKind === 'linear_fireplace' || (obj.parametricKind === 'fireplace_marble' && H <= 1.05)) {
+  if (obj.parametricKind === 'linear_fireplace' && H <= 0.25) {
+    // Sleek tabletop glass-shielded bioethanol linear burner strip (sits cleanly ON TOP OF floating console/baza!)
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex || '#242322'),
+      roughness: 0.34,
+      metalness: 0.65,
+    });
+    const fireGlowMat = new THREE.MeshBasicMaterial({ color: 0xff8c2b });
+    const fireCoreMat = new THREE.MeshBasicMaterial({ color: 0xffd166 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xf4f9ff,
+      transparent: true,
+      opacity: 0.24,
+      roughness: 0.06,
+      metalness: 0.18,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    disposables.push(() => {
+      steelMat.dispose();
+      fireGlowMat.dispose();
+      fireCoreMat.dispose();
+      glassMat.dispose();
+    });
+
+    const trayH = Math.max(0.032, Math.min(0.06, H * 0.34));
+    const glassH = Math.max(0.08, H - trayH * 0.5);
+    // Matte-black steel burner base tray + center combustion slot
+    addBox(W, trayH, D, 0, trayH * 0.5, 0, steelMat);
+    addBox(W * 0.84, 0.012, Math.max(0.03, D * 0.26), 0, trayH + 0.005, 0, fireGlowMat, false);
+    // Warm linear bioethanol flame ribbon
+    const flames = Math.max(6, Math.min(12, Math.round(W * 10)));
+    for (let i = 0; i < flames; i++) {
+      const fx = -W * 0.38 + (W * 0.76 * i) / Math.max(1, flames - 1);
+      const fh = Math.min(glassH * 0.72, 0.065 + (i % 3) * 0.022);
+      const coneGeo = new THREE.ConeGeometry(0.018, fh, 6);
+      disposables.push(() => coneGeo.dispose());
+      const f = new THREE.Mesh(coneGeo, i % 2 === 0 ? fireGlowMat : fireCoreMat);
+      f.position.set(fx, trayH + fh * 0.45, 0);
+      grp.add(f);
+    }
+    // Front & back crystal-clear tempered glass wind-guard shields
+    addBox(W * 0.96, glassH, 0.008, 0, trayH * 0.5 + glassH * 0.5, D * 0.44, glassMat, false);
+    addBox(W * 0.96, glassH, 0.008, 0, trayH * 0.5 + glassH * 0.5, -D * 0.44, glassMat, false);
+    const hearthLight = new THREE.PointLight(0xff9438, 0.85, 2.8, 1.8);
+    hearthLight.position.set(0, trayH + glassH * 0.7, D * 0.45);
+    grp.add(hearthLight);
+  } else if (obj.parametricKind === 'linear_fireplace' || (obj.parametricKind === 'fireplace_marble' && H <= 1.05)) {
     // Modern low horizontal fireplace bench / TV baza (Şömineli Alçak TV Bazası)
     const isStone = /mermer|taş|stone|marble|beton|concrete/i.test(obj.name);
     const bodyTex = isStone ? createFloorTexture('marble', primaryHex, W * 1.2, H * 1.4) : null;
