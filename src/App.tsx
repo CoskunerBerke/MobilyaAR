@@ -149,8 +149,8 @@ export function App() {
   const [activeState, setActiveState] = useState<ActiveViewState | null>(() => {
     const q = new URLSearchParams(window.location.search);
     const glb = q.get('glb');
-    const urun = q.get('urun');
-    const mod = q.get('mod');
+    const urun = q.get('urun') || q.get('product');
+    const mod = q.get('mod') || q.get('mode');
     const oda = q.get('oda');
     const renk = q.get('renk') || undefined;
     const w = Number(q.get('w') || 0);

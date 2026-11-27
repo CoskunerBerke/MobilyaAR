@@ -612,7 +612,7 @@ export const ProductPage: React.FC<Props> = ({
   return (
     <div className="fixed inset-0 h-[100dvh] z-40 bg-[#f5f2ec] text-stone-950 flex flex-col">
       {/* Üst Çubuk */}
-      <header className="h-14 px-4 flex items-center justify-between gap-2 border-b border-stone-200 bg-white shrink-0">
+      <header className="relative z-20 h-14 px-4 flex items-center justify-between gap-2 border-b border-stone-200 bg-white shrink-0">
         <button
           type="button"
           onClick={onBack}
@@ -1008,7 +1008,7 @@ export const ProductPage: React.FC<Props> = ({
       </div>
 
       {/* Alt Ürün, Orantılı Ölçek & Canlı AR Paneli */}
-      <div className="shrink-0 bg-white border-t border-stone-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3">
+      <div className="relative z-20 shrink-0 bg-white border-t border-stone-200 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3">
         <div className="max-w-2xl w-full mx-auto space-y-3">
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
