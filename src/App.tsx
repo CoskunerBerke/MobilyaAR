@@ -294,8 +294,15 @@ export function App() {
     fetchCloudCatalog().then((cloudList) => {
       if (cancelled || cloudList.length === 0) return;
       setProducts((prev) => {
+        const pinned = prev.find((p) => p.id === 'hasagac-lilac-sandalye');
         const seen = new Set(cloudList.map((p) => p.id));
-        return [...cloudList, ...prev.filter((p) => !seen.has(p.id))];
+        if (pinned) seen.add(pinned.id);
+        const merged = [
+          ...(pinned ? [pinned] : []),
+          ...cloudList.filter((c) => c.id !== 'hasagac-lilac-sandalye'),
+          ...prev.filter((p) => !seen.has(p.id)),
+        ];
+        return merged;
       });
     });
 
@@ -675,7 +682,7 @@ export function App() {
   return (
     <div className="min-h-screen bg-[#faf8f4] text-stone-950 overflow-x-hidden pb-16 md:pb-0">
       {/* Üst Menü — Kusursuz Tek Satır, Sıfır Taşma */}
-      <header className="h-16 border-b border-white/10 px-4 lg:px-10 flex items-center justify-between gap-4 sticky top-0 bg-[#0a0a09]/92 backdrop-blur-xl text-white z-30">
+      <header className="h-16 border-b border-white/10 px-4 lg:px-10 flex items-center justify-between gap-4 sticky top-0 bg-[#0a0a09]/95 backdrop-blur-xl text-white z-30">
         <a href="#" className="flex items-center gap-2.5 whitespace-nowrap shrink-0">
           <svg
             width="24"
@@ -888,7 +895,7 @@ export function App() {
                       {stageProduct.name}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1.5 overflow-x-auto">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {featuredProducts.map((fp) => {
                       const active = fp.id === stageProduct.id;
                       return (
@@ -896,7 +903,7 @@ export function App() {
                           key={fp.id}
                           type="button"
                           onClick={() => setStageProductId(fp.id)}
-                          className={`px-2.5 py-1 text-[11px] font-semibold border whitespace-nowrap transition ${
+                          className={`px-2 py-1 text-[10px] font-semibold border whitespace-nowrap transition ${
                             active
                               ? 'border-white bg-white text-stone-950'
                               : 'border-white/20 text-stone-300 hover:border-white/50 hover:text-white'
@@ -934,7 +941,7 @@ export function App() {
 
       {/* BÖLÜM 02: CANLI İNTERAKTİF "ODADA DENE" AR SİMÜLATÖRÜ */}
       <section id="sahne" className="bg-[#111110] text-white border-b border-stone-800">
-        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-22">
+        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-20">
           <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-9">
             <div className="space-y-2 max-w-2xl">
               <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#c9a277]">
@@ -1276,7 +1283,7 @@ export function App() {
 
       {/* BÖLÜM 04: 1:1 GERÇEK ÖLÇÜLÜ CANLI AR ÜRÜN KATALOĞU */}
       <main id="katalog" className="bg-white border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-22">
+        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-20">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-6 mb-6 border-b border-stone-200">
             <div className="space-y-1.5">
               <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#9c7349]">
