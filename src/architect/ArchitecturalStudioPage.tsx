@@ -203,6 +203,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [newRoomD, setNewRoomD] = useState<number>(3.6);
   const [newRoomFurnish, setNewRoomFurnish] = useState<boolean>(true);
   const [cameraMode, setCameraMode] = useState<ArchCameraMode>('free');
+  const [dragAxis, setDragAxis] = useState<'xz' | 'y'>('xz');
   const [showGrid, setShowGrid] = useState(true);
   const [showSunOrb, setShowSunOrb] = useState(true);
   const [showDoorArcs, setShowDoorArcs] = useState(true);
@@ -3623,6 +3624,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
             ref={viewportRef}
             project={project}
             cameraMode={cameraMode}
+            dragAxis={dragAxis}
             showGrid={showGrid && !tvPresentationMode}
             showSunOrb={showSunOrb && !tvPresentationMode}
             showDoorArcs={showDoorArcs && !tvPresentationMode}
@@ -3632,12 +3634,15 @@ export const ArchitecturalStudioPage: React.FC = () => {
               if (!tvPresentationMode) {
                 setSelection(sel);
                 if (sel) setRightPanelOpen(true);
+                if (sel?.type !== 'object') setDragAxis('xz');
               }
             }}
-            onMoveObject={(id, x, z) =>
+            onMoveObject={(id, x, z, y) =>
               setProject((prev) => ({
                 ...prev,
-                objects: prev.objects.map((o) => (o.id === id ? { ...o, x, z } : o)),
+                objects: prev.objects.map((o) =>
+                  o.id === id ? { ...o, x, z, ...(typeof y === 'number' ? { y } : {}) } : o
+                ),
               }))
             }
             onExitWalkthrough={() => setCameraMode('free')}
@@ -3865,6 +3870,11 @@ export const ArchitecturalStudioPage: React.FC = () => {
               }
               onSnapObjectToWall={snapObjectToWall}
               onNudgeObject={(objId, fwdM, rightM) => viewportRef.current?.nudgeObjectRelative(objId, fwdM, rightM)}
+              onNudgeObjectVertical={(objId, deltaYM) => viewportRef.current?.nudgeObjectVertical(objId, deltaYM)}
+              onSetObjectElevation={(objId, targetYM) => viewportRef.current?.setObjectElevation(objId, targetYM)}
+              onSnapObjectToSurface={(objId) => viewportRef.current?.snapObjectToSurface(objId)}
+              dragAxis={dragAxis}
+              onDragAxisChange={setDragAxis}
               onMoveOpeningToWall={moveOpeningToWall}
               onDuplicateObject={duplicateObject}
               onAttachRoom={(parentRoomId, side, roomKind) =>

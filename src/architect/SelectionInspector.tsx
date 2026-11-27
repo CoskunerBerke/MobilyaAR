@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import {
   ArrowDown,
+  ArrowDownToLine,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  ArrowUpDown,
   BookmarkPlus,
   Camera,
   Check,
@@ -11,6 +13,7 @@ import {
   DoorOpen,
   Layers,
   Loader2,
+  Move,
   Plus,
   RotateCcw,
   RotateCw,
@@ -19,6 +22,7 @@ import {
 } from 'lucide-react';
 import { getWorldAABBSpan } from '../lib/collision2d';
 import { NumericInput } from './NumericInput';
+import { findSupportUnderObject, getBaseFloorYAt } from './surfacePhysics';
 import {
   COUNTERTOP_CATALOG,
   DOOR_PANEL_CATALOG,
@@ -71,6 +75,11 @@ interface Props {
   onAddTvOnWall: (wall: WallId) => void;
   onSnapObjectToWall: (objId: string, wall: WallId) => void;
   onNudgeObject?: (objId: string, forwardM: number, rightM: number) => void;
+  onNudgeObjectVertical?: (objId: string, deltaYM: number) => void;
+  onSetObjectElevation?: (objId: string, targetYM: number) => void;
+  onSnapObjectToSurface?: (objId: string) => void;
+  dragAxis?: 'xz' | 'y';
+  onDragAxisChange?: (axis: 'xz' | 'y') => void;
   onMoveOpeningToWall: (kind: 'window' | 'door' | 'wallZone', id: string, wall: WallId) => void;
   onDuplicateObject: (objId: string) => void;
   onAttachRoom?: (parentRoomId: string, side: WallId, roomKind: RoomKind) => void;
@@ -113,6 +122,11 @@ export const SelectionInspector: React.FC<Props> = ({
   onAddTvOnWall,
   onSnapObjectToWall,
   onNudgeObject,
+  onNudgeObjectVertical,
+  onSetObjectElevation,
+  onSnapObjectToSurface,
+  dragAxis = 'xz',
+  onDragAxisChange,
   onMoveOpeningToWall,
   onDuplicateObject,
   onAttachRoom,
@@ -1413,6 +1427,10 @@ export const SelectionInspector: React.FC<Props> = ({
   const clrLeft = Math.max(0, Math.round((obj.x - extX + project.widthM * 0.5) * 100));
   const clrRight = Math.max(0, Math.round((project.widthM * 0.5 - (obj.x + extX)) * 100));
   const clrNorth = Math.max(0, Math.round((obj.z - extZ + project.depthM * 0.5) * 100));
+  const supportBelow = findSupportUnderObject(project, obj, obj.x, obj.z, obj.y, undefined, false);
+  const baseFloorY = getBaseFloorYAt(project, obj, obj.x, obj.z, obj.y);
+  const minSurfaceCm = Math.round(Math.max(baseFloorY, supportBelow ? supportBelow.surfaceY : 0) * 100);
+  const elevCm = Math.round(obj.y * 100);
 
   const patchObj = (patch: Partial<ArchPlacedObject>) =>
     onUpdateProject((p) => ({
@@ -1474,11 +1492,11 @@ export const SelectionInspector: React.FC<Props> = ({
             <label className="text-[10px] text-stone-600">
               Yerden Y (cm)
               <NumericInput
-                min={0}
-                max={Math.round(project.ceilingM * 100)}
+                min={minSurfaceCm}
+                max={Math.round(Math.max(0.05, project.ceilingM - obj.heightM) * 100)}
                 step={5}
-                value={Math.round(obj.y * 100)}
-                onChange={(v) => patchObj({ y: v / 100 })}
+                value={elevCm}
+                onChange={(v) => (onSetObjectElevation ? onSetObjectElevation(obj.id, v / 100) : patchObj({ y: v / 100 }))}
                 className="w-full px-2 py-1 border border-stone-300 font-mono text-xs"
               />
             </label>
@@ -1486,14 +1504,25 @@ export const SelectionInspector: React.FC<Props> = ({
           <p className="text-[10px] font-mono text-stone-500">
             Duvar boşlukları: Sol {clrLeft} cm · Sağ {clrRight} cm · Üst {clrNorth} cm
           </p>
+          <p className="text-[10px] font-mono text-stone-600">
+            Yüzey sınırı:{' '}
+            {supportBelow ? (
+              <strong className="text-stone-900">
+                {supportBelow.host.name} üstü ({Math.round(supportBelow.surfaceY * 100)} cm)
+              </strong>
+            ) : (
+              <span>Zemin ({Math.round(baseFloorY * 100)} cm)</span>
+            )}{' '}
+            · Şu an: <strong className="text-stone-900">{elevCm} cm</strong>
+          </p>
         </div>
 
-        {/* Position Nudge (Forward / Back / Left / Right relative to camera — super handy in Kapıdan Gez & 3B!) */}
+        {/* Position Nudge (Horizontal X/Z + Vertical Y + Direct 3D Drag Axis Toggle) */}
         {onNudgeObject && (
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
-                Konum (İleri / Geri / Yan)
+                Konum (Yatay &amp; Yükseklik)
               </span>
               <div className="flex gap-1">
                 {[5, 15, 30].map((cm) => (
@@ -1550,6 +1579,70 @@ export const SelectionInspector: React.FC<Props> = ({
                 <span>Sağ</span>
               </button>
             </div>
+
+            {/* Vertical Elevation Controls (Yukarı / Aşağı / Yüzeye Oturt) */}
+            {onNudgeObjectVertical && (
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  type="button"
+                  onClick={() => onNudgeObjectVertical(obj.id, nudgeStepCm / 100)}
+                  className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-1 text-[10px] font-semibold transition"
+                  title={`Yukarı kaldır (${nudgeStepCm} cm)`}
+                >
+                  <ArrowUp className="w-3 h-3" />
+                  <span>Yukarı</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNudgeObjectVertical(obj.id, -nudgeStepCm / 100)}
+                  className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white flex items-center justify-center gap-1 text-[10px] font-semibold transition"
+                  title={`Aşağı indir (${nudgeStepCm} cm) — altındaki eşyanın üstünde durur`}
+                >
+                  <ArrowDown className="w-3 h-3" />
+                  <span>Aşağı</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSnapObjectToSurface?.(obj.id)}
+                  className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] flex items-center justify-center gap-1 text-[10px] font-semibold transition whitespace-nowrap"
+                  title={supportBelow ? `${supportBelow.host.name} üstüne oturt` : 'Zemine sıfır indir'}
+                >
+                  <ArrowDownToLine className="w-3 h-3 shrink-0" />
+                  <span>{supportBelow ? 'Üste Oturt' : 'Zemine İndir'}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Direct 3D Canvas Drag Axis Selector */}
+            {onDragAxisChange && (
+              <div className="pt-0.5 space-y-1">
+                <div className="grid grid-cols-2 border border-stone-300">
+                  <button
+                    type="button"
+                    onClick={() => onDragAxisChange('xz')}
+                    className={`py-1.5 flex items-center justify-center gap-1 text-[10px] font-semibold transition ${
+                      dragAxis === 'xz' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700 hover:bg-stone-50'
+                    }`}
+                  >
+                    <Move className="w-3 h-3" />
+                    <span>Yatay Sürükle</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDragAxisChange('y')}
+                    className={`py-1.5 flex items-center justify-center gap-1 text-[10px] font-semibold transition ${
+                      dragAxis === 'y' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700 hover:bg-stone-50'
+                    }`}
+                  >
+                    <ArrowUpDown className="w-3 h-3" />
+                    <span>Yukarı / Aşağı Sürükle</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-stone-500">
+                  Yastık/lamba gibi ürünleri yatağa veya masaya sürüklediğinizde üstüne otomatik oturur; altına geçmez.
+                </p>
+              </div>
+            )}
           </div>
         )}
 

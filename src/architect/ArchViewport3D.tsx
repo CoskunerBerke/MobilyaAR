@@ -2,12 +2,12 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { clampToRoomWalls, type OBB2D } from '../lib/collision2d';
 import { buildContactShadow } from '../lib/contactShadow';
 import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
 import { computeSolarLighting } from './solarMath';
+import { resolveHorizontalMove3D, resolveVerticalMove3D } from './surfacePhysics';
 import { getHouseBounds, getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
 
 interface RoomRect2D {
@@ -59,33 +59,26 @@ export interface ArchViewportHandle {
   walkStep: (forwardM: number, rightM: number) => void;
   turnLook: (deltaYawDeg: number) => void;
   nudgeObjectRelative: (objId: string, forwardM: number, rightM: number) => void;
+  nudgeObjectVertical: (objId: string, deltaYM: number) => void;
+  setObjectElevation: (objId: string, targetYM: number) => void;
+  snapObjectToSurface: (objId: string) => void;
 }
 
 interface Props {
   project: ArchRoomProject;
   cameraMode: ArchCameraMode;
+  dragAxis?: 'xz' | 'y';
   showGrid: boolean;
   showSunOrb: boolean;
   showDoorArcs: boolean;
   autoRotate?: boolean;
   selection: ArchSelection;
   onSelect: (sel: ArchSelection) => void;
-  onMoveObject: (id: string, x: number, z: number) => void;
+  onMoveObject: (id: string, x: number, z: number, y?: number) => void;
   onExitWalkthrough?: () => void;
   onWarningsChange?: (warnings: string[]) => void;
   onLoadingChange?: (loadingCount: number) => void;
   onToast?: (msg: string) => void;
-}
-
-function objectToOBB(o: ArchPlacedObject): OBB2D {
-  return {
-    id: o.id,
-    x: o.x,
-    z: o.z,
-    rot: o.rot,
-    halfW: Math.max(0.1, o.widthM * 0.5),
-    halfD: Math.max(0.04, o.depthM * 0.5),
-  };
 }
 
 /** Computes realistic doorway spawn position (just at entrance door threshold stepping in) and look angles */
@@ -153,6 +146,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     {
       project,
       cameraMode,
+      dragAxis = 'xz',
       showGrid,
       showSunOrb,
       showDoorArcs,
@@ -172,6 +166,8 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
     projectRef.current = project;
     const camModeRef = useRef(cameraMode);
     camModeRef.current = cameraMode;
+    const dragAxisRef = useRef<'xz' | 'y'>(dragAxis || 'xz');
+    dragAxisRef.current = dragAxis || 'xz';
     const selectionRef = useRef(selection);
     selectionRef.current = selection;
     const showGridRef = useRef(showGrid);
@@ -197,14 +193,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       hx: number;
       hz: number;
       px: number;
+      py: number;
       pz: number;
       liveX: number;
+      liveY: number;
       liveZ: number;
       startClientX: number;
       startClientY: number;
       lastClientX: number;
       lastClientY: number;
       useScreenDelta: boolean;
+      verticalDrag: boolean;
       moved: boolean;
       wasSelected: boolean;
     } | null>(null);
@@ -475,42 +474,62 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         const targetX = obj.x + dir.x * forwardM + right.x * rightM;
         const targetZ = obj.z + dir.z * forwardM + right.z * rightM;
 
-        const hasMulti = (p.adjacentRooms?.length || 0) > 0;
-        let nextX = targetX;
-        let nextZ = targetZ;
-        if (hasMulti) {
-          const hb = getHouseBounds(p);
-          const c = clampToRoomWalls(
-            targetX - hb.centerX,
-            targetZ - hb.centerZ,
-            obj.rot,
-            obj.widthM * 0.5,
-            obj.depthM * 0.5,
-            hb.totalW,
-            hb.totalD,
-            0.01
-          );
-          nextX = c.x + hb.centerX;
-          nextZ = c.z + hb.centerZ;
-        } else {
-          const c = clampToRoomWalls(
-            targetX,
-            targetZ,
-            obj.rot,
-            obj.widthM * 0.5,
-            obj.depthM * 0.5,
-            p.widthM,
-            p.depthM,
-            0.01
-          );
-          nextX = c.x;
-          nextZ = c.z;
-        }
-        const rx = Number(nextX.toFixed(3));
-        const rz = Number(nextZ.toFixed(3));
+        const res = resolveHorizontalMove3D(p, obj, obj.x, obj.y, obj.z, targetX, targetZ, eng.mountedObjects);
         const mounted = eng.mountedObjects.get(obj.id);
-        if (mounted) mounted.root.position.set(rx, obj.y, rz);
-        onMoveObject(obj.id, rx, rz);
+        if (mounted) mounted.root.position.set(res.x, res.y, res.z);
+        onMoveObject(obj.id, res.x, res.z, res.y);
+        if (res.support && Math.abs(res.y - obj.y) > 0.02) {
+          onToast?.(`${res.support.host.name} üst yüzeyine oturtuldu (${Math.round(res.y * 100)} cm).`);
+        } else if (res.hitObstacle && Math.hypot(res.x - targetX, res.z - targetZ) > 0.03) {
+          onToast?.('Mobilya sınırı: ürün diğer eşyanın içine/altına geçirilemez.');
+        }
+        eng.scheduleRender(true);
+      },
+      nudgeObjectVertical: (objId, deltaYM) => {
+        const eng = engineRef.current;
+        if (!eng) return;
+        const p = projectRef.current;
+        const obj = p.objects.find((o) => o.id === objId);
+        if (!obj) return;
+        const res = resolveVerticalMove3D(p, obj, obj.y + deltaYM, eng.mountedObjects);
+        const mounted = eng.mountedObjects.get(obj.id);
+        if (mounted) mounted.root.position.set(obj.x, res.y, obj.z);
+        onMoveObject(obj.id, obj.x, obj.z, res.y);
+        if (res.clampedBySupport && res.support) {
+          onToast?.(`${res.support.host.name} üst sınırı (${Math.round(res.y * 100)} cm) — altına indirilemez.`);
+        }
+        eng.scheduleRender(true);
+      },
+      setObjectElevation: (objId, targetYM) => {
+        const eng = engineRef.current;
+        if (!eng) return;
+        const p = projectRef.current;
+        const obj = p.objects.find((o) => o.id === objId);
+        if (!obj) return;
+        const res = resolveVerticalMove3D(p, obj, targetYM, eng.mountedObjects);
+        const mounted = eng.mountedObjects.get(obj.id);
+        if (mounted) mounted.root.position.set(obj.x, res.y, obj.z);
+        onMoveObject(obj.id, obj.x, obj.z, res.y);
+        if (res.clampedBySupport && res.support) {
+          onToast?.(`${res.support.host.name} üst yüzeyi (${Math.round(res.y * 100)} cm) — altına yerleştirilemez.`);
+        }
+        eng.scheduleRender(true);
+      },
+      snapObjectToSurface: (objId) => {
+        const eng = engineRef.current;
+        if (!eng) return;
+        const p = projectRef.current;
+        const obj = p.objects.find((o) => o.id === objId);
+        if (!obj) return;
+        const res = resolveVerticalMove3D(p, obj, 0, eng.mountedObjects);
+        const mounted = eng.mountedObjects.get(obj.id);
+        if (mounted) mounted.root.position.set(obj.x, res.y, obj.z);
+        onMoveObject(obj.id, obj.x, obj.z, res.y);
+        if (res.support) {
+          onToast?.(`${res.support.host.name} üstüne oturtuldu (${Math.round(res.y * 100)} cm).`);
+        } else {
+          onToast?.(`Zemine indirildi (${Math.round(res.y * 100)} cm).`);
+        }
         eng.scheduleRender(true);
       },
     }));
@@ -706,9 +725,10 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           if (obj) {
             const d = dragRef.current;
             const ox = d && d.id === obj.id ? d.liveX : obj.x;
+            const oy = d && d.id === obj.id ? d.liveY : obj.y;
             const oz = d && d.id === obj.id ? d.liveZ : obj.z;
             selBox.visible = true;
-            selBox.position.set(ox, obj.y + obj.heightM * 0.5, oz);
+            selBox.position.set(ox, oy + obj.heightM * 0.5, oz);
             selBox.rotation.y = obj.rot;
             selBox.scale.set(obj.widthM + 0.04, Math.max(0.06, obj.heightM + 0.03), obj.depthM + 0.04);
             selMat.color.setHex(hitObstacleRef.current ? 0xdc2626 : 0x0f172a);
@@ -1311,6 +1331,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           const pt = isInside ? null : raycastPlaneY(e.clientX, e.clientY, obj.y);
           // In Kapıdan Gez (1.65m eye height), always use horizon-safe camera-relative screen delta (push UP = ileri, pull DOWN = geri, LEFT/RIGHT = yan)!
           const useScreenDelta = isInside || !pt;
+          const verticalDrag = dragAxisRef.current === 'y' || e.shiftKey;
           e.stopPropagation();
           const wasSelected = selectionRef.current?.type === 'object' && selectionRef.current.id === hitObjId;
           selectionRef.current = { type: 'object', id: hitObjId };
@@ -1319,14 +1340,17 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
             hx: pt ? pt.x : obj.x,
             hz: pt ? pt.z : obj.z,
             px: obj.x,
+            py: obj.y,
             pz: obj.z,
             liveX: obj.x,
+            liveY: obj.y,
             liveZ: obj.z,
             startClientX: e.clientX,
             startClientY: e.clientY,
             lastClientX: e.clientX,
             lastClientY: e.clientY,
             useScreenDelta,
+            verticalDrag,
             moved: false,
             wasSelected,
           };
@@ -1382,10 +1406,34 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const obj = p.objects.find((o) => o.id === d.id);
       if (!obj) return;
 
+      const isVertical = d.verticalDrag || e.shiftKey;
+      if (isVertical) {
+        // Direct 3D Up/Down elevation drag (drag UP = raise, drag DOWN = lower, clamped cleanly on bed/table/floor!)
+        const dyPx = e.clientY - d.lastClientY;
+        d.lastClientX = e.clientX;
+        d.lastClientY = e.clientY;
+        const distToObj = Math.max(1.2, Math.hypot(d.liveX - eng.camera.position.x, d.liveZ - eng.camera.position.z));
+        const vScale = Math.min(0.012, Math.max(0.004, distToObj * 0.0022));
+        const targetY = d.liveY - dyPx * vScale;
+        const vRes = resolveVerticalMove3D(
+          p,
+          { ...obj, x: d.liveX, y: d.liveY, z: d.liveZ },
+          targetY,
+          eng.mountedObjects
+        );
+        d.liveY = vRes.y;
+        d.moved = true;
+        hitObstacleRef.current = vRes.clampedBySupport;
+        const mounted = eng.mountedObjects.get(d.id);
+        if (mounted) mounted.root.position.set(d.liveX, d.liveY, d.liveZ);
+        eng.scheduleRender(false);
+        return;
+      }
+
       let targetX = d.liveX;
       let targetZ = d.liveZ;
 
-      const pt = !d.useScreenDelta ? raycastPlaneY(e.clientX, e.clientY, obj.y) : null;
+      const pt = !d.useScreenDelta ? raycastPlaneY(e.clientX, e.clientY, d.py) : null;
       if (pt) {
         targetX = d.px + (pt.x - d.hx);
         targetZ = d.pz + (pt.z - d.hz);
@@ -1409,62 +1457,26 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       d.lastClientX = e.clientX;
       d.lastClientY = e.clientY;
 
-      // Silky-smooth continuous wall-clamped movement (NEVER freezes or teleports on tight Pinterest clusters!)
-      const hasMulti = (p.adjacentRooms?.length || 0) > 0;
-      let nextX = targetX;
-      let nextZ = targetZ;
-      if (hasMulti) {
-        const hb = getHouseBounds(p);
-        const cx = hb.centerX;
-        const cz = hb.centerZ;
-        const c = clampToRoomWalls(
-          targetX - cx,
-          targetZ - cz,
-          obj.rot,
-          obj.widthM * 0.5,
-          obj.depthM * 0.5,
-          hb.totalW,
-          hb.totalD,
-          0.01
-        );
-        nextX = c.x + cx;
-        nextZ = c.z + cz;
-      } else {
-        const c = clampToRoomWalls(
-          targetX,
-          targetZ,
-          obj.rot,
-          obj.widthM * 0.5,
-          obj.depthM * 0.5,
-          p.widthM,
-          p.depthM,
-          0.01
-        );
-        nextX = c.x;
-        nextZ = c.z;
-      }
-
-      // Non-blocking visual overlap hint only (red wireframe if touching another piece, never locks movement!)
-      if (obj.mountMode !== 'rug' && obj.mountMode !== 'ceiling' && obj.y < 1.0) {
-        const curObb = objectToOBB({ ...obj, x: nextX, z: nextZ });
-        const others: OBB2D[] = p.objects
-          .filter((o) => o.id !== obj.id && o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 1.0)
-          .map((o) => objectToOBB(o));
-        hitObstacleRef.current = others.some((o) => {
-          const dx = Math.abs(curObb.x - o.x);
-          const dz = Math.abs(curObb.z - o.z);
-          return dx < curObb.halfW + o.halfW - 0.04 && dz < curObb.halfD + o.halfD - 0.04;
-        });
-      } else {
-        hitObstacleRef.current = false;
-      }
-
-      d.liveX = nextX;
-      d.liveZ = nextZ;
+      // Full 3D surface-aware placement: pillows/lamps/decor automatically climb ON TOP of beds/tables/nightstands,
+      // solid furniture slides cleanly along bed/table boundaries (NEVER clips underneath!), and floor drop is automatic!
+      const hRes = resolveHorizontalMove3D(
+        p,
+        obj,
+        d.liveX,
+        d.liveY,
+        d.liveZ,
+        targetX,
+        targetZ,
+        eng.mountedObjects
+      );
+      d.liveX = hRes.x;
+      d.liveY = hRes.y;
+      d.liveZ = hRes.z;
       d.moved = true;
+      hitObstacleRef.current = hRes.hitObstacle;
 
       const mounted = eng.mountedObjects.get(d.id);
-      if (mounted) mounted.root.position.set(nextX, obj.y, nextZ);
+      if (mounted) mounted.root.position.set(hRes.x, hRes.y, hRes.z);
       // 60 FPS butter-smooth drag: skip heavy shadow-map rebuild until pointerUp!
       eng.scheduleRender(false);
     };
@@ -1510,7 +1522,7 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
           /* ignore */
         }
         if (d.moved) {
-          onMoveObject(d.id, Number(d.liveX.toFixed(3)), Number(d.liveZ.toFixed(3)));
+          onMoveObject(d.id, Number(d.liveX.toFixed(3)), Number(d.liveZ.toFixed(3)), Number(d.liveY.toFixed(3)));
         }
         // Commit React selection cleanly AFTER drag completes (prevents mid-drag canvas resize jumps on phone & desktop!)
         onSelect({ type: 'object', id: d.id });
