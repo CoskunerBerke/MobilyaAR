@@ -224,6 +224,102 @@ export function createFloorTexture(
   );
 }
 
+export function createLambriWoodTextures(colorHex: string): {
+  map: THREE.CanvasTexture;
+  bumpMap: THREE.CanvasTexture;
+} {
+  const keyBase = `lambriWood:${colorHex.toLowerCase()}`;
+  const mapKey = `${keyBase}:map`;
+  const bumpKey = `${keyBase}:bump`;
+  const hitMap = TEXTURE_CACHE.get(mapKey);
+  const hitBump = TEXTURE_CACHE.get(bumpKey);
+  if (hitMap && hitBump) return { map: hitMap, bumpMap: hitBump };
+
+  const rgb = hexToRgb(colorHex);
+  const lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+  const isLightLacquer = lum > 205;
+
+  const mapCanvas = getCachedCanvas(mapKey, () => {
+    const w = 512;
+    const h = 512;
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d')!;
+    const rand = seededRand(rgb[0] * 19 + rgb[1] * 37 + rgb[2] * 53 + 911);
+
+    ctx.fillStyle = shade(rgb, 0);
+    ctx.fillRect(0, 0, w, h);
+
+    // Rich vertical timber grain fibers & subtle cathedral wood streaks (soft satin for light lacquer)
+    const grainStrength = isLightLacquer ? 5 : 18;
+    const streaks = isLightLacquer ? 110 : 260;
+    for (let i = 0; i < streaks; i++) {
+      const x = rand() * w;
+      const sw = 0.8 + rand() * 3.4;
+      const delta = (rand() - 0.5) * grainStrength * 2;
+      ctx.fillStyle = shade(rgb, delta);
+      ctx.globalAlpha = isLightLacquer ? 0.18 : 0.26 + rand() * 0.22;
+      ctx.fillRect(x, 0, sw, h);
+    }
+    if (!isLightLacquer) {
+      // Fine elongated wood pores & organic wavy growth-ring veins
+      for (let i = 0; i < 42; i++) {
+        const bx = rand() * w;
+        ctx.strokeStyle = shade(rgb, -24 + (rand() - 0.5) * 14);
+        ctx.globalAlpha = 0.14 + rand() * 0.14;
+        ctx.lineWidth = 0.8 + rand() * 1.4;
+        ctx.beginPath();
+        ctx.moveTo(bx, 0);
+        const sway = (rand() - 0.5) * 14;
+        ctx.bezierCurveTo(bx + sway, h * 0.33, bx - sway, h * 0.67, bx + sway * 0.4, h);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 240; i++) {
+        ctx.fillStyle = shade(rgb, -30);
+        ctx.globalAlpha = 0.18;
+        ctx.fillRect(rand() * w, rand() * h, 1, 8 + rand() * 24);
+      }
+    }
+    ctx.globalAlpha = 1;
+    return c;
+  });
+
+  const bumpCanvas = getCachedCanvas(bumpKey, () => {
+    const w = 256;
+    const h = 256;
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d')!;
+    const rand = seededRand(rgb[0] * 17 + 409);
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, w, h);
+    const amp = isLightLacquer ? 10 : 34;
+    for (let i = 0; i < 190; i++) {
+      const v = clamp255(128 + (rand() - 0.5) * amp * 2);
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(rand() * w, 0, 1 + rand() * 2.5, h);
+    }
+    return c;
+  });
+
+  const map = new THREE.CanvasTexture(mapCanvas);
+  map.wrapS = THREE.RepeatWrapping;
+  map.wrapT = THREE.RepeatWrapping;
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 4;
+
+  const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+  bumpMap.wrapS = THREE.RepeatWrapping;
+  bumpMap.wrapT = THREE.RepeatWrapping;
+  bumpMap.anisotropy = 4;
+
+  TEXTURE_CACHE.set(mapKey, map);
+  TEXTURE_CACHE.set(bumpKey, bumpMap);
+  return { map, bumpMap };
+}
+
 export function createWallTexture(pattern: WallPattern, colorHex: string, repeatX?: number, repeatY?: number): THREE.CanvasTexture {
   const perMeter = pattern === 'slats' ? 1.15 : pattern === 'boiserie' ? 0.68 : 0.72;
   const rx = Number((repeatX ?? perMeter).toFixed(2));

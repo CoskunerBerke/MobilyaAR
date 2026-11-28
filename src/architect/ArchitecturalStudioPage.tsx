@@ -808,7 +808,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
       };
       setProject((prev) => ({ ...prev, windows: [...prev.windows, win] }));
       setSelection({ type: 'window', id: win.id });
-      if (cameraMode === 'free') viewportRef.current?.focusWall(wall);
       showToast(`${WALL_LABELS[wall]} → ${WINDOW_KIND_LABELS[kind]} eklendi.`);
     },
     [project.widthM, project.depthM, project.ceilingM, project.windows, project.doors, cameraMode, showToast]
@@ -833,7 +832,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
       };
       setProject((prev) => ({ ...prev, doors: [...prev.doors, door] }));
       setSelection({ type: 'door', id: door.id });
-      if (cameraMode === 'free') viewportRef.current?.focusWall(wall);
       showToast(`${WALL_LABELS[wall]} → ${DOOR_KIND_LABELS[kind]} eklendi.`);
     },
     [project.widthM, project.depthM, project.ceilingM, cameraMode, showToast]
@@ -856,7 +854,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
       };
       setProject((prev) => ({ ...prev, wallZones: [...(prev.wallZones || []), zone] }));
       setSelection({ type: 'wallZone', id: zone.id });
-      if (cameraMode === 'free') viewportRef.current?.focusWall(wall);
       showToast(`${WALL_LABELS[wall]} üzerine kısmi kaplama/boya bölgesi eklendi.`);
     },
     [project.widthM, project.depthM, project.ceilingM, cameraMode, showToast]
@@ -1000,9 +997,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
     };
     setProject((prev) => ({ ...prev, objects: [...prev.objects, obj] }));
     setSelection({ type: 'object', id: obj.id });
-    if (spec.mount === 'wall' && cameraMode === 'free') {
-      viewportRef.current?.focusWall(targetWall);
-    }
     showToast(`${spec.name} (${obj.dimensionsCm}) eklendi.`);
   };
 
@@ -1118,7 +1112,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
       };
       setProject((p) => ({ ...p, wallZones: [...(p.wallZones || []), zone] }));
       setSelection({ type: 'wallZone', id: zone.id });
-      if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
       showToast(`${WALL_LABELS[activeWall]} → ${label} panel eklendi.`);
     } else if (mode === 'all') {
       setProject((p) => ({
@@ -1139,7 +1132,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
           [activeWall]: { colorHex: item.hex, pattern: item.pattern, brandLabel: label },
         },
       }));
-      if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
       showToast(`${WALL_LABELS[activeWall]} → ${label}`);
     }
   };
@@ -1260,7 +1252,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
     };
     setProject((p) => ({ ...p, objects: [...p.objects, obj] }));
     setSelection({ type: 'object', id: obj.id });
-    if (cameraMode === 'free') viewportRef.current?.focusWall(activeWall);
     showToast(`${label} tezgah modülü eklendi.`);
   };
 
@@ -1463,7 +1454,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
         };
       });
       setActiveWall(targetWall);
-      if (cameraMode === 'free') viewportRef.current?.focusWall(targetWall);
       showToast(`${WALL_LABELS[targetWall]} üzerine taşındı.`);
     },
     [project.widthM, project.depthM, cameraMode, showToast]
@@ -1794,7 +1784,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         value={newRoomSide}
                         onChange={(wId) => {
                           setNewRoomSide(wId);
-                          if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
                         }}
                         project={project}
                         parentRoomId={newRoomParentId}
@@ -2006,7 +1995,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         onClick={() => {
                           setActiveWall(wId);
                           setSelection({ type: 'wall', wall: wId });
-                          if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
                         }}
                         className={`px-2 py-1.5 border flex items-center justify-between text-[11px] transition ${
                           selection?.type === 'wall' && selection.wall === wId
@@ -2074,7 +2062,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
                     value={activeWall}
                     onChange={(wId) => {
                       setActiveWall(wId);
-                      if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
                     }}
                     project={project}
                     centerLabel="Ana Salon"
@@ -2122,7 +2109,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         type="button"
                         onClick={() => {
                           setSelection({ type: 'window', id: w.id });
-                          if (cameraMode === 'free') viewportRef.current?.focusWall(w.wall);
                         }}
                         className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
                           selection?.type === 'window' && selection.id === w.id
@@ -2142,7 +2128,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         type="button"
                         onClick={() => {
                           setSelection({ type: 'door', id: d.id });
-                          if (cameraMode === 'free') viewportRef.current?.focusWall(d.wall);
                         }}
                         className={`w-full px-2 py-1.5 border text-left flex items-center justify-between text-[11px] ${
                           selection?.type === 'door' && selection.id === d.id
@@ -2518,7 +2503,6 @@ export const ArchitecturalStudioPage: React.FC = () => {
           selection={selection}
           onSelectWall={(wId) => {
             setActiveWall(wId);
-            if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
           }}
           onApplyParquet={applyParquetItem}
           onApplyWallPanel={applyWallPanelItem}

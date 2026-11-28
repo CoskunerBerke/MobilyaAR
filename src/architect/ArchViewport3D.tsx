@@ -406,28 +406,28 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
       const eng = engineRef.current;
       if (!eng || camModeRef.current === 'inside') return;
       const p = projectRef.current;
-      const maxSpan = Math.max(p.widthM, p.depthM);
-      const camH = p.ceilingM + Math.max(1.85, maxSpan * 0.42);
-      const targetY = p.ceilingM * 0.44;
+      // Stay cleanly INSIDE the room at natural eye level facing the chosen wall (NEVER jump above the ceiling slab!)
+      const eyeY = Math.min(1.62, p.ceilingM * 0.56);
+      const targetY = Math.min(1.38, p.ceilingM * 0.48);
       eng.camera.rotation.order = 'XYZ';
       eng.controls.enabled = true;
-      eng.camera.fov = 42;
+      eng.camera.fov = 50;
       eng.camera.near = 0.08;
       eng.camera.far = 90;
       eng.camera.updateProjectionMatrix();
-      eng.controls.maxPolarAngle = Math.PI * 0.495;
+      eng.controls.maxPolarAngle = Math.PI * 0.54;
       if (wall === 'north') {
-        eng.camera.position.set(p.widthM * 0.42, camH, p.depthM * 1.15);
-        eng.controls.target.set(0, targetY, -p.depthM * 0.25);
+        eng.camera.position.set(0, eyeY, Math.max(0.6, p.depthM * 0.42));
+        eng.controls.target.set(0, targetY, -p.depthM * 0.45);
       } else if (wall === 'south') {
-        eng.camera.position.set(-p.widthM * 0.42, camH, -p.depthM * 1.15);
-        eng.controls.target.set(0, targetY, p.depthM * 0.25);
+        eng.camera.position.set(0, eyeY, -Math.max(0.6, p.depthM * 0.42));
+        eng.controls.target.set(0, targetY, p.depthM * 0.45);
       } else if (wall === 'west') {
-        eng.camera.position.set(p.widthM * 1.15, camH, p.depthM * 0.42);
-        eng.controls.target.set(-p.widthM * 0.25, targetY, 0);
+        eng.camera.position.set(Math.max(0.6, p.widthM * 0.42), eyeY, 0);
+        eng.controls.target.set(-p.widthM * 0.45, targetY, 0);
       } else {
-        eng.camera.position.set(-p.widthM * 1.15, camH, -p.depthM * 0.42);
-        eng.controls.target.set(p.widthM * 0.25, targetY, 0);
+        eng.camera.position.set(-Math.max(0.6, p.widthM * 0.42), eyeY, 0);
+        eng.controls.target.set(p.widthM * 0.45, targetY, 0);
       }
       eng.controls.update();
       eng.scheduleRender(true);

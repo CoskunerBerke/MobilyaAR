@@ -11,7 +11,7 @@ import {
   type PassageStyle,
   type WallId,
 } from './types';
-import { createFloorTexture, createWallTexture } from './textures';
+import { createFloorTexture, createLambriWoodTextures, createWallTexture } from './textures';
 
 export interface WallRuntimeRef {
   side: WallId;
@@ -87,6 +87,199 @@ function addArchedHole(shape: THREE.Shape, x0: number, y0: number, x1: number, y
   p.lineTo(x1, y0);
   p.closePath();
   shape.holes.push(p);
+}
+
+/**
+ * Builds TRUE 3D architectural extruded wooden/MDF acoustic lambri profiles (AGT LB-2050 style!):
+ *  - Recessed acoustic felt / shadow backing plate (cut cleanly around windows & doors!)
+ *  - Physical 3D chamfered vertical ribs (28mm wide × 19mm deep, 45° front bevels, 14mm shadow groove!)
+ *  - Real vertical wood-grain texture + bump map + subtle per-slat organic tonal variation
+ *  - Merged into ONE BufferGeometry draw call (60 fps smooth AND exports natively to 3ds Max .GLB/.OBJ!)
+ */
+function buildReal3DWoodSlatsPanel(opts: {
+  widthM: number;
+  heightM: number;
+  centerX: number;
+  bottomY: number;
+  colorHex: string;
+  holes?: HoleBox2D[];
+  pickTarget: ArchSelection;
+  parent: THREE.Object3D;
+  disposables: Array<() => void>;
+}) {
+  const { widthM, heightM, centerX, bottomY, colorHex, holes = [], pickTarget, parent, disposables } = opts;
+  const xMin = centerX - widthM * 0.5;
+  const xMax = centerX + widthM * 0.5;
+  const yMin = bottomY;
+  const yMax = bottomY + heightM;
+
+  const baseCol = new THREE.Color(colorHex || '#8c6544');
+  const lum = 0.299 * baseCol.r + 0.587 * baseCol.g + 0.114 * baseCol.b;
+  const isLightLake = lum > 0.72;
+
+  // 1) Recessed acoustic felt backing behind the ribs (respecting window/door holes!)
+  const backingShape = new THREE.Shape();
+  backingShape.moveTo(xMin, yMin);
+  backingShape.lineTo(xMax, yMin);
+  backingShape.lineTo(xMax, yMax);
+  backingShape.lineTo(xMin, yMax);
+  backingShape.closePath();
+
+  for (const h of holes) {
+    const ix0 = Math.max(xMin + 0.005, h.x0);
+    const ix1 = Math.min(xMax - 0.005, h.x1);
+    const iy0 = Math.max(yMin + 0.005, h.y0);
+    const iy1 = Math.min(yMax - 0.005, h.y1);
+    if (ix1 - ix0 > 0.04 && iy1 - iy0 > 0.04) {
+      addRectangularHole(backingShape, ix0, iy0, ix1, iy1);
+    }
+  }
+
+  const feltDepth = 0.006;
+  const feltGeo = new THREE.ExtrudeGeometry(backingShape, { depth: feltDepth, bevelEnabled: false });
+  const feltColor = isLightLake ? baseCol.clone().multiplyScalar(0.76) : new THREE.Color('#191817');
+  const feltMat = new THREE.MeshStandardMaterial({
+    color: feltColor,
+    roughness: isLightLake ? 0.88 : 0.96,
+    metalness: 0.01,
+  });
+  disposables.push(() => {
+    feltGeo.dispose();
+    feltMat.dispose();
+  });
+  const feltMesh = new THREE.Mesh(feltGeo, feltMat);
+  feltMesh.position.z = 0.001;
+  feltMesh.receiveShadow = true;
+  feltMesh.userData.pickTarget = pickTarget;
+  parent.add(feltMesh);
+
+  // 2) Real 3D Chamfered Vertical Lambri Ribs merged into a single fast BufferGeometry!
+  const pitch = 0.042; // 42mm center-to-center (28mm wooden rib + 14mm acoustic groove)
+  const slatW = 0.028;
+  const bev = 0.0036; // 3.6mm 45-degree front chamfer on both edges catches real light!
+  const zBack = 0.0065;
+  const zShoulder = 0.0215;
+  const zFront = 0.0255; // full 19mm physical 3D relief proud of the acoustic felt!
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const colors: number[] = [];
+
+  const pushTri = (
+    a: [number, number, number],
+    b: [number, number, number],
+    c: [number, number, number],
+    n: [number, number, number],
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    tint: number
+  ) => {
+    positions.push(...a, ...b, ...c);
+    normals.push(...n, ...n, ...n);
+    uvs.push(...ua, ...ub, ...uc);
+    colors.push(tint, tint, tint, tint, tint, tint, tint, tint, tint);
+  };
+
+  const pushStrip = (
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    sy0: number,
+    sy1: number,
+    nx: number,
+    nz: number,
+    u0: number,
+    u1: number,
+    tint: number
+  ) => {
+    const v0 = sy0 * 0.55;
+    const v1 = sy1 * 0.55;
+    pushTri([ax, sy0, az], [bx, sy0, bz], [bx, sy1, bz], [nx, 0, nz], [u0, v0], [u1, v0], [u1, v1], tint);
+    pushTri([ax, sy0, az], [bx, sy1, bz], [ax, sy1, az], [nx, 0, nz], [u0, v0], [u1, v1], [u0, v1], tint);
+  };
+
+  const count = Math.max(1, Math.floor((widthM - 0.01) / pitch));
+  const totalSpan = (count - 1) * pitch + slatW;
+  const startX = centerX - totalSpan * 0.5;
+  const invSqrt2 = Math.SQRT1_2;
+
+  for (let i = 0; i < count; i++) {
+    const xL = startX + i * pitch;
+    const xR = xL + slatW;
+    if (xL < xMin - 0.002 || xR > xMax + 0.002) continue;
+
+    // Subtract any overlapping window/door holes vertically from [yMin, yMax]
+    let spans: Array<[number, number]> = [[yMin, yMax]];
+    for (const h of holes) {
+      if (xR <= h.x0 - 0.004 || xL >= h.x1 + 0.004) continue;
+      const nextSpans: Array<[number, number]> = [];
+      for (const [a, b] of spans) {
+        if (h.y1 <= a || h.y0 >= b) {
+          nextSpans.push([a, b]);
+        } else {
+          if (h.y0 > a + 0.03) nextSpans.push([a, h.y0]);
+          if (h.y1 < b - 0.03) nextSpans.push([h.y1, b]);
+        }
+      }
+      spans = nextSpans;
+    }
+
+    // Subtle per-slat natural timber tone variance (real veneer look, never robotic!)
+    const hash = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+    const frac = hash - Math.floor(hash);
+    const tint = isLightLake ? 0.985 + frac * 0.03 : 0.91 + frac * 0.16;
+    const uBase = (i * 0.173) % 1;
+
+    const xBL = xL + bev;
+    const xBR = xR - bev;
+
+    for (const [sy0, sy1] of spans) {
+      if (sy1 - sy0 < 0.03) continue;
+      // 5 outward-facing chamfered vertical surfaces (left wall, left bevel, front face, right bevel, right wall)
+      pushStrip(xL, zBack, xL, zShoulder, sy0, sy1, -1, 0, uBase, uBase + 0.04, tint * 0.92);
+      pushStrip(xL, zShoulder, xBL, zFront, sy0, sy1, -invSqrt2, invSqrt2, uBase + 0.04, uBase + 0.06, tint * 0.97);
+      pushStrip(xBL, zFront, xBR, zFront, sy0, sy1, 0, 1, uBase + 0.06, uBase + 0.14, tint);
+      pushStrip(xBR, zFront, xR, zShoulder, sy0, sy1, invSqrt2, invSqrt2, uBase + 0.14, uBase + 0.16, tint * 0.97);
+      pushStrip(xR, zShoulder, xR, zBack, sy0, sy1, 1, 0, uBase + 0.16, uBase + 0.2, tint * 0.92);
+
+      // Top & bottom end caps (so looking down or up shows solid wood end-grain, never hollow!)
+      pushTri([xL, sy1, zBack], [xR, sy1, zBack], [xBR, sy1, zFront], [0, 1, 0], [0, 0], [0.1, 0], [0.1, 0.1], tint * 0.9);
+      pushTri([xL, sy1, zBack], [xBR, sy1, zFront], [xBL, sy1, zFront], [0, 1, 0], [0, 0], [0.1, 0.1], [0, 0.1], tint * 0.9);
+      pushTri([xL, sy0, zBack], [xBR, sy0, zFront], [xR, sy0, zBack], [0, -1, 0], [0, 0], [0.1, 0.1], [0.1, 0], tint * 0.85);
+      pushTri([xL, sy0, zBack], [xBL, sy0, zFront], [xBR, sy0, zFront], [0, -1, 0], [0, 0], [0, 0.1], [0.1, 0.1], tint * 0.85);
+    }
+  }
+
+  if (positions.length === 0) return;
+
+  const slatsGeo = new THREE.BufferGeometry();
+  slatsGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  slatsGeo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  slatsGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  slatsGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+  const { map, bumpMap } = createLambriWoodTextures(colorHex || '#8c6544');
+  const slatsMat = new THREE.MeshStandardMaterial({
+    map,
+    bumpMap,
+    bumpScale: isLightLake ? 0.0015 : 0.0045,
+    vertexColors: true,
+    roughness: isLightLake ? 0.42 : 0.56,
+    metalness: 0.03,
+  });
+  disposables.push(() => {
+    slatsGeo.dispose();
+    slatsMat.dispose();
+  });
+
+  const slatsMesh = new THREE.Mesh(slatsGeo, slatsMat);
+  slatsMesh.castShadow = true;
+  slatsMesh.receiveShadow = true;
+  slatsMesh.userData.pickTarget = pickTarget;
+  parent.add(slatsMesh);
 }
 
 function createWindowAssembly(
@@ -978,7 +1171,8 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     disposables.push(() => wallGeo.dispose());
 
     const wFinish = project.walls[ws.side];
-    const wTex = createWallTexture(wFinish.pattern, wFinish.colorHex);
+    const isFullSlatsWall = wFinish.pattern === 'slats';
+    const wTex = createWallTexture(isFullSlatsWall ? 'smooth' : wFinish.pattern, wFinish.colorHex);
     const faceMat = new THREE.MeshStandardMaterial({
       map: wTex,
       roughness: wFinish.pattern === 'mirror' ? 0.1 : wFinish.pattern === 'marble' ? 0.28 : 0.86,
@@ -999,13 +1193,27 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
     wallMesh.userData.pickTarget = { type: 'wall', wall: ws.side } satisfies ArchSelection;
     visualGroup.add(wallMesh);
 
+    if (isFullSlatsWall) {
+      buildReal3DWoodSlatsPanel({
+        widthM: ws.len,
+        heightM: H,
+        centerX: 0,
+        bottomY: 0,
+        colorHex: wFinish.colorHex,
+        holes: acceptedHoles,
+        pickTarget: { type: 'wall', wall: ws.side } satisfies ArchSelection,
+        parent: visualGroup,
+        disposables,
+      });
+    }
+
     const shadowGhost = new THREE.Mesh(wallGeo, shadowOnlyMat);
     shadowGhost.castShadow = true;
     shadowGhost.visible = false;
     shadowGhost.raycast = () => {};
     wallHolder.add(shadowGhost);
 
-    // Partial Wall Zones (Duvarın sadece bir kısmına ahşap çıta, mermer, ayna, farklı boya vs.!)
+    // Partial Wall Zones (Duvarın sadece bir kısmına gerçek 3B ahşap lambri, mermer, ayna, farklı boya vs.!)
     for (const zone of (project.wallZones || []).filter((z) => z.wall === ws.side)) {
       const zw = Math.max(0.2, Math.min(ws.len, zone.widthCm / 100));
       const zh = Math.max(0.2, Math.min(H, zone.heightCm / 100));
@@ -1013,23 +1221,37 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       const rawCx = zone.offsetCm / 100 - ws.len * 0.5;
       const zCx = Math.max(-ws.len * 0.5 + zw * 0.5, Math.min(ws.len * 0.5 - zw * 0.5, rawCx));
 
-      const repeatScale = zone.pattern === 'slats' ? 1.15 : zone.pattern === 'boiserie' ? 0.65 : 0.72;
-      const zTex = createWallTexture(zone.pattern, zone.colorHex, zw * repeatScale, zh * repeatScale);
-      const zMat = new THREE.MeshStandardMaterial({
-        map: zTex,
-        roughness: zone.pattern === 'mirror' ? 0.08 : zone.pattern === 'marble' ? 0.26 : zone.pattern === 'slats' ? 0.68 : 0.84,
-        metalness: zone.pattern === 'mirror' ? 0.88 : 0.03,
-      });
-      const zGeo = new THREE.BoxGeometry(zw, zh, zone.pattern === 'slats' ? 0.022 : 0.012);
-      disposables.push(() => {
-        zMat.dispose();
-        zGeo.dispose();
-      });
-      const zMesh = new THREE.Mesh(zGeo, zMat);
-      zMesh.position.set(zCx, zBot + zh * 0.5, zone.pattern === 'slats' ? 0.012 : 0.007);
-      zMesh.receiveShadow = true;
-      zMesh.userData.pickTarget = { type: 'wallZone', id: zone.id } satisfies ArchSelection;
-      visualGroup.add(zMesh);
+      if (zone.pattern === 'slats') {
+        buildReal3DWoodSlatsPanel({
+          widthM: zw,
+          heightM: zh,
+          centerX: zCx,
+          bottomY: zBot,
+          colorHex: zone.colorHex,
+          holes: acceptedHoles,
+          pickTarget: { type: 'wallZone', id: zone.id } satisfies ArchSelection,
+          parent: visualGroup,
+          disposables,
+        });
+      } else {
+        const repeatScale = zone.pattern === 'boiserie' ? 0.65 : 0.72;
+        const zTex = createWallTexture(zone.pattern, zone.colorHex, zw * repeatScale, zh * repeatScale);
+        const zMat = new THREE.MeshStandardMaterial({
+          map: zTex,
+          roughness: zone.pattern === 'mirror' ? 0.08 : zone.pattern === 'marble' ? 0.26 : 0.84,
+          metalness: zone.pattern === 'mirror' ? 0.88 : 0.03,
+        });
+        const zGeo = new THREE.BoxGeometry(zw, zh, 0.012);
+        disposables.push(() => {
+          zMat.dispose();
+          zGeo.dispose();
+        });
+        const zMesh = new THREE.Mesh(zGeo, zMat);
+        zMesh.position.set(zCx, zBot + zh * 0.5, 0.007);
+        zMesh.receiveShadow = true;
+        zMesh.userData.pickTarget = { type: 'wallZone', id: zone.id } satisfies ArchSelection;
+        visualGroup.add(zMesh);
+      }
     }
 
     // Segmented interior baseboard (AGT / Floorpan / VarioClic adjustable profile height!)
@@ -1262,6 +1484,7 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
         const sillY = adj.roomKind === 'kitchen' ? 1.05 : 0.85;
         const cand: HoleBox2D = { x0: -winW * 0.5, x1: winW * 0.5, y0: sillY, y1: sillY + winH };
         if (!aHoles.some((h) => boxesOverlap(cand, h, 0.05))) {
+          aHoles.push(cand);
           addRectangularHole(aShape, cand.x0, cand.y0, cand.x1, cand.y1);
           const synWin: ArchWindow = {
             id: `win-${adj.id}`,
@@ -1292,6 +1515,20 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
       aWallMesh.receiveShadow = true;
       aWallMesh.userData.pickTarget = { type: 'adjacentRoom', id: adj.id } satisfies ArchSelection;
       aVis.add(aWallMesh);
+
+      if (adj.wallPattern === 'slats') {
+        buildReal3DWoodSlatsPanel({
+          widthM: aws.len,
+          heightM: H,
+          centerX: 0,
+          bottomY: 0,
+          colorHex: adj.wallColorHex,
+          holes: aHoles,
+          pickTarget: { type: 'adjacentRoom', id: adj.id } satisfies ArchSelection,
+          parent: aVis,
+          disposables,
+        });
+      }
 
       const aGhost = new THREE.Mesh(aWallGeo, shadowOnlyMat);
       aGhost.castShadow = true;
