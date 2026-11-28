@@ -365,8 +365,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
   const [analyzing, setAnalyzing] = useState(false);
   const [refining, setRefining] = useState(false);
   const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
-  // Default FALSE so adding a second Pinterest photo NEVER wipes previously built cabinets/furniture!
-  const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(false);
+  // Default TRUE so analyzing a new full-room photo cleanly replaces ONLY the target room's old furniture & wall panels
+  // (adjacent rooms stay 100% untouched!). Users can still pick "Mevcut Odaya Ekle" or type a partial focus prompt to append.
+  const [replaceExistingOnBuild, setReplaceExistingOnBuild] = useState(true);
   const [autoVerifyAfterBuild, setAutoVerifyAfterBuild] = useState(true);
   const [qaResult, setQaResult] = useState<{
     matchScore: number;
@@ -727,12 +728,18 @@ export const PinterestAIPanel: React.FC<Props> = ({
       archetype === 'table_lamp' &&
       (item.mountMode === 'wall' || (Number(item.elevationCm) || 0) >= 110 || /aplik|sconce|duvar/i.test(item.nameTr)) &&
       item.relation !== 'on_top_of';
+    const isFloorBasket =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(item.nameTr) &&
+      !/çiçek|cicek|vazo|vase|buket|bouquet|bitki|ağaç|agac|plant|tree/i.test(item.nameTr);
     const isTabletopDecor =
-      isTabletopBurner ||
-      archetype === 'decorative_vase' ||
-      (archetype === 'table_lamp' && !isWallSconce) ||
-      item.relation === 'on_top_of' ||
-      (archetype === 'potted_plant' && (Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 48);
+      !isFloorBasket &&
+      (isTabletopBurner ||
+        archetype === 'decorative_vase' ||
+        (archetype === 'table_lamp' && !isWallSconce) ||
+        item.relation === 'on_top_of' ||
+        (archetype === 'potted_plant' &&
+          (((Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 58) ||
+            /pencere|küçük|kucuk|mini|masa/i.test(item.nameTr))));
 
     // Side-wall W×D auto-swap: if Vision reported world X×Z instead of local W×D for elongated furniture on west/east wall
     // (e.g. a 180cm wide, 60cm deep wardrobe reported as 60×180 on west wall!), swap so wide face runs ALONG the wall!
@@ -775,13 +782,19 @@ export const PinterestAIPanel: React.FC<Props> = ({
     } else if (archetype === 'wall_art' || archetype === 'wall_mirror' || archetype === 'wall_tv') {
       dM = Math.min(0.08, Math.max(0.035, dM));
     } else if (archetype === 'wall_shelf') {
-      wM = Math.max(0.35, Math.min(2.4, wM));
+      wM = Math.max(0.35, Math.min(2.6, wM));
       dM = Math.max(0.16, Math.min(0.42, dM));
-      hM = Math.max(0.04, Math.min(0.95, hM));
+      hM = Math.max(0.04, Math.min(1.85, hM));
     } else if (archetype === 'decorative_vase') {
-      wM = Math.max(0.14, Math.min(0.42, wM));
-      dM = Math.max(0.14, Math.min(0.42, dM));
-      hM = Math.max(0.12, Math.min(0.48, hM));
+      if (isFloorBasket) {
+        wM = Math.max(0.26, Math.min(0.54, wM));
+        dM = Math.max(0.26, Math.min(0.54, dM));
+        hM = Math.max(0.2, Math.min(0.46, hM));
+      } else {
+        wM = Math.max(0.14, Math.min(0.42, wM));
+        dM = Math.max(0.14, Math.min(0.42, dM));
+        hM = Math.max(0.14, Math.min(0.52, hM));
+      }
     } else if (isTabletopBurner) {
       wM = Math.max(0.45, Math.min(1.45, wM));
       dM = Math.max(0.14, Math.min(0.34, dM));
@@ -791,10 +804,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
       dM = Math.max(0.32, Math.min(0.58, dM));
       hM = Math.max(0.26, Math.min(0.68, hM));
     } else if (archetype === 'potted_plant') {
-      if (isTabletopDecor) {
+      if (isFloorBasket) {
+        wM = Math.max(0.26, Math.min(0.54, wM));
+        dM = Math.max(0.26, Math.min(0.54, dM));
+        hM = Math.max(0.2, Math.min(0.46, hM));
+      } else if (isTabletopDecor) {
         wM = Math.max(0.16, Math.min(0.42, wM));
         dM = Math.max(0.16, Math.min(0.42, dM));
-        hM = Math.max(0.16, Math.min(0.48, hM));
+        hM = Math.max(0.18, Math.min(0.56, hM));
       } else {
         wM = Math.max(0.45, Math.min(1.2, wM));
         dM = Math.max(0.45, Math.min(1.2, dM));
@@ -1482,9 +1499,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       setPhotos((prev) => [...prev, newPhoto]);
       setActivePhotoId(newPhoto.id);
       if (hadExisting) {
-        // Sequential multi-photo workflow: keep Foto 1's 3D furniture & materials intact!
-        setReplaceExistingOnBuild(false);
-        onToast(`Foto ${photoIdx} eklendi — önceki fotoğrafların malzeme ve eşyaları korundu!`);
+        onToast(`Foto ${photoIdx} eklendi — yeni oda olarak kurmak için "+ Yeni Oda Ekle" kullanabilirsin.`);
       }
       setQaResult(null);
       bestQaRef.current = null;
@@ -1619,15 +1634,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
         return next;
       });
 
-      // On Photo 1 (or when targeting a freshly selected separate room without a narrow focus prompt),
-      // cleanly replace ONLY this target room's old furniture (adjacent rooms & Ana Salon stay untouched!);
-      // when adding Photo 2+ into the SAME Ana Salon, keep prior furniture non-destructively!
-      const effectiveReplace =
-        tRoom.id !== 'main'
-          ? replaceExistingOnBuild || !userFocusPrompt.trim()
-          : photos.length > 1
-          ? replaceExistingOnBuild
-          : replaceExistingOnBuild || !userFocusPrompt.trim();
+      // Full-room analysis cleanly replaces ONLY the target room's old furniture & wall panels (adjacent rooms stay untouched!).
+      // If user typed a narrow focus prompt (e.g. "Sadece sehpa") or explicitly picked "Mevcut Odaya Ekle", append non-destructively!
+      const effectiveReplace = userFocusPrompt.trim() ? false : replaceExistingOnBuild;
 
       if (autoPopulateOnAnalyze && taggedObjects.length > 0) {
         setStatusBanner(
@@ -2062,7 +2071,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
     }
     setBatchRunning(true);
     try {
-      await assembleAllInstantIn3D(targets, roomStyle, photoDataUrl, photos.length > 1 ? false : replaceExistingOnBuild);
+      await assembleAllInstantIn3D(targets, roomStyle, photoDataUrl, replaceExistingOnBuild);
     } finally {
       setBatchRunning(false);
     }

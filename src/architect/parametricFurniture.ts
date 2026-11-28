@@ -274,23 +274,79 @@ export function buildParametricObject3D(
     // Subtle warm recessed under-glow strip
     addBox(W * 0.9, 0.012, 0.022, 0, 0.008, D * 0.22, ledMat, false);
   } else if (obj.parametricKind === 'wall_shelf') {
-    // Floating wall shelf or open box cubby with warm downward accent LED
-    const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.52 });
-    const accentMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#272624'), roughness: 0.4 });
+    // Floating wall shelf, open box cubby, or multi-tier architectural wall bookcase (never a pitch-black TV box!)
+    const baseCol = new THREE.Color(primaryHex || '#f2f0ec');
+    const woodMat = new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.5 });
+    const backCol = baseCol.clone().multiplyScalar(0.92);
+    const backMat = new THREE.MeshStandardMaterial({ color: backCol, roughness: 0.76 });
     const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe4b8 });
     disposables.push(() => {
       woodMat.dispose();
-      accentMat.dispose();
+      backMat.dispose();
       ledMat.dispose();
     });
-    if (H >= 0.16) {
-      // Open box cubby shelf (like Photo 2 flanking shelves!)
-      const t = 0.028;
+    if (H >= 0.42) {
+      // Multi-tier recessed / floating wall bookcase with crisp horizontal shelves, books & small framed art prints!
+      const t = 0.026;
+      const tiers = Math.max(2, Math.min(5, Math.round(H / 0.34)));
       addBox(W, t, D, 0, t * 0.5, 0, woodMat);
       addBox(W, t, D, 0, H - t * 0.5, 0, woodMat);
       addBox(t, H, D, -W * 0.5 + t * 0.5, H * 0.5, 0, woodMat);
       addBox(t, H, D, W * 0.5 - t * 0.5, H * 0.5, 0, woodMat);
-      addBox(W - t * 2, H - t * 2, 0.018, 0, H * 0.5, -D * 0.5 + 0.01, accentMat, false);
+      // Soft recessed back panel matching shelf tone (never pitch-black!)
+      addBox(W - t * 2, H - t * 2, 0.014, 0, H * 0.5, -D * 0.5 + 0.008, backMat, false);
+
+      const innerH = H - t * 2;
+      const tierH = innerH / tiers;
+      for (let ti = 1; ti < tiers; ti++) {
+        addBox(W - t * 2, 0.022, D - 0.016, 0, t + tierH * ti, 0.004, woodMat);
+      }
+
+      // Curated Scandinavian books & leaning small art frames on each shelf tier
+      const decorPalette = [0x3b3a38, 0xc8b9a6, 0x8f6b53, 0xded9cf, 0x4c5d54, 0x252422];
+      const decorMats = decorPalette.map((hex) => new THREE.MeshStandardMaterial({ color: hex, roughness: 0.72 }));
+      const paperMat = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.85 });
+      disposables.push(() => {
+        decorMats.forEach((m) => m.dispose());
+        paperMat.dispose();
+      });
+
+      const innerW = Math.max(0.25, W - t * 2 - 0.06);
+      const itemsPerTier = Math.max(2, Math.min(6, Math.round(innerW / 0.28)));
+      for (let ti = 0; ti < tiers; ti++) {
+        const shelfTopY = t + tierH * ti + (ti > 0 ? 0.011 : 0);
+        const maxObjH = Math.max(0.12, tierH - 0.065);
+        for (let bi = 0; bi < itemsPerTier; bi++) {
+          const seed = ti * 11 + bi * 7;
+          const frac = (bi + 0.5) / itemsPerTier;
+          const bx = -innerW * 0.5 + frac * innerW + (((seed % 5) - 2) * 0.014);
+          const isFrame = (seed % 3) !== 0;
+          if (isFrame) {
+            // Leaning framed art print / cover-out coffee-table book
+            const fw = Math.min(innerW / itemsPerTier * 0.76, 0.14 + (seed % 4) * 0.032);
+            const fh = Math.min(maxObjH * 0.86, 0.16 + ((seed + 1) % 3) * 0.045);
+            const fMat = decorMats[seed % decorMats.length];
+            addBox(fw, fh, 0.018, bx, shelfTopY + fh * 0.5, -D * 0.14, fMat, false);
+            addBox(fw * 0.76, fh * 0.76, 0.006, bx, shelfTopY + fh * 0.5, -D * 0.14 + 0.011, paperMat, false);
+          } else {
+            // Small standing book cluster (2-3 books side by side)
+            for (let k = 0; k < 3; k++) {
+              const bh = Math.min(maxObjH * 0.82, 0.17 + ((seed + k) % 3) * 0.032);
+              const bw = 0.024 + ((seed + k) % 2) * 0.008;
+              const bd = Math.min(D * 0.72, 0.14);
+              addBox(bw, bh, bd, bx + (k - 1) * 0.03, shelfTopY + bh * 0.5, -0.01, decorMats[(seed + k * 2) % decorMats.length], false);
+            }
+          }
+        }
+      }
+    } else if (H >= 0.16) {
+      // Open box cubby shelf
+      const t = 0.026;
+      addBox(W, t, D, 0, t * 0.5, 0, woodMat);
+      addBox(W, t, D, 0, H - t * 0.5, 0, woodMat);
+      addBox(t, H, D, -W * 0.5 + t * 0.5, H * 0.5, 0, woodMat);
+      addBox(t, H, D, W * 0.5 - t * 0.5, H * 0.5, 0, woodMat);
+      addBox(W - t * 2, H - t * 2, 0.016, 0, H * 0.5, -D * 0.5 + 0.01, backMat, false);
       addBox(W * 0.72, 0.008, 0.015, 0, H - t - 0.005, 0, ledMat, false);
     } else {
       // Thick architectural floating plank shelf
@@ -298,60 +354,159 @@ export function buildParametricObject3D(
       addBox(W * 0.78, 0.008, 0.016, 0, 0.004, -D * 0.12, ledMat, false);
     }
   } else if (obj.parametricKind === 'decorative_vase') {
-    // Compact tabletop floral vase / ceramic decor / candle tray (for TV bazas, coffee tables & dining tables)
-    const vaseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#e7e2d9'), roughness: 0.38, metalness: 0.06 });
-    const foliageMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#4e6847'), roughness: 0.8 });
-    const bloomMat = new THREE.MeshStandardMaterial({ color: 0xf4ede2, roughness: 0.72 });
-    const stemMat = new THREE.MeshStandardMaterial({ color: 0x3f5638, roughness: 0.85 });
-    disposables.push(() => {
-      vaseMat.dispose();
-      foliageMat.dispose();
-      bloomMat.dispose();
-      stemMat.dispose();
-    });
-    const r = Math.min(0.13, Math.max(0.055, Math.min(W, D) * 0.34));
-    const vaseH = Math.max(0.08, H * 0.52);
-    const bodyGeo = new THREE.CylinderGeometry(r * 0.62, r * 0.86, vaseH, 20);
-    const neckGeo = new THREE.CylinderGeometry(r * 0.42, r * 0.62, vaseH * 0.25, 18);
-    disposables.push(() => {
-      bodyGeo.dispose();
-      neckGeo.dispose();
-    });
-    const vase = new THREE.Mesh(bodyGeo, vaseMat);
-    vase.position.y = vaseH * 0.5;
-    vase.castShadow = true;
-    grp.add(vase);
-    const neck = new THREE.Mesh(neckGeo, vaseMat);
-    neck.position.y = vaseH + vaseH * 0.1;
-    grp.add(neck);
-
-    const isCandleTray = /mum|candle|tepsi|tray/i.test(obj.name);
-    if (isCandleTray) {
-      const glowMat = new THREE.MeshBasicMaterial({ color: 0xffd580 });
-      disposables.push(() => glowMat.dispose());
-      addBox(Math.min(0.38, W), 0.018, Math.min(0.28, D), 0, 0.009, 0, vaseMat);
-      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.016, 10, 8), glowMat);
-      flame.position.set(0, vaseH + 0.04, 0);
-      disposables.push(() => flame.geometry.dispose());
-      grp.add(flame);
-    } else {
-      // Organic botanical stems & foliage/blossom cluster
-      const foliageH = Math.max(0.08, H - vaseH);
-      const offsets: Array<[number, number, number, number]> = [
-        [0, vaseH + foliageH * 0.58, 0, r * 0.9],
-        [-r * 0.65, vaseH + foliageH * 0.45, r * 0.32, r * 0.68],
-        [r * 0.62, vaseH + foliageH * 0.48, -r * 0.28, r * 0.72],
-        [r * 0.18, vaseH + foliageH * 0.76, r * 0.42, r * 0.56],
-      ];
-      offsets.forEach(([ox, oy, oz, rad], idx) => {
-        const g = new THREE.DodecahedronGeometry(Math.max(0.032, rad), 1);
-        disposables.push(() => g.dispose());
-        const m = new THREE.Mesh(g, idx === 3 ? bloomMat : foliageMat);
-        m.position.set(ox, oy, oz);
-        m.castShadow = true;
-        grp.add(m);
-        addBox(0.008, Math.max(0.05, oy - vaseH * 0.8), 0.008, ox * 0.45, vaseH + (oy - vaseH) * 0.45, oz * 0.45, stemMat, false);
+    const isWovenBasket =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(obj.name) &&
+      !/çiçek|cicek|vazo|vase|buket|bouquet|mum|candle/i.test(obj.name);
+    if (isWovenBasket) {
+      // Authentic hollow woven rattan / wicker floor basket (open top, braided rim, zero snowballs!)
+      const rattanCol = new THREE.Color(primaryHex && primaryHex !== '#e7e2d9' ? primaryHex : '#9c7552');
+      const rattanMat = new THREE.MeshStandardMaterial({ color: rattanCol, roughness: 0.88, side: THREE.DoubleSide });
+      const innerMat = new THREE.MeshStandardMaterial({ color: rattanCol.clone().multiplyScalar(0.56), roughness: 0.94 });
+      const ribMat = new THREE.MeshStandardMaterial({ color: rattanCol.clone().multiplyScalar(0.84), roughness: 0.9 });
+      const rTop = Math.min(0.26, Math.max(0.11, Math.min(W, D) * 0.48));
+      const rBot = rTop * 0.82;
+      const bH = Math.max(0.18, Math.min(0.46, H));
+      const wallGeo = new THREE.CylinderGeometry(rTop, rBot, bH, 28, 1, true);
+      const baseGeo = new THREE.CylinderGeometry(rBot * 0.98, rBot * 0.98, 0.02, 24);
+      const rimGeo = new THREE.TorusGeometry(rTop, 0.016, 10, 28);
+      rimGeo.rotateX(Math.PI / 2);
+      disposables.push(() => {
+        rattanMat.dispose();
+        innerMat.dispose();
+        ribMat.dispose();
+        wallGeo.dispose();
+        baseGeo.dispose();
+        rimGeo.dispose();
       });
+      const wall = new THREE.Mesh(wallGeo, rattanMat);
+      wall.position.y = bH * 0.5;
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      grp.add(wall);
+      const base = new THREE.Mesh(baseGeo, innerMat);
+      base.position.y = 0.012;
+      grp.add(base);
+      const rim = new THREE.Mesh(rimGeo, ribMat);
+      rim.position.y = bH - 0.008;
+      rim.castShadow = true;
+      grp.add(rim);
+      // Subtle horizontal woven rattan bands
+      for (let ri = 1; ri <= 4; ri++) {
+        const frac = ri / 5;
+        const rr = rBot + (rTop - rBot) * frac + 0.003;
+        const ringG = new THREE.TorusGeometry(rr, 0.005, 6, 26);
+        ringG.rotateX(Math.PI / 2);
+        disposables.push(() => ringG.dispose());
+        const ringM = new THREE.Mesh(ringG, ribMat);
+        ringM.position.y = bH * frac;
+        grp.add(ringM);
+      }
+    } else {
+      // Sculpted stoneware/ceramic tabletop vase + natural airy botanical stems & delicate blossoms (no giant snowballs!)
+      const vaseMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(primaryHex || '#a36b43'),
+        roughness: 0.42,
+        metalness: 0.05,
+      });
+      const leafCol = (() => {
+        const c = new THREE.Color(accentHex || '#476140');
+        // Keep foliage genuinely leafy green even if Vision sent white/cream as accentColorHex for white flowers!
+        return c.g > c.r * 1.05 && c.g > c.b * 1.02 ? c : new THREE.Color('#476140');
+      })();
+      const foliageMat = new THREE.MeshStandardMaterial({ color: leafCol, roughness: 0.82 });
+      const foliageDarkMat = new THREE.MeshStandardMaterial({ color: leafCol.clone().multiplyScalar(0.78), roughness: 0.85 });
+      const bloomMat = new THREE.MeshStandardMaterial({ color: 0xf7f4ec, roughness: 0.68 });
+      const stemMat = new THREE.MeshStandardMaterial({ color: 0x3b5235, roughness: 0.88 });
+      disposables.push(() => {
+        vaseMat.dispose();
+        foliageMat.dispose();
+        foliageDarkMat.dispose();
+        bloomMat.dispose();
+        stemMat.dispose();
+      });
+
+      const r = Math.min(0.11, Math.max(0.05, Math.min(W, D) * 0.28));
+      const vaseH = Math.max(0.1, H * 0.52);
+      // Smooth curved pottery silhouette via LatheGeometry (foot -> rounded belly -> shoulder -> tapered neck -> lip)
+      const lathePts = [
+        new THREE.Vector2(0.001, 0),
+        new THREE.Vector2(r * 0.72, 0),
+        new THREE.Vector2(r * 0.96, vaseH * 0.22),
+        new THREE.Vector2(r * 1.0, vaseH * 0.54),
+        new THREE.Vector2(r * 0.84, vaseH * 0.78),
+        new THREE.Vector2(r * 0.48, vaseH * 0.92),
+        new THREE.Vector2(r * 0.54, vaseH),
+        new THREE.Vector2(r * 0.44, vaseH),
+      ];
+      const bodyGeo = new THREE.LatheGeometry(lathePts, 24);
+      disposables.push(() => bodyGeo.dispose());
+      const vase = new THREE.Mesh(bodyGeo, vaseMat);
+      vase.castShadow = true;
+      vase.receiveShadow = true;
+      grp.add(vase);
+
+      const isCandleTray = /mum|candle|tepsi|tray/i.test(obj.name);
+      if (isCandleTray) {
+        const glowMat = new THREE.MeshBasicMaterial({ color: 0xffd580 });
+        disposables.push(() => glowMat.dispose());
+        addBox(Math.min(0.36, W), 0.016, Math.min(0.26, D), 0, 0.008, 0, vaseMat);
+        const flame = new THREE.Mesh(new THREE.SphereGeometry(0.014, 10, 8), glowMat);
+        flame.position.set(0, vaseH + 0.032, 0);
+        disposables.push(() => flame.geometry.dispose());
+        grp.add(flame);
+      } else {
+        // Airy organic bouquet: 9 delicate fanned stems with small layered leaves & crisp white petals
+        const bouquetH = Math.max(0.1, H - vaseH);
+        const leafGeo = new THREE.SphereGeometry(1, 8, 6);
+        const petalGeo = new THREE.IcosahedronGeometry(1, 1);
+        disposables.push(() => {
+          leafGeo.dispose();
+          petalGeo.dispose();
+        });
+        const stemCount = 9;
+        for (let i = 0; i < stemCount; i++) {
+          const angle = (i / stemCount) * Math.PI * 2 + (i % 2) * 0.28;
+          const spread = r * (0.45 + (i % 3) * 0.42);
+          const tipH = bouquetH * (0.58 + (i % 4) * 0.12);
+          const tipX = Math.cos(angle) * spread;
+          const tipZ = Math.sin(angle) * spread;
+          const tipY = vaseH + tipH;
+
+          // Slender tilted stem emerging from vase mouth
+          const len = Math.hypot(tipX, tipH + 0.03, tipZ);
+          const stemGeo = new THREE.CylinderGeometry(0.0025, 0.0035, len, 6);
+          disposables.push(() => stemGeo.dispose());
+          const stem = new THREE.Mesh(stemGeo, stemMat);
+          stem.position.set(tipX * 0.5, vaseH - 0.02 + (tipH + 0.02) * 0.5, tipZ * 0.5);
+          stem.quaternion.setFromUnitVectors(
+            new THREE.Vector3(0, 1, 0),
+            new THREE.Vector3(tipX, tipH + 0.02, tipZ).normalize()
+          );
+          grp.add(stem);
+
+          // 2 small flat leaves mid-stem
+          for (let li = 0; li < 2; li++) {
+            const lf = 0.48 + li * 0.28;
+            const leaf = new THREE.Mesh(leafGeo, (i + li) % 2 === 0 ? foliageMat : foliageDarkMat);
+            leaf.position.set(
+              tipX * lf + Math.cos(angle + 0.8 * (li ? 1 : -1)) * 0.018,
+              vaseH + tipH * lf,
+              tipZ * lf + Math.sin(angle + 0.8 * (li ? 1 : -1)) * 0.018
+            );
+            leaf.scale.set(0.024, 0.008, 0.014);
+            leaf.rotation.set(0.3, angle + li, 0.4);
+            grp.add(leaf);
+          }
+
+          // Delicate small flower blossom cluster at stem tip (compact 1.6-2.4cm buds, never giant snowballs!)
+          const bl = new THREE.Mesh(petalGeo, bloomMat);
+          bl.position.set(tipX, tipY, tipZ);
+          const br = 0.016 + (i % 3) * 0.004;
+          bl.scale.set(br * 1.15, br * 0.85, br * 1.15);
+          bl.castShadow = true;
+          grp.add(bl);
+        }
+      }
     }
   } else if (obj.parametricKind === 'wall_tv') {
     const bezelMat = new THREE.MeshStandardMaterial({
@@ -760,107 +915,199 @@ export function buildParametricObject3D(
     rim.position.set(0, 0.015, 0);
     grp.add(rim);
   } else if (obj.parametricKind === 'potted_plant') {
-    // Primary color = foliage / pot tint so user can even recolor the pot or foliage!
-    const isGreenish = (() => {
-      const c = new THREE.Color(primaryHex);
-      return c.g > c.r * 1.06 && c.g > c.b * 1.02;
-    })();
-    const potColor = isGreenish ? accentHex || '#3a3835' : primaryHex;
-    const leafColor = isGreenish ? primaryHex : '#4c6444';
-    const potMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(potColor), roughness: 0.72 });
-    const soilMat = new THREE.MeshStandardMaterial({ color: 0x3b2f26, roughness: 0.96 });
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x624936, roughness: 0.88 });
-    const leafMat1 = new THREE.MeshStandardMaterial({ color: new THREE.Color(leafColor), roughness: 0.82 });
-    const leafMat2 = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(leafColor).multiplyScalar(0.78),
-      roughness: 0.85,
-    });
-    disposables.push(() => {
-      potMat.dispose();
-      soilMat.dispose();
-      trunkMat.dispose();
-      leafMat1.dispose();
-      leafMat2.dispose();
-    });
+    const isWovenBasketOnly =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(obj.name) &&
+      !/bitki|ağaç|agac|saks[ıi]|çiçek|cicek|plant|tree|ficus|monstera|zeytin/i.test(obj.name);
+    if (isWovenBasketOnly) {
+      const rattanCol = new THREE.Color(primaryHex && primaryHex !== '#4b6343' ? primaryHex : '#9c7552');
+      const rattanMat = new THREE.MeshStandardMaterial({ color: rattanCol, roughness: 0.88, side: THREE.DoubleSide });
+      const innerMat = new THREE.MeshStandardMaterial({ color: rattanCol.clone().multiplyScalar(0.56), roughness: 0.94 });
+      const ribMat = new THREE.MeshStandardMaterial({ color: rattanCol.clone().multiplyScalar(0.84), roughness: 0.9 });
+      const rTop = Math.min(0.28, Math.max(0.12, Math.min(W, D) * 0.46));
+      const rBot = rTop * 0.82;
+      const bH = Math.max(0.2, Math.min(0.46, H));
+      const wallGeo = new THREE.CylinderGeometry(rTop, rBot, bH, 28, 1, true);
+      const baseGeo = new THREE.CylinderGeometry(rBot * 0.98, rBot * 0.98, 0.02, 24);
+      const rimGeo = new THREE.TorusGeometry(rTop, 0.016, 10, 28);
+      rimGeo.rotateX(Math.PI / 2);
+      disposables.push(() => {
+        rattanMat.dispose();
+        innerMat.dispose();
+        ribMat.dispose();
+        wallGeo.dispose();
+        baseGeo.dispose();
+        rimGeo.dispose();
+      });
+      const wall = new THREE.Mesh(wallGeo, rattanMat);
+      wall.position.y = bH * 0.5;
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      grp.add(wall);
+      const base = new THREE.Mesh(baseGeo, innerMat);
+      base.position.y = 0.012;
+      grp.add(base);
+      const rim = new THREE.Mesh(rimGeo, ribMat);
+      rim.position.y = bH - 0.008;
+      rim.castShadow = true;
+      grp.add(rim);
+    } else if (H <= 0.62) {
+      // Compact tabletop / windowsill potted plant (small terracotta/ceramic pot + delicate leafy sprigs!)
+      const isGreenish = (() => {
+        const c = new THREE.Color(primaryHex);
+        return c.g > c.r * 1.06 && c.g > c.b * 1.02;
+      })();
+      const potColor = isGreenish ? accentHex || '#9f5f42' : primaryHex || '#9f5f42';
+      const leafColor = isGreenish ? primaryHex : '#55734a';
+      const potMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(potColor), roughness: 0.74 });
+      const soilMat = new THREE.MeshStandardMaterial({ color: 0x3b2f26, roughness: 0.96 });
+      const stemMat = new THREE.MeshStandardMaterial({ color: 0x4b6440, roughness: 0.86 });
+      const leafMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(leafColor), roughness: 0.8 });
+      const potR = Math.min(0.11, Math.max(0.055, Math.min(W, D) * 0.34));
+      const potH = Math.min(0.16, Math.max(0.09, H * 0.38));
+      const potGeo = new THREE.CylinderGeometry(potR, potR * 0.76, potH, 22);
+      const soilGeo = new THREE.CylinderGeometry(potR * 0.9, potR * 0.9, 0.015, 18);
+      const leafGeo = new THREE.SphereGeometry(1, 8, 6);
+      disposables.push(() => {
+        potMat.dispose();
+        soilMat.dispose();
+        stemMat.dispose();
+        leafMat.dispose();
+        potGeo.dispose();
+        soilGeo.dispose();
+        leafGeo.dispose();
+      });
+      const pot = new THREE.Mesh(potGeo, potMat);
+      pot.position.y = potH * 0.5;
+      pot.castShadow = true;
+      grp.add(pot);
+      const soil = new THREE.Mesh(soilGeo, soilMat);
+      soil.position.y = potH - 0.008;
+      grp.add(soil);
+      const sprigH = Math.max(0.1, H - potH);
+      for (let i = 0; i < 6; i++) {
+        const ang = (i / 6) * Math.PI * 2 + 0.3;
+        const dx = Math.cos(ang) * potR * (0.7 + (i % 2) * 0.6);
+        const dz = Math.sin(ang) * potR * (0.7 + (i % 2) * 0.6);
+        const dy = sprigH * (0.65 + (i % 3) * 0.16);
+        const len = Math.hypot(dx, dy, dz);
+        const sGeo = new THREE.CylinderGeometry(0.003, 0.004, len, 6);
+        disposables.push(() => sGeo.dispose());
+        const st = new THREE.Mesh(sGeo, stemMat);
+        st.position.set(dx * 0.5, potH + dy * 0.5, dz * 0.5);
+        st.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
+        grp.add(st);
+        for (let k = 0; k < 2; k++) {
+          const lf = new THREE.Mesh(leafGeo, leafMat);
+          const tFrac = 0.62 + k * 0.34;
+          lf.position.set(dx * tFrac, potH + dy * tFrac, dz * tFrac);
+          lf.scale.set(0.026, 0.008, 0.016);
+          lf.rotation.set(0.25, ang + k * 0.8, 0.35);
+          grp.add(lf);
+        }
+      }
+    } else {
+      // Primary color = foliage / pot tint so user can even recolor the pot or foliage!
+      const isGreenish = (() => {
+        const c = new THREE.Color(primaryHex);
+        return c.g > c.r * 1.06 && c.g > c.b * 1.02;
+      })();
+      const potColor = isGreenish ? accentHex || '#3a3835' : primaryHex;
+      const leafColor = isGreenish ? primaryHex : '#4c6444';
+      const potMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(potColor), roughness: 0.72 });
+      const soilMat = new THREE.MeshStandardMaterial({ color: 0x3b2f26, roughness: 0.96 });
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x624936, roughness: 0.88 });
+      const leafMat1 = new THREE.MeshStandardMaterial({ color: new THREE.Color(leafColor), roughness: 0.82 });
+      const leafMat2 = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(leafColor).multiplyScalar(0.78),
+        roughness: 0.85,
+      });
+      disposables.push(() => {
+        potMat.dispose();
+        soilMat.dispose();
+        trunkMat.dispose();
+        leafMat1.dispose();
+        leafMat2.dispose();
+      });
 
-    const potR = Math.min(0.24, Math.min(W, D) * 0.28);
-    const potH = Math.min(0.42, H * 0.23);
-    const potGeo = new THREE.CylinderGeometry(potR, potR * 0.78, potH, 28);
-    const potRimGeo = new THREE.TorusGeometry(potR * 0.98, 0.016, 10, 28);
-    potRimGeo.rotateX(Math.PI / 2);
-    const soilGeo = new THREE.CylinderGeometry(potR * 0.92, potR * 0.92, 0.02, 20);
-    const trunkH = Math.max(0.24, H * 0.44);
-    const trunkGeo = new THREE.CylinderGeometry(0.015, 0.028, trunkH, 10);
-    const branchGeo = new THREE.CylinderGeometry(0.007, 0.014, H * 0.3, 8);
-    const leafMat3 = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(leafColor).multiplyScalar(1.16),
-      roughness: 0.8,
-    });
-    const leafGeo = new THREE.IcosahedronGeometry(1, 1);
-    disposables.push(() => {
-      potGeo.dispose();
-      potRimGeo.dispose();
-      soilGeo.dispose();
-      trunkGeo.dispose();
-      branchGeo.dispose();
-      leafMat3.dispose();
-      leafGeo.dispose();
-    });
+      const potR = Math.min(0.24, Math.min(W, D) * 0.28);
+      const potH = Math.min(0.42, H * 0.23);
+      const potGeo = new THREE.CylinderGeometry(potR, potR * 0.78, potH, 28);
+      const potRimGeo = new THREE.TorusGeometry(potR * 0.98, 0.016, 10, 28);
+      potRimGeo.rotateX(Math.PI / 2);
+      const soilGeo = new THREE.CylinderGeometry(potR * 0.92, potR * 0.92, 0.02, 20);
+      const trunkH = Math.max(0.24, H * 0.44);
+      const trunkGeo = new THREE.CylinderGeometry(0.015, 0.028, trunkH, 10);
+      const branchGeo = new THREE.CylinderGeometry(0.007, 0.014, H * 0.3, 8);
+      const leafMat3 = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(leafColor).multiplyScalar(1.16),
+        roughness: 0.8,
+      });
+      const leafGeo = new THREE.IcosahedronGeometry(1, 1);
+      disposables.push(() => {
+        potGeo.dispose();
+        potRimGeo.dispose();
+        soilGeo.dispose();
+        trunkGeo.dispose();
+        branchGeo.dispose();
+        leafMat3.dispose();
+        leafGeo.dispose();
+      });
 
-    const pot = new THREE.Mesh(potGeo, potMat);
-    pot.position.y = potH * 0.5;
-    pot.castShadow = true;
-    pot.receiveShadow = true;
-    grp.add(pot);
+      const pot = new THREE.Mesh(potGeo, potMat);
+      pot.position.y = potH * 0.5;
+      pot.castShadow = true;
+      pot.receiveShadow = true;
+      grp.add(pot);
 
-    const potRim = new THREE.Mesh(potRimGeo, potMat);
-    potRim.position.y = potH - 0.01;
-    grp.add(potRim);
+      const potRim = new THREE.Mesh(potRimGeo, potMat);
+      potRim.position.y = potH - 0.01;
+      grp.add(potRim);
 
-    const soil = new THREE.Mesh(soilGeo, soilMat);
-    soil.position.y = potH - 0.01;
-    grp.add(soil);
+      const soil = new THREE.Mesh(soilGeo, soilMat);
+      soil.position.y = potH - 0.01;
+      grp.add(soil);
 
-    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-    trunk.position.y = potH + trunkH * 0.44;
-    trunk.rotation.z = 0.04;
-    trunk.castShadow = true;
-    grp.add(trunk);
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = potH + trunkH * 0.44;
+      trunk.rotation.z = 0.04;
+      trunk.castShadow = true;
+      grp.add(trunk);
 
-    // 4 architectural wooden branches fanning out organically
-    const forkY = potH + trunkH * 0.78;
-    const branchAngles: Array<[number, number]> = [
-      [0.38, 0.4],
-      [-0.42, 2.0],
-      [0.35, 3.6],
-      [-0.36, 5.1],
-    ];
-    branchAngles.forEach(([tilt, yaw]) => {
-      const b = new THREE.Mesh(branchGeo, trunkMat);
-      b.position.set(Math.sin(yaw) * 0.07, forkY + H * 0.1, Math.cos(yaw) * 0.07);
-      b.rotation.set(tilt * Math.cos(yaw), 0, -tilt * Math.sin(yaw));
-      b.castShadow = true;
-      grp.add(b);
-    });
+      // 4 architectural wooden branches fanning out organically
+      const forkY = potH + trunkH * 0.78;
+      const branchAngles: Array<[number, number]> = [
+        [0.38, 0.4],
+        [-0.42, 2.0],
+        [0.35, 3.6],
+        [-0.36, 5.1],
+      ];
+      branchAngles.forEach(([tilt, yaw]) => {
+        const b = new THREE.Mesh(branchGeo, trunkMat);
+        b.position.set(Math.sin(yaw) * 0.07, forkY + H * 0.1, Math.cos(yaw) * 0.07);
+        b.rotation.set(tilt * Math.cos(yaw), 0, -tilt * Math.sin(yaw));
+        b.castShadow = true;
+        grp.add(b);
+      });
 
-    // Airy natural layered olive-tree foliage (18 varied small organic leaf tufts instead of 6 chunky spheres!)
-    const canopyR = Math.min(W, D) * 0.48;
-    const crownBaseY = forkY + 0.05;
-    const crownSpan = Math.max(0.32, H - crownBaseY - 0.08);
-    const leafMats = [leafMat1, leafMat2, leafMat3];
-    for (let i = 0; i < 18; i++) {
-      const frac = i / 18;
-      const theta = i * 2.39996; // golden angle natural distribution
-      const layerY = crownBaseY + crownSpan * (0.12 + 0.84 * Math.pow(frac, 0.75));
-      const radSpread = canopyR * (0.18 + 0.82 * Math.sin(Math.PI * (0.15 + 0.8 * frac)));
-      const tuftR = canopyR * (0.19 + (i % 4) * 0.032);
-      const m = new THREE.Mesh(leafGeo, leafMats[i % 3]);
-      m.position.set(Math.cos(theta) * radSpread * 0.72, layerY, Math.sin(theta) * radSpread * 0.72);
-      m.scale.set(tuftR * 1.15, tuftR * 0.72, tuftR * 0.95);
-      m.rotation.set(i * 0.6, theta, i * 0.4);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      grp.add(m);
+      // Airy natural layered olive-tree foliage (18 varied small organic leaf tufts instead of 6 chunky spheres!)
+      const canopyR = Math.min(W, D) * 0.48;
+      const crownBaseY = forkY + 0.05;
+      const crownSpan = Math.max(0.32, H - crownBaseY - 0.08);
+      const leafMats = [leafMat1, leafMat2, leafMat3];
+      for (let i = 0; i < 18; i++) {
+        const frac = i / 18;
+        const theta = i * 2.39996; // golden angle natural distribution
+        const layerY = crownBaseY + crownSpan * (0.12 + 0.84 * Math.pow(frac, 0.75));
+        const radSpread = canopyR * (0.18 + 0.82 * Math.sin(Math.PI * (0.15 + 0.8 * frac)));
+        const tuftR = canopyR * (0.19 + (i % 4) * 0.032);
+        const m = new THREE.Mesh(leafGeo, leafMats[i % 3]);
+        m.position.set(Math.cos(theta) * radSpread * 0.72, layerY, Math.sin(theta) * radSpread * 0.72);
+        m.scale.set(tuftR * 1.15, tuftR * 0.72, tuftR * 0.95);
+        m.rotation.set(i * 0.6, theta, i * 0.4);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        grp.add(m);
+      }
     }
   } else if (obj.parametricKind === 'table_lamp') {
     const baseMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.32, metalness: 0.65 });
@@ -1382,7 +1629,17 @@ export function buildParametricObject3D(
       addBox(W, rugH, D, 0, rugH * 0.5, 0, rugMat, false);
     }
   } else if (obj.parametricKind === 'chandelier') {
-    const isPendantCluster = /tel|kablo|sark[ıi]t|k[üu]re|çoklu|coklu|wire|pendant|cluster|globe|siyah/i.test(obj.name);
+    const primaryLum = (() => {
+      const c = new THREE.Color(primaryHex || '#c9a66b');
+      return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+    })();
+    const isPaperLantern =
+      /fener|ka[ğg][ıi]t|paper|lantern|kubbe|dome|kuma[şs]|has[ıi]r|rattan|akari|japon|abajur|linen|keten/i.test(
+        obj.name
+      ) ||
+      (primaryLum > 0.72 && !/halka|ring|kristal|crystal|tel|wire|kafes|çoklu|coklu|cluster/i.test(obj.name));
+    const isPendantCluster =
+      !isPaperLantern && /tel|kablo|çoklu|coklu|wire|cluster|kafes/i.test(obj.name);
     const brassMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(primaryHex),
       roughness: 0.28,
@@ -1396,13 +1653,97 @@ export function buildParametricObject3D(
       wireMat.dispose();
     });
 
-    const canGeo = new THREE.CylinderGeometry(0.11, 0.11, 0.03, 20);
+    const canGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.03, 20);
     disposables.push(() => canGeo.dispose());
-    const can = new THREE.Mesh(canGeo, brassMat);
+    const can = new THREE.Mesh(canGeo, isPaperLantern ? new THREE.MeshStandardMaterial({ color: 0xf4f2ed, roughness: 0.75 }) : brassMat);
     can.position.set(0, H - 0.015, 0);
     grp.add(can);
+    if (isPaperLantern) disposables.push(() => (can.material as THREE.Material).dispose());
 
-    if (isPendantCluster) {
+    if (isPaperLantern) {
+      // Sculptural Scandinavian / Japanese two-tier ribbed rice-paper lantern pendant!
+      const shadeColor = primaryLum > 0.5 ? new THREE.Color(primaryHex) : new THREE.Color('#f4f1ea');
+      const paperMat = new THREE.MeshStandardMaterial({
+        color: shadeColor,
+        emissive: new THREE.Color(0xfff1d6),
+        emissiveIntensity: 0.24,
+        roughness: 0.92,
+        metalness: 0.0,
+        side: THREE.DoubleSide,
+      });
+      const ribMat = new THREE.MeshStandardMaterial({
+        color: shadeColor.clone().multiplyScalar(0.86),
+        roughness: 0.9,
+      });
+      const collarMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(accentHex && accentHex !== '#fff2d2' ? accentHex : '#2a221d'),
+        roughness: 0.45,
+        metalness: 0.15,
+      });
+      const cordMat = new THREE.MeshStandardMaterial({ color: 0xe6e2da, roughness: 0.8 });
+      const rMain = Math.min(0.42, Math.max(0.18, Math.min(W, D) * 0.48));
+      const upperH = rMain * 0.88;
+      const lowerR = rMain * 0.68;
+      const lowerH = rMain * 0.46;
+      const upperCenterY = Math.max(lowerH + upperH * 0.48, H * 0.56);
+      const collarY = upperCenterY - upperH * 0.42;
+      const lowerCenterY = collarY - lowerH * 0.32;
+      const cordTopY = H - 0.03;
+      const cordBotY = upperCenterY + upperH * 0.4;
+      const cordLen = Math.max(0.08, cordTopY - cordBotY);
+
+      const cordGeo = new THREE.CylinderGeometry(0.006, 0.006, cordLen, 8);
+      const upperGeo = new THREE.SphereGeometry(rMain, 32, 20);
+      const collarGeo = new THREE.CylinderGeometry(rMain * 0.46, rMain * 0.46, 0.045, 28);
+      const lowerGeo = new THREE.SphereGeometry(lowerR, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.62);
+      const innerBulbGeo = new THREE.SphereGeometry(rMain * 0.22, 16, 12);
+      disposables.push(() => {
+        paperMat.dispose();
+        ribMat.dispose();
+        collarMat.dispose();
+        cordMat.dispose();
+        cordGeo.dispose();
+        upperGeo.dispose();
+        collarGeo.dispose();
+        lowerGeo.dispose();
+        innerBulbGeo.dispose();
+      });
+
+      const cord = new THREE.Mesh(cordGeo, cordMat);
+      cord.position.y = (cordTopY + cordBotY) * 0.5;
+      grp.add(cord);
+
+      const upper = new THREE.Mesh(upperGeo, paperMat);
+      upper.scale.set(1, upperH / (rMain * 2), 1);
+      upper.position.y = upperCenterY;
+      upper.castShadow = true;
+      grp.add(upper);
+
+      // Subtle horizontal bamboo paper-lantern rib rings
+      for (const latFrac of [-0.55, -0.2, 0.15, 0.5]) {
+        const rr = rMain * Math.sqrt(Math.max(0.08, 1 - latFrac * latFrac)) + 0.002;
+        const ribG = new THREE.TorusGeometry(rr, 0.0022, 6, 32);
+        ribG.rotateX(Math.PI / 2);
+        disposables.push(() => ribG.dispose());
+        const rib = new THREE.Mesh(ribG, ribMat);
+        rib.position.y = upperCenterY + latFrac * (upperH * 0.5);
+        grp.add(rib);
+      }
+
+      const collar = new THREE.Mesh(collarGeo, collarMat);
+      collar.position.y = collarY;
+      grp.add(collar);
+
+      const lower = new THREE.Mesh(lowerGeo, paperMat);
+      lower.scale.set(1, lowerH / lowerR, 1);
+      lower.position.y = lowerCenterY;
+      lower.castShadow = true;
+      grp.add(lower);
+
+      const bulb = new THREE.Mesh(innerBulbGeo, glowMat);
+      bulb.position.y = lowerCenterY + lowerH * 0.28;
+      grp.add(bulb);
+    } else if (isPendantCluster) {
       // Sculptural multi-drop architectural wire/globe pendant cluster!
       const drops: Array<[number, number, number, number]> = [
         [0, 0, 0.14, 0.13],

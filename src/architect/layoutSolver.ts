@@ -345,8 +345,38 @@ export function applyArchitecturalRelationships(
     });
   }
 
+  // 1b) Coffee table centers nicely in front of the primary sofa FIRST so tabletop decor (vases/candles/books)
+  //     locks onto the coffee table's FINAL position instead of getting orphaned behind!
+  const sofas = result.filter((o) => o.parametricKind === 'sofa');
+  for (const ct of result) {
+    if (ct.parametricKind !== 'coffee_table_rect' && ct.parametricKind !== 'coffee_table_round') continue;
+    const sofa = sofas
+      .filter((s) => sameFloor(s, ct) && Math.hypot(s.x - ct.x, s.z - ct.z) < 2.6)
+      .sort((a, b) => Math.hypot(a.x - ct.x, a.z - ct.z) - Math.hypot(b.x - ct.x, b.z - ct.z))[0];
+    if (sofa) {
+      const fx = Math.sin(sofa.rot);
+      const fz = Math.cos(sofa.rot);
+      const dist = sofa.depthM * 0.5 + ct.depthM * 0.5 + 0.45;
+      const cl = clampInsideFloor(
+        sofa.x + fx * dist,
+        sofa.z + fz * dist,
+        ct.widthM * 0.5,
+        ct.depthM * 0.5,
+        project.widthM,
+        project.depthM,
+        mezBounds,
+        (ct.floorLevel || 0) === 1
+      );
+      ct.x = cl.x;
+      ct.z = cl.z;
+      ct.y = sofa.y;
+      ct.rot = sofa.rot;
+    }
+  }
+
   // 2) ALL tabletop decor items (table_lamp, decorative_vase, small tabletop plants, or explicit 'on_top_of' non-rug relation)
   //    ALWAYS sit cleanly ON TOP OF their anchored or nearest surface (TV baza, fireplace bench, nightstand, coffee/dining table)!
+  //    Floor woven baskets (sepet/basket/hasır/rattan) stay strictly on the floor unless explicitly on_top_of!
   const NON_TABLETOP_KINDS = new Set([
     'sofa',
     'armchair',
@@ -371,6 +401,12 @@ export function applyArchitecturalRelationships(
   const decorCountPerSurface = new Map<string, number>();
   for (const obj of result) {
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    // Floor rattan/wicker baskets MUST stay on the floor beside sofa/table, never hoisted onto a coffee table!
+    const isFloorBasket =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(obj.name) &&
+      !/çiçek|cicek|vazo|vase|buket|bouquet/i.test(obj.name) &&
+      src?.relation !== 'on_top_of';
+    if (isFloorBasket) continue;
     // Allow sleek tabletop glass bioethanol linear burners (H <= 28cm, on_top_of) to sit directly on top of consoles!
     const isTabletopBurner =
       obj.parametricKind === 'linear_fireplace' &&
@@ -386,8 +422,7 @@ export function applyArchitecturalRelationships(
       isTabletopBurner ||
       obj.parametricKind === 'table_lamp' ||
       obj.parametricKind === 'decorative_vase' ||
-      src?.relation === 'on_top_of' ||
-      (obj.parametricKind === 'potted_plant' && obj.heightM <= 0.48);
+      src?.relation === 'on_top_of';
     if (!isTabletopItem) continue;
 
     const explicitParent = src?.anchorToId ? byPinId.get(src.anchorToId) : undefined;
@@ -512,35 +547,8 @@ export function applyArchitecturalRelationships(
     });
   }
 
-  // 5) Coffee table centers nicely in front of the primary sofa if placed in the same seating area
-  const sofas = result.filter((o) => o.parametricKind === 'sofa');
-  for (const ct of result) {
-    if (ct.parametricKind !== 'coffee_table_rect' && ct.parametricKind !== 'coffee_table_round') continue;
-    const sofa = sofas
-      .filter((s) => sameFloor(s, ct) && Math.hypot(s.x - ct.x, s.z - ct.z) < 2.6)
-      .sort((a, b) => Math.hypot(a.x - ct.x, a.z - ct.z) - Math.hypot(b.x - ct.x, b.z - ct.z))[0];
-    if (sofa) {
-      const fx = Math.sin(sofa.rot);
-      const fz = Math.cos(sofa.rot);
-      const dist = sofa.depthM * 0.5 + ct.depthM * 0.5 + 0.45;
-      const cl = clampInsideFloor(
-        sofa.x + fx * dist,
-        sofa.z + fz * dist,
-        ct.widthM * 0.5,
-        ct.depthM * 0.5,
-        project.widthM,
-        project.depthM,
-        mezBounds,
-        (ct.floorLevel || 0) === 1
-      );
-      ct.x = cl.x;
-      ct.z = cl.z;
-      ct.y = sofa.y;
-      ct.rot = sofa.rot;
-    }
-  }
-
-  // 5b) Rugs explicitly anchored 'under' a bed_frame / dining_table / sofa center cleanly beneath their parent!
+  // 5) Rugs explicitly anchored 'under' a bed_frame / dining_table / sofa center cleanly beneath their parent!
+  //    (Coffee tables were already aligned in Step 1b BEFORE tabletop decor locked onto them.)
   for (const rug of result) {
     if (rug.parametricKind !== 'rug_custom') continue;
     const src = rug.pinterestItemId ? sourceItems.get(rug.pinterestItemId) : undefined;
@@ -733,13 +741,17 @@ export function applyVisualCritiqueFixes(
       o.parametricKind === 'chandelier' ||
       (o.parametricKind === 'table_lamp' && (o.mountMode === 'wall' || /aplik|sconce|duvar/i.test(o.name))) ||
       (o.parametricKind === 'wall_mirror' && o.heightM < 1.25 && !/boy|ayakta|zemin|full|kemer/i.test(o.name));
+    const isFloorBasketItem =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(o.name) &&
+      !/çiçek|cicek|vazo|vase|buket|bouquet/i.test(o.name);
     const isFloatingOrTabletop =
-      o.parametricKind === 'table_lamp' ||
-      o.parametricKind === 'decorative_vase' ||
-      o.parametricKind === 'tv_baza' ||
-      ((o.parametricKind === 'wardrobe' || o.parametricKind === 'bookshelf') && o.y > baseY + 0.08) ||
-      Boolean(o.lockedParentId) ||
-      (o.parametricKind === 'potted_plant' && o.heightM <= 0.48 && o.y > baseY + 0.15);
+      !isFloorBasketItem &&
+      (o.parametricKind === 'table_lamp' ||
+        o.parametricKind === 'decorative_vase' ||
+        o.parametricKind === 'tv_baza' ||
+        ((o.parametricKind === 'wardrobe' || o.parametricKind === 'bookshelf') && o.y > baseY + 0.08) ||
+        Boolean(o.lockedParentId) ||
+        (o.parametricKind === 'potted_plant' && o.heightM <= 0.58 && o.y > baseY + 0.15));
     const isFloorStandingKind = !isHighWallKind && !isFloatingOrTabletop;
 
     if (isFloorStandingKind) {
