@@ -12,6 +12,7 @@ import {
   ChevronRight,
   DoorOpen,
   Download,
+  FileText,
   Footprints,
   FolderOpen,
   Grid3X3,
@@ -57,6 +58,7 @@ import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type O
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
 import { RenderStudioModal, type RenderStudioLaunchOpts, type StudioRenderItem } from './RenderStudioModal';
 import { Export3dsMaxModal } from './Export3dsMaxModal';
+import { ClientReportModal } from './ClientReportModal';
 import { WallCompassPicker } from './WallCompassPicker';
 import { BrandCatalogPanel } from './BrandCatalogPanel';
 import {
@@ -172,7 +174,19 @@ export const ArchitecturalStudioPage: React.FC = () => {
     const lastId = loadActiveClientId();
     return lastId && saved.some((c) => c.id === lastId) ? lastId : null;
   });
-  const [clientModalOpen, setClientModalOpen] = useState<boolean>(true);
+  const [clientModalOpen, setClientModalOpen] = useState<boolean>(false);
+  const [welcomeModalOpen, setWelcomeModalOpen] = useState<boolean>(true);
+  const [searchPaletteOpen, setSearchPaletteOpen] = useState<boolean>(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
+  const [clientReportOpen, setClientReportOpen] = useState<boolean>(false);
+  const [vrayReadyHint, setVrayReadyHint] = useState<{
+    photoId: string;
+    photoIndex: number;
+    photoDataUrl: string;
+    roomId: string;
+    roomName: string;
+    itemCount: number;
+  } | null>(null);
   const [renderModalOpen, setRenderModalOpen] = useState<boolean>(false);
   const [renderLaunchOpts, setRenderLaunchOpts] = useState<RenderStudioLaunchOpts | null>(null);
   const [renderHistory, setRenderHistory] = useState<StudioRenderItem[]>([]);
@@ -280,6 +294,22 @@ export const ArchitecturalStudioPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Global Ctrl+K / Cmd+K opens sleek Universal Search Command Palette; Escape closes popovers
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchPaletteOpen((v) => !v);
+        setExportMenuOpen(false);
+      } else if (e.key === 'Escape') {
+        setSearchPaletteOpen(false);
+        setExportMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   // Auto-save active customer's room whenever project changes (debounced 550ms)
@@ -3373,6 +3403,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
         onSaveToCatalog={handleSaveObjectToCatalog}
         onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
         onOpenRenderStudio={openRenderStudio}
+        onSceneReadyForRender={(info) => setVrayReadyHint(info)}
         onToast={showToast}
       />
     </div>
@@ -3438,8 +3469,179 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </button>
           </div>
 
-          {/* Center: Universal Smart Search Bar (Colors, codes, nearest shades, 3D furniture, windows, doors, 3+1 rooms!) */}
-          <div className="relative flex-1 min-w-0 max-w-2xl hidden lg:block">
+          {/* Center: Clean 3-Mode Camera Switch (3B · 2D Plan · Gez) */}
+          <div className="hidden md:flex items-center border border-stone-300 bg-[#faf9f6] shrink-0">
+            {(
+              [
+                { id: 'free', label: '3B', icon: Layers },
+                { id: 'plan', label: '2D Plan', icon: Grid3X3 },
+                { id: 'inside', label: 'Gez', icon: Footprints },
+              ] as const
+            ).map((c) => {
+              const Icon = c.icon;
+              const active = cameraMode === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
+                  className={`px-3 py-1.5 text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
+                    active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  <span>{c.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right: Compact Search (Ctrl+K) + Primary V-Ray Render CTA + Clean Export Dropdown */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setExportMenuOpen(false);
+                if (window.innerWidth < 1024) setMobileSearchOpen((v) => !v);
+                else setSearchPaletteOpen(true);
+              }}
+              className="px-2.5 py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] hover:bg-white text-stone-800 text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+              title="Renk, parke kodu, mobilya, pencere veya 3+1 daire ara (Ctrl+K)"
+            >
+              <Search className="w-3.5 h-3.5 text-stone-600" />
+              <span className="hidden sm:inline">Ara</span>
+              <kbd className="hidden xl:inline px-1 py-0.2 bg-white border border-stone-300 text-[9px] font-mono text-stone-500">
+                Ctrl+K
+              </kbd>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setExportMenuOpen(false);
+                openRenderStudio({ roomId: 'current', angle: 'current', autoStart: false });
+              }}
+              className="px-3 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+              title="Mevcut açıdan veya tüm odalardan V-Ray Fotogerçekçi Render Al"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>V-Ray Render{renderHistory.length > 0 ? ` (${renderHistory.length})` : ''}</span>
+            </button>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setExportMenuOpen((v) => !v)}
+                className={`px-2.5 py-1.5 border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
+                  exportMenuOpen
+                    ? 'border-stone-950 bg-stone-950 text-white'
+                    : 'border-stone-300 hover:border-stone-950 bg-white text-stone-900'
+                }`}
+                title="Müşteri Sunumu PDF, 3ds Max (.ZIP), PNG, TV Sunumu ve Proje Kaydı"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Dışa Aktar</span>
+                <ChevronDown className="w-3 h-3 opacity-70" />
+              </button>
+
+              {exportMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 w-60 bg-white border border-stone-300 shadow-2xl py-1.5 z-50 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        setClientReportOpen(true);
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 transition"
+                    >
+                      <FileText className="w-4 h-4 text-stone-900 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-bold text-stone-950 leading-tight">Müşteri Sunumu &amp; Metraj PDF</p>
+                        <p className="text-[10px] text-stone-500">V-Ray, 2D kroki, boya/parke m² &amp; QR</p>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        setExport3dsMaxOpen(true);
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 transition"
+                    >
+                      <Box className="w-4 h-4 text-stone-900 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-bold text-stone-950 leading-tight">3ds Max Paketi (.ZIP)</p>
+                        <p className="text-[10px] text-stone-500">.GLB, .OBJ/.MTL, MaxScript &amp; Render</p>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        handleDownloadSnapshot();
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 transition"
+                    >
+                      <Download className="w-4 h-4 text-stone-700 shrink-0" />
+                      <span className="font-semibold text-stone-900">PNG Ekran Görüntüsü İndir</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        toggleTvPresentationMode();
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 transition"
+                    >
+                      <Maximize2 className="w-4 h-4 text-stone-700 shrink-0" />
+                      <span className="font-semibold text-stone-900">Tam Ekran TV / Showroom Sunumu</span>
+                    </button>
+                    <div className="my-1 border-t border-stone-200" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        handleSaveProjectJson();
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 transition"
+                    >
+                      <Save className="w-4 h-4 text-stone-700 shrink-0" />
+                      <span className="font-medium text-stone-800">Projeyi Yedekle (.json)</span>
+                    </button>
+                    <label className="w-full px-3 py-2 text-left hover:bg-[#faf9f6] flex items-center gap-2.5 cursor-pointer transition">
+                      <FolderOpen className="w-4 h-4 text-stone-700 shrink-0" />
+                      <span className="font-medium text-stone-800">Yedekten Proje Aç (.json)</span>
+                      <input
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={(e) => {
+                          setExportMenuOpen(false);
+                          handleLoadProjectJson(e.target.files?.[0] || null);
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </header>
+      )}
+
+      {/* Sleek Ctrl+K Command Palette for Universal Search & Quick Add (keeps topbar completely clutter-free!) */}
+      {!tvPresentationMode && searchPaletteOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] flex items-start justify-center pt-16 px-4"
+          onClick={() => setSearchPaletteOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl bg-white border border-stone-300 shadow-2xl p-3 space-y-2.5 text-xs max-h-[78vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -3450,327 +3652,198 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 } else {
                   executeQuickAdd();
                 }
+                setSearchPaletteOpen(false);
               }}
-              className="flex items-center border border-stone-300 focus-within:border-stone-950 bg-[#faf9f6] transition"
+              className="flex items-center border border-stone-950 bg-[#faf9f6] shrink-0"
             >
-              <Search className="w-3.5 h-3.5 text-stone-500 ml-2.5 shrink-0" />
+              <Search className="w-4 h-4 text-stone-600 ml-3 shrink-0" />
               <input
                 type="text"
+                autoFocus
                 value={quickQuery}
-                onFocus={() => setQuickFocused(true)}
-                onBlur={() => setTimeout(() => setQuickFocused(false), 220)}
                 onChange={(e) => setQuickQuery(e.target.value)}
-                placeholder='Her şeyi ara: renk/kod ("kaşmir", "PRK901", "10678", "#3f4247"), eşya ("klozet", "koltuk"), pencere, 3+1...'
-                className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-xs text-stone-950 placeholder:text-stone-400 focus:outline-none"
+                placeholder='Her şeyi ara: boya rengi/kodu ("kaşmir", "10678"), parke ("PRK901"), eşya ("koltuk", "klozet"), pencere, 3+1...'
+                className="flex-1 min-w-0 px-2.5 py-2.5 bg-transparent text-xs text-stone-950 placeholder:text-stone-400 focus:outline-none"
               />
               {quickQuery && (
-                <button
-                  type="button"
-                  onClick={() => setQuickQuery('')}
-                  className="p-1 text-stone-400 hover:text-stone-900"
-                  aria-label="Temizle"
-                >
-                  <X className="w-3.5 h-3.5" />
+                <button type="button" onClick={() => setQuickQuery('')} className="p-1.5 text-stone-400 hover:text-stone-900">
+                  <X className="w-4 h-4" />
                 </button>
               )}
               <button
                 type="submit"
-                className="px-3 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-semibold whitespace-nowrap shrink-0 flex items-center gap-1"
+                className="px-3.5 py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold whitespace-nowrap shrink-0"
               >
-                <Search className="w-3 h-3" />
-                <span>Bul &amp; Ekle</span>
+                Bul &amp; Ekle
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchPaletteOpen(false)}
+                className="p-2.5 border-l border-stone-200 text-stone-500 hover:text-stone-950 bg-white"
+                aria-label="Aramayı kapat"
+              >
+                <X className="w-4 h-4" />
               </button>
             </form>
 
-            {quickFocused && (
-              <div
-                onMouseDown={(e) => e.preventDefault()}
-                className="absolute left-0 right-0 top-full mt-1 bg-white border border-stone-300 shadow-2xl p-2.5 z-50 text-xs space-y-2 max-h-[70vh] flex flex-col"
-              >
-                {/* Category Filter Tabs inside Universal Search */}
-                <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-stone-200 shrink-0">
-                  <div className="flex flex-wrap gap-1">
-                    {(
-                      [
-                        { id: 'all', lbl: 'Tümü' },
-                        { id: 'material', lbl: 'Renk & Malzeme' },
-                        { id: 'furniture', lbl: 'Eşya & 3B' },
-                        { id: 'opening', lbl: 'Pencere & Kapı' },
-                        { id: 'room', lbl: 'Oda & 3+1 Ev' },
-                      ] as const
-                    ).map((g) => (
-                      <button
-                        key={g.id}
-                        type="button"
-                        onClick={() => setSearchFilterGroup(g.id)}
-                        className={`px-2 py-0.5 border text-[10px] font-semibold transition ${
-                          searchFilterGroup === g.id
-                            ? 'border-stone-950 bg-stone-950 text-white'
-                            : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-500'
-                        }`}
-                      >
-                        {g.lbl}
-                      </button>
-                    ))}
-                  </div>
-                  {universalSearch.detectedColor && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-stone-700 shrink-0">
-                      <span
-                        className="w-3.5 h-3.5 border border-black/25"
-                        style={{ backgroundColor: universalSearch.detectedColor.hex }}
-                      />
-                      <span className="font-semibold">{universalSearch.detectedColor.label}</span>
-                    </div>
-                  )}
+            {/* Category Filter Tabs */}
+            <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-stone-200 shrink-0">
+              <div className="flex flex-wrap gap-1">
+                {(
+                  [
+                    { id: 'all', lbl: 'Tümü' },
+                    { id: 'material', lbl: 'Renk & Malzeme' },
+                    { id: 'furniture', lbl: 'Eşya & 3B' },
+                    { id: 'opening', lbl: 'Pencere & Kapı' },
+                    { id: 'room', lbl: 'Oda & 3+1 Ev' },
+                  ] as const
+                ).map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => setSearchFilterGroup(g.id)}
+                    className={`px-2 py-0.5 border text-[10px] font-semibold transition ${
+                      searchFilterGroup === g.id
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-500'
+                    }`}
+                  >
+                    {g.lbl}
+                  </button>
+                ))}
+              </div>
+              {universalSearch.detectedColor && (
+                <div className="flex items-center gap-1.5 text-[10px] text-stone-700 shrink-0">
+                  <span className="w-3.5 h-3.5 border border-black/25" style={{ backgroundColor: universalSearch.detectedColor.hex }} />
+                  <span className="font-semibold">{universalSearch.detectedColor.label}</span>
                 </div>
+              )}
+            </div>
 
-                {/* Custom cm sizing strip when user types explicit parametric item like "televizyon 180x100" */}
-                {parsedQuick && (parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
-                  <div className="bg-[#faf9f6] border border-stone-200 p-2 flex flex-wrap items-center gap-2 shrink-0">
-                    <span className="font-semibold text-stone-950 text-[11px]">
-                      Özel Ölçüyle Hemen Ekle: {parsedQuick.kind === 'parametric' ? parsedQuick.name : 'Duvar Paneli'}
-                    </span>
-                    <div className="flex items-center gap-1.5 ml-auto">
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        En
-                        <input
-                          type="number"
-                          value={quickW}
-                          onChange={(e) => setQuickW(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
-                        />
-                      </label>
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        Der.
-                        <input
-                          type="number"
-                          value={quickD}
-                          onChange={(e) => setQuickD(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
-                        />
-                      </label>
-                      <label className="flex items-center gap-1 text-[10px] text-stone-600">
-                        Yük.
-                        <input
-                          type="number"
-                          value={quickH}
-                          onChange={(e) => setQuickH(e.target.value)}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => executeQuickAdd()}
-                        className="px-2.5 py-1 bg-stone-950 text-white text-[10px] font-semibold"
-                      >
-                        + Ekle
-                      </button>
-                    </div>
-                  </div>
-                )}
+            {parsedQuick && (parsedQuick.kind === 'parametric' || parsedQuick.kind === 'wallZone') && (
+              <div className="bg-[#faf9f6] border border-stone-200 p-2 flex flex-wrap items-center gap-2 shrink-0">
+                <span className="font-semibold text-stone-950 text-[11px]">
+                  Özel Ölçüyle Hemen Ekle: {parsedQuick.kind === 'parametric' ? parsedQuick.name : 'Duvar Paneli'}
+                </span>
+                <div className="flex items-center gap-1.5 ml-auto">
+                  <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                    En
+                    <input
+                      type="number"
+                      value={quickW}
+                      onChange={(e) => setQuickW(e.target.value)}
+                      className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                    Der.
+                    <input
+                      type="number"
+                      value={quickD}
+                      onChange={(e) => setQuickD(e.target.value)}
+                      className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-[10px] text-stone-600">
+                    Yük.
+                    <input
+                      type="number"
+                      value={quickH}
+                      onChange={(e) => setQuickH(e.target.value)}
+                      className="w-12 px-1 py-0.5 border border-stone-300 font-mono text-stone-950 bg-white"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      executeQuickAdd();
+                      setSearchPaletteOpen(false);
+                    }}
+                    className="px-2.5 py-1 bg-stone-950 text-white text-[10px] font-semibold"
+                  >
+                    + Ekle
+                  </button>
+                </div>
+              </div>
+            )}
 
-                {/* Search Results List OR Quick Suggestions when empty */}
-                {quickQuery.trim() ? (
-                  universalSearch.results.length > 0 ? (
-                    <div className="overflow-y-auto space-y-1 pr-0.5">
-                      {universalSearch.results.map((res) => (
-                        <button
-                          key={res.id}
-                          type="button"
-                          onClick={() => executeUniversalResult(res)}
-                          className="w-full px-2 py-1.5 border border-stone-200 hover:border-stone-950 hover:bg-[#faf9f6] flex items-center gap-2.5 text-left transition"
-                        >
-                          {'hex' in res && res.hex ? (
-                            <span
-                              className="w-7 h-7 border border-black/20 shrink-0"
-                              style={{ backgroundColor: res.hex }}
-                            />
-                          ) : 'thumbUrl' in res && res.thumbUrl ? (
-                            <img
-                              src={res.thumbUrl}
-                              alt={res.title}
-                              className="w-7 h-7 object-contain bg-[#f5f4f0] border border-stone-200 shrink-0"
-                            />
-                          ) : (
-                            <span className="w-7 h-7 bg-stone-950 text-white font-mono text-[9px] font-bold flex items-center justify-center shrink-0">
-                              {res.badge.slice(0, 3).toUpperCase()}
+            {quickQuery.trim() ? (
+              universalSearch.results.length > 0 ? (
+                <div className="overflow-y-auto space-y-1 pr-0.5">
+                  {universalSearch.results.map((res) => (
+                    <button
+                      key={res.id}
+                      type="button"
+                      onClick={() => {
+                        executeUniversalResult(res);
+                        setSearchPaletteOpen(false);
+                      }}
+                      className="w-full px-2.5 py-2 border border-stone-200 hover:border-stone-950 hover:bg-[#faf9f6] flex items-center gap-2.5 text-left transition"
+                    >
+                      {'hex' in res && res.hex ? (
+                        <span className="w-7 h-7 border border-black/20 shrink-0" style={{ backgroundColor: res.hex }} />
+                      ) : 'thumbUrl' in res && res.thumbUrl ? (
+                        <img src={res.thumbUrl} alt={res.title} className="w-7 h-7 object-contain bg-[#f5f4f0] border border-stone-200 shrink-0" />
+                      ) : (
+                        <span className="w-7 h-7 bg-stone-950 text-white font-mono text-[9px] font-bold flex items-center justify-center shrink-0">
+                          {res.badge.slice(0, 3).toUpperCase()}
+                        </span>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-stone-950 truncate">{res.title}</span>
+                          {'similarityPct' in res && res.similarityPct && (
+                            <span className="text-[9px] font-mono font-bold px-1 bg-stone-200 text-stone-800 shrink-0">
+                              %{res.similarityPct} yakın
                             </span>
                           )}
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-semibold text-stone-950 truncate">{res.title}</span>
-                              {'similarityPct' in res && res.similarityPct && (
-                                <span className="text-[9px] font-mono font-bold px-1 bg-stone-200 text-stone-800 shrink-0">
-                                  %{res.similarityPct} yakın
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] text-stone-500 truncate">{res.subtitle}</p>
-                          </div>
-                          <span className="px-2 py-1 border border-stone-300 bg-white text-[10px] font-semibold text-stone-900 whitespace-nowrap shrink-0">
-                            {res.subKind === 'parquet'
-                              ? 'Zemine'
-                              : res.subKind === 'wall'
-                              ? res.item.isProfile
-                                ? 'Duvar Profili'
-                                : 'Duvarlara'
-                              : res.subKind === 'skirting'
-                              ? 'Süpürgelik'
-                              : res.subKind === 'doorPanel'
-                              ? 'Kapıya'
-                              : res.subKind === 'countertop'
-                              ? 'Tezgah Kur'
-                              : res.subKind === 'furniturePanel'
-                              ? 'Mobilyaya'
-                              : '+ Ekle'}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-stone-500 py-3 text-center">
-                      Eşleşme bulunamadı — renk adı (örn. <strong>kaşmir</strong>, <strong>adaçayı</strong>), kod (<strong>PRK901</strong>, <strong>10678</strong>), eşya (<strong>klozet</strong>, <strong>koltuk</strong>) veya pencere yazabilirsiniz.
-                    </p>
-                  )
-                ) : (
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-mono uppercase text-stone-500">
-                      Örnek Aramalar (Renk, Kod, Eşya, Pencere veya 3+1 Ev)
-                    </p>
-                    <div className="flex flex-wrap gap-1">
-                      {[
-                        'kaşmir',
-                        'adaçayı yeşili',
-                        'PRK901',
-                        '10678 Space',
-                        'LB-2050',
-                        'oval pencere',
-                        'klozet',
-                        'laminat tezgah',
-                        '3+1 daire',
-                        ...QUICK_ADD_SUGGESTIONS.slice(0, 6),
-                      ].map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => setQuickQuery(s)}
-                          className="px-2 py-1 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[11px] font-medium transition"
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                        </div>
+                        <p className="text-[10px] text-stone-500 truncate">{res.subtitle}</p>
+                      </div>
+                      <span className="px-2 py-1 border border-stone-300 bg-white text-[10px] font-semibold text-stone-900 whitespace-nowrap shrink-0">
+                        {res.subKind === 'parquet'
+                          ? 'Zemine'
+                          : res.subKind === 'wall'
+                          ? res.item.isProfile
+                            ? 'Duvar Profili'
+                            : 'Duvarlara'
+                          : res.subKind === 'skirting'
+                          ? 'Süpürgelik'
+                          : res.subKind === 'doorPanel'
+                          ? 'Kapıya'
+                          : res.subKind === 'countertop'
+                          ? 'Tezgah Kur'
+                          : res.subKind === 'furniturePanel'
+                          ? 'Mobilyaya'
+                          : '+ Ekle'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-stone-500 py-4 text-center">
+                  Eşleşme bulunamadı — renk adı (<strong>kaşmir</strong>), kod (<strong>PRK901</strong>), eşya (<strong>koltuk</strong>) veya <strong>3+1 daire</strong> yazabilirsiniz.
+                </p>
+              )
+            ) : (
+              <div className="space-y-2">
+                <p className="text-[10px] font-mono uppercase text-stone-500">Hızlı Aramalar</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {['kaşmir', 'adaçayı yeşili', 'PRK901', '10678 Space', 'oval pencere', 'klozet', '3+1 daire', ...QUICK_ADD_SUGGESTIONS.slice(0, 5)].map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setQuickQuery(s)}
+                      className="px-2.5 py-1 border border-stone-200 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[11px] font-medium transition"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
-
-          {/* Right: 3 Camera Modes + TV Showroom Mode + Save/Export */}
-          <div className="flex items-center gap-1 shrink-0">
-            {/* Phone & Portrait Tablet Quick-Add Search Toggle */}
-            <button
-              type="button"
-              onClick={() => setMobileSearchOpen((v) => !v)}
-              className={`lg:hidden p-2 border shrink-0 ${
-                mobileSearchOpen ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-300 bg-[#faf9f6] text-stone-800'
-              }`}
-              aria-label="Hızlı Ekle"
-            >
-              <Search className="w-4 h-4" />
-            </button>
-
-            <div className="hidden md:flex items-center border border-stone-200 bg-[#faf9f6]">
-              {(
-                [
-                  { id: 'free', label: '3B', icon: Layers },
-                  { id: 'plan', label: '2D Plan', icon: Grid3X3 },
-                  { id: 'inside', label: 'Kapıdan Gez', icon: Footprints },
-                ] as const
-              ).map((c) => {
-                const Icon = c.icon;
-                const active = cameraMode === c.id;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => (c.id === 'inside' ? enterDoorWalkthrough() : setCameraMode(c.id))}
-                    className={`px-2.5 py-1.5 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                      active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:text-stone-950'
-                    }`}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    <span>{c.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <button
-              type="button"
-              onClick={toggleTvPresentationMode}
-              className="hidden lg:inline-flex p-2 xl:px-2.5 xl:py-1.5 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold items-center gap-1 whitespace-nowrap shrink-0"
-              title="Tam Ekran TV / Showroom Sunum Modu"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-              <span className="hidden xl:inline">TV Sunum</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveProjectJson}
-              className="hidden xl:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0"
-              title="Projeyi Kaydet (.json)"
-            >
-              <Save className="w-3.5 h-3.5" />
-            </button>
-            <label
-              className="hidden xl:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 cursor-pointer shrink-0"
-              title="Proje Aç (.json)"
-            >
-              <FolderOpen className="w-3.5 h-3.5" />
-              <input
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={(e) => {
-                  handleLoadProjectJson(e.target.files?.[0] || null);
-                  e.currentTarget.value = '';
-                }}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => openRenderStudio({ roomId: 'current', angle: 'current', autoStart: false })}
-              className="px-2.5 py-1.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-              title="Mevcut açıdan veya tüm odalardan V-Ray Fotogerçekçi Render Al"
-            >
-              <Camera className="w-3.5 h-3.5" />
-              <span>Render{renderHistory.length > 0 ? ` (${renderHistory.length})` : ''}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setExport3dsMaxOpen(true)}
-              className="px-2.5 py-1.5 border border-stone-950 bg-white hover:bg-stone-950 hover:text-white text-stone-950 text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-              title="3B oda sahnesini Autodesk 3ds Max (.GLB / .OBJ + MaxScript) olarak dışa aktar"
-            >
-              <Box className="w-3.5 h-3.5" />
-              <span>3ds Max</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadSnapshot}
-              className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
-              title="3B sahneyi ham PNG olarak indir"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden xl:inline">PNG</span>
-            </button>
-          </div>
-        </header>
+        </div>
       )}
 
       {/* Phone & Portrait Tablet Full-Width Universal Smart Search Drop Strip (< 1024px) */}
@@ -4250,6 +4323,53 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </div>
           )}
 
+          {/* Smart Next-Step Floating V-Ray Card after Foto 3B builds a room (prevents mistaking raw 3B draft for final quality!) */}
+          {!tvPresentationMode && vrayReadyHint && cameraMode !== 'inside' && (
+            <div className="absolute bottom-4 right-4 z-20 max-w-xs bg-white/95 backdrop-blur border border-stone-950 shadow-2xl p-3 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                    3B Taslak Hazır · {vrayReadyHint.itemCount} Parça
+                  </p>
+                  <p className="text-xs font-bold text-stone-950 leading-snug mt-0.5">
+                    Fotoğrafa birebir fotogerçekçi V-Ray Render almak ister misiniz?
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVrayReadyHint(null)}
+                  className="p-0.5 text-stone-400 hover:text-stone-950 shrink-0"
+                  aria-label="Kapat"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const h = vrayReadyHint;
+                    setVrayReadyHint(null);
+                    openRenderStudio({
+                      roomId: h.roomId || 'main',
+                      angle: 'eye',
+                      referencePhoto: {
+                        id: h.photoId,
+                        label: `Foto ${h.photoIndex}`,
+                        dataUrl: h.photoDataUrl,
+                      },
+                      autoStart: true,
+                    });
+                  }}
+                  className="flex-1 py-2 px-3 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>Birebir V-Ray Render Al (~10 sn)</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* First-Person Walkthrough Controls HUD (Touch/iPad/TV-Remote + Keyboard Friendly!) */}
           {!tvPresentationMode && cameraMode === 'inside' ? (
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-white/95 border border-stone-300 shadow-lg px-2.5 sm:px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex flex-wrap items-center justify-center gap-2 text-xs max-w-[96vw]">
@@ -4380,6 +4500,109 @@ export const ArchitecturalStudioPage: React.FC = () => {
         )}
       </div>
 
+      {/* Clean 3-Card First-Visit Welcome Chooser (Instant Clarity: Photo / Room Plan / Saved Projects) */}
+      {welcomeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6">
+          <div className="w-full max-w-3xl bg-white border border-stone-300 shadow-2xl overflow-hidden">
+            <div className="px-6 py-5 border-b border-stone-200 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500">
+                  MekanAR · Mimari 3B Stüdyo
+                </p>
+                <h2 className="font-display text-lg sm:text-xl font-extrabold text-stone-950 tracking-tight mt-0.5">
+                  Nasıl başlamak istersiniz?
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWelcomeModalOpen(false)}
+                className="px-3 py-1.5 border border-stone-300 hover:border-stone-950 text-xs font-semibold text-stone-800 whitespace-nowrap transition"
+              >
+                Mevcut Odaya Geç
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-stone-200">
+              <button
+                type="button"
+                onClick={() => {
+                  setWelcomeModalOpen(false);
+                  setActiveTab('pinterest');
+                  setDesktopLeftOpen(true);
+                  setMobileSidebarOpen(true);
+                }}
+                className="p-6 text-left hover:bg-[#faf9f6] flex flex-col justify-between gap-6 group transition"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-stone-400">01</span>
+                  <Sparkles className="w-5 h-5 text-stone-950" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="font-display text-base font-bold text-stone-950">Fotoğraftan Oda Kur</h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    Pinterest veya oda fotoğrafı yükleyin; 15 saniyede 3B kurup birebir V-Ray Render alın.
+                  </p>
+                </div>
+                <span className="text-[11px] font-bold text-stone-950 group-hover:underline">
+                  Foto 3B&apos;yi Aç →
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setWelcomeModalOpen(false);
+                  setActiveTab('room');
+                  setOpenRoomSection('dims');
+                  setDesktopLeftOpen(true);
+                  setMobileSidebarOpen(true);
+                }}
+                className="p-6 text-left hover:bg-[#faf9f6] flex flex-col justify-between gap-6 group transition"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-stone-400">02</span>
+                  <Home className="w-5 h-5 text-stone-950" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="font-display text-base font-bold text-stone-950">Hazır Oda / Daire Planı</h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    Tek oda, 1+1, 2+1 veya 3+1 planından başlayıp boya, parke ve mobilyaları kendiniz seçin.
+                  </p>
+                </div>
+                <span className="text-[11px] font-bold text-stone-950 group-hover:underline">
+                  Oda Planını Seç →
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setWelcomeModalOpen(false);
+                  setClientModalOpen(true);
+                }}
+                className="p-6 text-left hover:bg-[#faf9f6] flex flex-col justify-between gap-6 group transition"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-stone-400">03</span>
+                  <Users className="w-5 h-5 text-stone-950" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="font-display text-base font-bold text-stone-950">Kayıtlı Müşteri Projeleri</h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    {clientProjects.length > 0
+                      ? `${clientProjects.length} kayıtlı müşteri odanız hazır — kaldığınız yerden devam edin.`
+                      : 'Her müşteri için ayrı oda projesi açıp otomatik kaydedin ve PDF sunum alın.'}
+                  </p>
+                </div>
+                <span className="text-[11px] font-bold text-stone-950 group-hover:underline">
+                  Projeleri Aç →
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Customer Project Picker & Auto-Save Manager Modal */}
       <ClientProjectModal
         open={clientModalOpen}
@@ -4419,6 +4642,17 @@ export const ArchitecturalStudioPage: React.FC = () => {
         latestRenderDataUrl={renderHistory[0]?.renderImageDataUrl || null}
         getExportContext={() => viewportRef.current?.getExportContext() || null}
         onClose={() => setExport3dsMaxOpen(false)}
+        onToast={showToast}
+      />
+
+      {/* 1-Click Client Presentation & Automatic Metraj PDF / Offline HTML Report Modal */}
+      <ClientReportModal
+        open={clientReportOpen}
+        project={project}
+        clientName={activeClient?.clientName || null}
+        latestRenderDataUrl={renderHistory[0]?.renderImageDataUrl || null}
+        onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
+        onClose={() => setClientReportOpen(false)}
         onToast={showToast}
       />
     </div>

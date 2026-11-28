@@ -223,6 +223,8 @@ export function App() {
     'all' | 'seating' | 'table-chair' | 'storage-bed' | 'ikea-cad' | 'studyo-cad'
   >('all');
   const [copiedEmbed, setCopiedEmbed] = useState(false);
+  const [showcaseTab, setShowcaseTab] = useState<'compare' | 'dining' | 'bedroom'>('compare');
+  const [showcaseSplitPct, setShowcaseSplitPct] = useState(52);
 
   // Kurumsal Demo Talep Formu
   const [demoCompany, setDemoCompany] = useState('');
@@ -1135,9 +1137,184 @@ export function App() {
         </div>
       </section>
 
-      {/* BÖLÜM 03: GERÇEK VAKA (FOTOĞRAFTAN 1:1 AR'A) + KURUMSAL MİMARİ YETENEKLER */}
+      {/* BÖLÜM 03: 3 ADIMDA FOTOĞRAFTAN V-RAY & AR SUNUMA + GERÇEK CANLI ÖNCE / SONRA VİTRİNİ */}
       <section id="ozellikler" className="bg-[#faf8f4] border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-24 space-y-14">
+        <div className="max-w-7xl mx-auto px-4 lg:px-10 py-16 lg:py-24 space-y-16">
+          {/* 3 Net Adım: MekanAR Nasıl Çalışır? */}
+          <div className="space-y-8">
+            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-stone-300/80 pb-6">
+              <div className="space-y-2">
+                <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-[#9c7349]">
+                  01 / 3 Adımda Mimari Sunum &amp; AR Akışı
+                </p>
+                <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-stone-950 leading-tight">
+                  Tek oda fotoğrafından 3B sahne, V-Ray Render, 3ds Max ve Müşteri PDF&apos;ine.
+                </h2>
+              </div>
+              <a
+                href="/mimari"
+                className="px-5 py-3 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 self-start lg:self-auto transition"
+              >
+                <span>Mimari Stüdyoyu Dene</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </a>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 border-t border-l border-stone-300/80 bg-white">
+              {[
+                {
+                  no: '01',
+                  title: 'Fotoğraf Yükle veya Oda Seç',
+                  desc: 'Pinterest oda fotoğrafını sürükleyip bırakın ya da 1+1 / 2+1 / 3+1 hazır planla başlayın. Duvarlar, pencereler ve eşyalar 15 saniyede 3B kurulur.',
+                },
+                {
+                  no: '02',
+                  title: '3B Düzenle & V-Ray Render Al',
+                  desc: 'Boya rengi, parke, duvar çıtası ve eşya ölçülerini santimetrik değiştirin; tek tıkla fotoğrafa birebir V-Ray fotogerçekçi render alın.',
+                },
+                {
+                  no: '03',
+                  title: 'AR, 3ds Max veya Müşteri PDF İndir',
+                  desc: 'Müşteriye 2D kroki + boya/parke metrajlı A4 sunum PDF&apos;i gönderin, 3ds Max (.ZIP) çıktısı alın veya QR ile telefonda 1:1 AR gösterin.',
+                },
+              ].map((step) => (
+                <div
+                  key={step.no}
+                  className="p-6 sm:p-7 border-r border-b border-stone-300/80 flex flex-col justify-between gap-4"
+                >
+                  <span className="text-xs font-mono text-[#9c7349]">{step.no}</span>
+                  <div className="space-y-1.5">
+                    <h3 className="font-display text-base font-bold text-stone-950">{step.title}</h3>
+                    <p className="text-xs text-stone-600 leading-relaxed">{step.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Gerçek Canlı Üretilmiş İnteraktif Önce / Sonra Vitrini */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 border border-stone-300 bg-white overflow-hidden">
+              <div className="lg:col-span-8 relative aspect-[4/3] bg-stone-950 select-none overflow-hidden">
+                {showcaseTab === 'compare' ? (
+                  <>
+                    <img
+                      src="/showcase/scandi-vray.jpg"
+                      alt="MekanAR Birebir V-Ray Fotogerçekçi Render Çıktısı"
+                      className="w-full h-full object-cover block pointer-events-none"
+                    />
+                    <div
+                      className="absolute inset-0 overflow-hidden pointer-events-none"
+                      style={{ clipPath: `inset(0 ${100 - showcaseSplitPct}% 0 0)` }}
+                    >
+                      <img
+                        src="/showcase/scandi-3b.jpg"
+                        alt="MekanAR 3B Mimari Çalışma Sahnesi"
+                        className="w-full h-full object-cover block"
+                      />
+                    </div>
+                    <div
+                      className="absolute top-0 bottom-0 w-[2px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.65)] pointer-events-none"
+                      style={{ left: `${showcaseSplitPct}%` }}
+                    >
+                      <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-9 h-9 bg-white text-stone-950 border border-stone-950 flex items-center justify-center text-xs font-bold shadow-lg">
+                        ↔
+                      </div>
+                    </div>
+                    <span className="absolute top-3 left-3 px-2.5 py-1 bg-stone-950/85 text-white text-[10px] font-mono uppercase tracking-wider pointer-events-none">
+                      3B Mimari Sahne
+                    </span>
+                    <span className="absolute top-3 right-3 px-2.5 py-1 bg-white/95 text-stone-950 text-[10px] font-mono font-bold uppercase tracking-wider pointer-events-none">
+                      V-Ray Render · Gün Işığı
+                    </span>
+                    <input
+                      type="range"
+                      min={8}
+                      max={92}
+                      value={showcaseSplitPct}
+                      onChange={(e) => setShowcaseSplitPct(Number(e.target.value))}
+                      aria-label="3B Sahne ve V-Ray Render karşılaştırma sürgüsü"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-10"
+                    />
+                  </>
+                ) : showcaseTab === 'dining' ? (
+                  <>
+                    <img
+                      src="/showcase/dining-vray.jpg"
+                      alt="MekanAR Modern Yemek Odası ve Mutfak V-Ray Render"
+                      className="w-full h-full object-cover block"
+                    />
+                    <span className="absolute top-3 left-3 px-2.5 py-1 bg-white/95 text-stone-950 text-[10px] font-mono font-bold uppercase tracking-wider">
+                      02 · Modern Yemek Odası · V-Ray Render
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <img
+                      src="/showcase/bedroom-vray.jpg"
+                      alt="MekanAR Ahşap Çıtalı Yatak Odası V-Ray Render"
+                      className="w-full h-full object-cover block"
+                    />
+                    <span className="absolute top-3 left-3 px-2.5 py-1 bg-white/95 text-stone-950 text-[10px] font-mono font-bold uppercase tracking-wider">
+                      03 · Ahşap Çıtalı Yatak Odası · V-Ray Render
+                    </span>
+                  </>
+                )}
+              </div>
+
+              <div className="lg:col-span-4 p-6 sm:p-7 border-t lg:border-t-0 lg:border-l border-stone-200 flex flex-col justify-between gap-6 bg-[#faf8f4]">
+                <div className="space-y-3">
+                  <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-[#9c7349]">
+                    Gerçek Stüdyo Çıktıları
+                  </p>
+                  <h3 className="font-display text-xl font-bold text-stone-950 leading-snug">
+                    Sürgüyü kaydırın: 3B çalışma sahnesinden V-Ray kalitesine.
+                  </h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    Aşağıdaki 3 örnek doğrudan MekanAR Mimari Stüdyo içinden tek fotoğraf yüklenerek üretilmiştir.
+                    Aynı projede birden fazla odayı tasarlayıp tek tıkla 3ds Max veya A4 müşteri PDF&apos;i alabilirsiniz.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  {(
+                    [
+                      { id: 'compare' as const, no: '01', title: 'İskandinav Salon (Önce / Sonra)' },
+                      { id: 'dining' as const, no: '02', title: 'Modern Yemek Odası · V-Ray' },
+                      { id: 'bedroom' as const, no: '03', title: 'Ahşap Çıtalı Yatak Odası · V-Ray' },
+                    ] as const
+                  ).map((item) => {
+                    const active = showcaseTab === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setShowcaseTab(item.id)}
+                        className={`w-full px-3 py-2.5 border text-left flex items-center justify-between gap-2 text-xs font-semibold transition ${
+                          active
+                            ? 'border-stone-950 bg-stone-950 text-white'
+                            : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-[10px] opacity-70">{item.no}</span>
+                          <span className="truncate">{item.title}</span>
+                        </span>
+                        <span className="text-[10px] opacity-70 shrink-0">{active ? 'Aktif' : 'Gör'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <a
+                  href="/mimari"
+                  className="w-full py-3 px-4 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold uppercase tracking-wider text-center inline-flex items-center justify-center gap-2 transition"
+                >
+                  <span>Kendi Fotoğrafınla Hemen Dene</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
             {/* Sol: Gerçek Fotoğraf -> Gerçek 360° 3B/AR Dönüşüm Kanıtı (Hasağaç Lilac) */}
             <div className="lg:col-span-7 border border-stone-300 bg-white overflow-hidden">

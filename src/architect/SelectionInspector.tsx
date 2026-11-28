@@ -752,7 +752,7 @@ export const SelectionInspector: React.FC<Props> = ({
           </label>
 
           <label className="block text-[10px] text-stone-600">
-            Parapet (Yerden): <strong className="font-mono">{Math.round(win.sillHeightCm)} cm</strong>
+            Pencere Yüksekliği (Yerden): <strong className="font-mono">{Math.round(win.sillHeightCm)} cm</strong>
             <input
               type="range"
               min={0}

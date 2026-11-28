@@ -194,6 +194,14 @@ interface Props {
     referencePhoto?: { id: string; label: string; dataUrl: string };
     autoStart?: boolean;
   }) => void;
+  onSceneReadyForRender?: (info: {
+    photoId: string;
+    photoIndex: number;
+    photoDataUrl: string;
+    roomId: string;
+    roomName: string;
+    itemCount: number;
+  }) => void;
   onToast: (msg: string) => void;
 }
 
@@ -329,6 +337,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
   onSaveToCatalog,
   onCaptureViewport,
   onOpenRenderStudio,
+  onSceneReadyForRender,
   onToast,
 }) => {
   const [serverCfg, setServerCfg] = useState<PinterestServerConfig>({
@@ -585,7 +594,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
     void handleDroppedDataTransfer(e.dataTransfer);
   };
 
-  // Progressive disclosure toggles (keeps main flow clean with zero feature loss)
+  // Progressive disclosure toggles & 3-tab simplified workflow (1. Foto & Kur · 2. Eşyalar · 3. Malzemeler)
+  const [panelTab, setPanelTab] = useState<'setup' | 'items' | 'materials'>('setup');
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+  const [showFocusBox, setShowFocusBox] = useState(false);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [showPhotorealSection, setShowPhotorealSection] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
@@ -1716,6 +1728,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
           `Adım 2/3 · Foto ${curPhoto.index} içindeki ${taggedObjects.length} parça ve ${extractedMaterials.length} malzeme odaya ekleniyor...`
         );
         await assembleAllInstantIn3D(taggedObjects, res.roomStyle, curPhoto.dataUrl, effectiveReplace);
+        onSceneReadyForRender?.({
+          photoId: curPhoto.id,
+          photoIndex: curPhoto.index,
+          photoDataUrl: curPhoto.dataUrl,
+          roomId: tRoom.id,
+          roomName: tRoom.name,
+          itemCount: taggedObjects.length,
+        });
       } else {
         setStatusBanner(
           `Foto ${curPhoto.index}: ${taggedObjects.length} eşya ve ${extractedMaterials.length} malzeme havuza eklendi. İstediğini seçip odaya koyabilirsin.`
@@ -2388,8 +2408,35 @@ export const PinterestAIPanel: React.FC<Props> = ({
         )}
       </div>
 
+      {/* Clean 3-Tab Sub-Navigation once photo has items/materials (eliminates giant vertical scroll wall!) */}
+      {(detected.length > 0 || materialPool.length > 0) && (
+        <div className="grid grid-cols-3 border border-stone-300 bg-[#faf9f6] shrink-0">
+          {(
+            [
+              { id: 'setup' as const, label: '1. Foto & Kur' },
+              { id: 'items' as const, label: `2. Eşyalar (${detected.length})` },
+              { id: 'materials' as const, label: `3. Malzeme (${materialPool.length})` },
+            ] as const
+          ).map((t) => {
+            const active = panelTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setPanelTab(t.id)}
+                className={`py-2 px-1 text-[10px] font-bold border-r last:border-r-0 border-stone-200 whitespace-nowrap truncate transition ${
+                  active ? 'bg-stone-950 text-white' : 'text-stone-700 hover:bg-stone-100 hover:text-stone-950'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Step 1: Multi-Photo Reference Upload & Switcher */}
-      <div className="space-y-2">
+      <div className={`space-y-2 ${panelTab !== 'setup' && (detected.length > 0 || materialPool.length > 0) ? 'hidden' : ''}`}>
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
             Referans Fotoğraflar {photos.length > 0 ? `(${photos.length})` : '(Pinterest / Kamera)'}
@@ -2654,48 +2701,64 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Item #2: Clean Focus / Exclusion Prompt Box */}
-            <div className="border border-stone-200 bg-white p-2.5 space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold text-stone-800">
-                  Ne Modellenmeli? <span className="font-normal text-stone-400">(Opsiyonel)</span>
+            {/* Collapsible Optional Focus / Exclusion Prompt (keeps primary flow clean!) */}
+            <div className="border border-stone-200 bg-white">
+              <button
+                type="button"
+                onClick={() => setShowFocusBox((v) => !v)}
+                className="w-full px-2.5 py-2 flex items-center justify-between gap-2 text-left hover:bg-stone-50 transition"
+              >
+                <span className="text-[11px] font-semibold text-stone-800 truncate">
+                  {userFocusPrompt.trim() ? `Özel Filtre: ${userFocusPrompt.trim().slice(0, 24)}...` : 'Sadece Belirli Eşyaları Seç (Opsiyonel)'}
                 </span>
-                {userFocusPrompt && (
-                  <button
-                    type="button"
-                    onClick={() => setUserFocusPrompt('')}
-                    className="text-[10px] text-stone-500 hover:text-stone-950 underline"
-                  >
-                    Temizle
-                  </button>
+                {showFocusBox ? (
+                  <ChevronDown className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-stone-500 shrink-0" />
                 )}
-              </div>
-              <textarea
-                rows={2}
-                value={userFocusPrompt}
-                onChange={(e) => setUserFocusPrompt(e.target.value)}
-                placeholder='Örn: "Sadece ortadaki sehpayı al; çiçek, tablo ve halıyı ekleme"'
-                className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] text-stone-950 placeholder:text-stone-400 resize-none leading-snug focus:border-stone-950 focus:outline-none"
-              />
-              <div className="flex flex-wrap gap-1">
-                {FOCUS_PROMPT_PRESETS.map((pr) => {
-                  const active = userFocusPrompt.trim() === pr.prompt.trim();
-                  return (
-                    <button
-                      key={pr.label}
-                      type="button"
-                      onClick={() => setUserFocusPrompt(pr.prompt)}
-                      className={`px-1.5 py-0.5 border text-[10px] font-medium transition ${
-                        active
-                          ? 'border-stone-950 bg-stone-950 text-white'
-                          : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-950'
-                      }`}
-                    >
-                      {pr.label}
-                    </button>
-                  );
-                })}
-              </div>
+              </button>
+              {showFocusBox && (
+                <div className="px-2.5 pb-2.5 pt-1.5 border-t border-stone-200 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-stone-500">Boş bırakırsanız odadaki tüm eşyalar kurulur</span>
+                    {userFocusPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => setUserFocusPrompt('')}
+                        className="text-[10px] text-stone-500 hover:text-stone-950 underline"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={userFocusPrompt}
+                    onChange={(e) => setUserFocusPrompt(e.target.value)}
+                    placeholder='Örn: "Sadece ortadaki sehpayı al; çiçek ve tabloyu ekleme"'
+                    className="w-full px-2 py-1.5 border border-stone-300 bg-[#faf9f6] text-[11px] text-stone-950 placeholder:text-stone-400 resize-none leading-snug focus:border-stone-950 focus:outline-none"
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {FOCUS_PROMPT_PRESETS.map((pr) => {
+                      const active = userFocusPrompt.trim() === pr.prompt.trim();
+                      return (
+                        <button
+                          key={pr.label}
+                          type="button"
+                          onClick={() => setUserFocusPrompt(pr.prompt)}
+                          className={`px-1.5 py-0.5 border text-[10px] font-medium transition ${
+                            active
+                              ? 'border-stone-950 bg-stone-950 text-white'
+                              : 'border-stone-200 bg-[#faf9f6] text-stone-700 hover:border-stone-950'
+                          }`}
+                        >
+                          {pr.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Always-Visible Target Room Selector + 1-Click "+ Yeni Oda" Creator right inside Foto 3B! */}
@@ -2784,7 +2847,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   <SlidersHorizontal className="w-3.5 h-3.5 text-stone-600 shrink-0" />
                   <span className="text-[11px] font-semibold text-stone-800 truncate">
                     {replaceExistingOnBuild ? 'Odayı Sıfırla & Kur' : 'Mevcut Odaya Ekle'} ·{' '}
-                    {autoVerifyAfterBuild ? 'Oto Kalibre' : 'Manuel'}
+                    {autoVerifyAfterBuild ? 'Otomatik Hizala' : 'Manuel'}
                   </span>
                 </span>
                 {showAdvancedOptions ? (
@@ -2873,11 +2936,11 @@ export const PinterestAIPanel: React.FC<Props> = ({
       )}
 
       {/* Stage 3 Visual QA Readout (only shown AFTER silent auto-calibration finishes!) */}
-      {photoDataUrl && project.objects.length > 0 && !refining && (qaResult || detected.length > 0) && (
+      {panelTab === 'setup' && photoDataUrl && project.objects.length > 0 && !refining && (qaResult || detected.length > 0) && (
         <div className="border border-stone-300 bg-[#faf9f6] p-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-800">
-              Mimari Kalibrasyon Durumu
+              Oda Uyum Özeti
             </span>
             {qaResult && (
               <span className="text-[10px] font-mono font-bold text-emerald-700">
@@ -2890,7 +2953,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
               {qaResult.critiqueTr}{' '}
               <span className="font-mono text-[10px] text-stone-500">
                 ({qaResult.passesRun ? `${qaResult.passesRun} tur · ` : ''}
-                {qaResult.fixedCount} iyileştirme{qaResult.addedCount > 0 ? `, +${qaResult.addedCount} parça` : ''})
+                {qaResult.fixedCount} düzeltme{qaResult.addedCount > 0 ? `, +${qaResult.addedCount} parça` : ''})
               </span>
             </p>
           )}
@@ -2911,7 +2974,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                     autoStart: true,
                   });
                 }}
-                className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
+                className="w-full py-2.5 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
               >
                 <Camera className="w-3.5 h-3.5" />
                 <span>Foto {activePhoto.index} İçin Birebir V-Ray Render Al</span>
@@ -2923,7 +2986,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 disabled={analyzing || refining || Boolean(heroUpgrading)}
                 onClick={() => void handleAutoUpgradeHero3D()}
                 className="w-full py-2 border border-stone-950 bg-white hover:bg-stone-100 text-stone-950 text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
-                title="Fotoğraftaki ana mobilyaları (koltuk, sehpa, avize, berjer vb.) RunPod RTX 4090 ile gerçek 1:1 3B .GLB olarak sahneye yerleştirir"
+                title="Fotoğraftaki ana mobilyaları yüksek detaylı gerçek 3B modellere dönüştürür"
               >
                 {heroUpgrading ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2932,26 +2995,35 @@ export const PinterestAIPanel: React.FC<Props> = ({
                 )}
                 <span>
                   {heroUpgrading
-                    ? `Birebir 3B Örülüyor (${heroUpgrading.done}/${heroUpgrading.total})...`
-                    : `Birebir 3B Mobilya Üret (2K PBR · ${heroRunPodCandidates.length} Parça)`}
+                    ? `Yüksek Detay 3B Hazırlanıyor (${heroUpgrading.done}/${heroUpgrading.total})...`
+                    : `Yüksek Detay 3B Mobilya Üret (${heroRunPodCandidates.length} Parça)`}
                 </span>
               </button>
             )}
-            <button
-              type="button"
-              disabled={analyzing || refining}
-              onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl, undefined, undefined, undefined, false)}
-              className="w-full py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50 transition"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>İnce Ayar Tekrarla (Geri Düşme Korumalı)</span>
-            </button>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPanelTab('items')}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[10px] font-semibold transition"
+              >
+                Eşyaları Düzenle ({detected.length})
+              </button>
+              <button
+                type="button"
+                disabled={analyzing || refining}
+                onClick={() => runVisualSelfCritique(project.objects, roomStyle, photoDataUrl, undefined, undefined, undefined, false)}
+                className="py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[10px] font-semibold flex items-center justify-center gap-1 disabled:opacity-50 transition"
+              >
+                <Check className="w-3 h-3" />
+                <span>Tekrar Hizala</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {/* Step 2: Cumulative Materials Pool across ALL Pinterest Photos + Custom Material Adder! */}
-      {(materialPool.length > 0 || photos.length > 0) && (
+      {panelTab === 'materials' && (materialPool.length > 0 || photos.length > 0) && (
         <div className="border border-stone-200 bg-white p-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-800 flex items-center gap-1">
@@ -2981,7 +3053,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                   className="px-1.5 py-1 border border-stone-300 bg-white text-[11px] font-semibold"
                 >
                   <option value="wall">Duvar Boyası (4 Duvar)</option>
-                  <option value="accentWall">Vurgu Duvarı / Panel</option>
+                  <option value="accentWall">Özel Duvar / Panel</option>
                   <option value="floor">Zemin Parke / Taş</option>
                   <option value="curtain">Perde Kumaşı</option>
                 </select>
@@ -3091,8 +3163,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Step 3: Cumulative Live Editable Pinterest Objects across ALL Photos */}
-      {detected.length > 0 && (() => {
+      {/* Step 3: Compact Accordion Pinterest Objects List (10 items fit cleanly on screen!) */}
+      {panelTab === 'items' && detected.length > 0 && (() => {
         const visibleDetected =
           poolFilter === 'all' ? detected : detected.filter((d) => d.sourcePhotoId === poolFilter);
         const visibleSelectedCount = visibleDetected.filter((d) => jobs[d.id]?.selected).length;
@@ -3100,7 +3172,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-1">
             <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-stone-700">
-              Çıkarılan Eşyalar ({visibleDetected.length})
+              Odadaki Eşyalar ({visibleDetected.length})
             </span>
             <div className="flex items-center gap-2 text-[10px]">
               <button
@@ -3121,7 +3193,10 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setDrawMode('new')}
+                onClick={() => {
+                  setPanelTab('setup');
+                  setDrawMode('new');
+                }}
                 className="font-semibold text-stone-900 hover:text-stone-700 flex items-center gap-0.5"
               >
                 <Plus className="w-3 h-3" /> Alan Çiz
@@ -3170,36 +3245,39 @@ export const PinterestAIPanel: React.FC<Props> = ({
             type="button"
             disabled={batchRunning || visibleSelectedCount === 0}
             onClick={handleRebuildSelectedInstant}
-            className="w-full py-2 bg-stone-950 hover:bg-stone-800 disabled:opacity-45 text-white font-semibold flex items-center justify-center gap-1.5 transition"
+            className="w-full py-2 bg-stone-950 hover:bg-stone-800 disabled:opacity-45 text-white text-[11px] font-semibold flex items-center justify-center gap-1.5 transition"
           >
             {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
             <span>Seçili {visibleSelectedCount} Parçayı {getTargetRoomRect().name} İçine Kur</span>
           </button>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {visibleDetected.map((item, idx) => {
               const st = jobs[item.id] || { selected: false, status: 'idle' };
               const placed = findPlacedObjForItem(item.id);
               const col = BOX_COLORS[idx % BOX_COLORS.length];
               const thumb = st.studioPreviewUrl || st.cropPreviewUrl;
               const isHov = hoveredId === item.id;
+              const isOpen = expandedItemId === item.id;
               const liveColor =
                 placed?.parametricColorHex ||
                 placed?.tintHex ||
                 (isValidHexColor(item.primaryColorHex) ? item.primaryColorHex : '#8d8476');
               const archetype = resolvePinterestArchetype(item);
               const canUpgradePbr = archetype !== 'rug_custom' && archetype !== 'wall_art' && archetype !== 'wall_mirror';
+              const isBusy = st.status === 'isolating' || st.status === 'modeling';
 
               return (
                 <div
                   key={item.id}
                   onMouseEnter={() => setHoveredId(item.id)}
                   onMouseLeave={() => setHoveredId((cur) => (cur === item.id ? null : cur))}
-                  className={`border bg-white p-2.5 space-y-2 transition ${
-                    isHov ? 'border-stone-950' : placed ? 'border-stone-300' : 'border-stone-200'
+                  className={`border bg-white transition ${
+                    isHov || isOpen ? 'border-stone-950' : placed ? 'border-stone-300' : 'border-stone-200'
                   }`}
                 >
-                  <div className="flex items-start gap-2">
+                  {/* Compact 1-Row Summary Header */}
+                  <div className="px-2 py-1.5 flex items-center gap-1.5">
                     <input
                       type="checkbox"
                       checked={st.selected}
@@ -3209,44 +3287,89 @@ export const PinterestAIPanel: React.FC<Props> = ({
                           [item.id]: { ...st, selected: e.target.checked },
                         }))
                       }
-                      className="mt-1 accent-stone-950 shrink-0"
+                      className="accent-stone-950 shrink-0"
                     />
                     {thumb && (
                       <img
                         src={thumb}
                         alt={item.nameTr}
-                        className="w-11 h-11 object-contain border border-stone-200 bg-white shrink-0"
+                        className="w-8 h-8 object-contain border border-stone-200 bg-white shrink-0"
                       />
                     )}
-                    <div className="flex-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedItemId(isOpen ? null : item.id)}
+                      className="flex-1 min-w-0 text-left"
+                    >
                       <div className="flex items-center gap-1">
                         <span
                           style={{ backgroundColor: col }}
-                          className="w-4 h-4 text-[9px] font-mono font-bold text-white flex items-center justify-center shrink-0"
+                          className="w-3.5 h-3.5 text-[8px] font-mono font-bold text-white flex items-center justify-center shrink-0"
                         >
                           {idx + 1}
                         </span>
-                        {photos.length > 1 && item.sourcePhotoIndex && (
-                          <span className="px-1 py-0.5 bg-stone-100 border border-stone-300 text-[8px] font-mono font-bold text-stone-700 shrink-0">
-                            F{item.sourcePhotoIndex}
-                          </span>
-                        )}
                         <span
-                          className="w-3 h-3 border border-black/25 shrink-0"
+                          className="w-2.5 h-2.5 border border-black/20 shrink-0"
                           style={{ backgroundColor: liveColor }}
-                          title={`Aktif Renk: ${liveColor}`}
                         />
+                        <span className="font-semibold text-stone-950 text-[11px] truncate">{item.nameTr}</span>
+                      </div>
+                      <p className="text-[9px] font-mono text-stone-500 truncate mt-0.5">
+                        {isBusy
+                          ? st.progressText || 'Yüksek Detay 3B üretiliyor...'
+                          : `${Math.round(item.widthCm)}×${Math.round(item.depthCm)}×${Math.round(item.heightCm)} cm · ${
+                              placed ? (placed.glbUrl ? 'Yüksek Detay 3B' : '3B Odada') : 'Bekliyor'
+                            }`}
+                      </p>
+                    </button>
+
+                    {placed ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelectObjectInRoom(placed.id)}
+                        className="px-2 py-1 bg-stone-950 hover:bg-stone-800 text-white text-[10px] font-semibold whitespace-nowrap shrink-0 transition"
+                        title="3B sahnede seçip rengini veya yerini değiştir"
+                      >
+                        Düzenle
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => placeSingleInstantIn3D(item)}
+                        className="px-2 py-1 bg-stone-950 hover:bg-stone-800 text-white text-[10px] font-semibold whitespace-nowrap shrink-0 transition"
+                      >
+                        Ekle
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setExpandedItemId(isOpen ? null : item.id)}
+                      className="p-1 text-stone-400 hover:text-stone-950 shrink-0"
+                      title="Ölçü ve gelişmiş seçenekler"
+                    >
+                      {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  {/* Expanded Detail Drawer (Dimensions, High-Detail 3D, Redraw Box, Save to Catalog, Delete) */}
+                  {isOpen && (
+                    <div className="px-2.5 pb-2.5 pt-2 border-t border-stone-200 bg-[#faf9f6] space-y-2">
+                      <div className="flex items-center gap-1.5">
                         <input
                           type="text"
                           value={item.nameTr}
                           onChange={(e) => updateDetectedItem(item.id, { nameTr: e.target.value })}
-                          className="flex-1 min-w-0 font-semibold text-stone-950 text-[11px] bg-transparent border-b border-transparent focus:border-stone-400 focus:outline-none truncate"
+                          className="flex-1 min-w-0 px-2 py-1 border border-stone-300 bg-white font-semibold text-stone-950 text-[11px] focus:border-stone-950 focus:outline-none"
                         />
                         <button
                           type="button"
-                          onClick={() => setDrawMode(item.id)}
-                          title="Fotoğrafta bu eşyanın kutusunu yeniden çiz"
-                          className="p-0.5 text-stone-400 hover:text-stone-950 shrink-0"
+                          onClick={() => {
+                            setPanelTab('setup');
+                            setDrawMode(item.id);
+                          }}
+                          title="Fotoğrafta kutuyu yeniden çiz"
+                          className="p-1.5 border border-stone-300 bg-white hover:border-stone-950 text-stone-700 shrink-0"
                         >
                           <Crop className="w-3.5 h-3.5" />
                         </button>
@@ -3254,13 +3377,13 @@ export const PinterestAIPanel: React.FC<Props> = ({
                           type="button"
                           onClick={() => removeDetectedItem(item.id)}
                           title="Odadan ve listeden kaldır"
-                          className="p-0.5 text-stone-400 hover:text-red-700 shrink-0"
+                          className="p-1.5 border border-stone-300 bg-white hover:border-red-700 text-stone-500 hover:text-red-700 shrink-0"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-1 mt-1.5">
+                      <div className="grid grid-cols-3 gap-1.5">
                         <label className="text-[10px] text-stone-500">
                           En (cm)
                           <NumericInput
@@ -3270,7 +3393,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                             decimals={0}
                             value={Math.round(item.widthCm)}
                             onChange={(v) => updateDetectedItem(item.id, { widthCm: v })}
-                            className="w-full px-1.5 py-0.5 border border-stone-200 font-mono text-stone-900"
+                            className="w-full px-1.5 py-0.5 border border-stone-300 bg-white font-mono text-stone-900"
                           />
                         </label>
                         <label className="text-[10px] text-stone-500">
@@ -3282,7 +3405,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
                             decimals={0}
                             value={Math.round(item.depthCm)}
                             onChange={(v) => updateDetectedItem(item.id, { depthCm: v })}
-                            className="w-full px-1.5 py-0.5 border border-stone-200 font-mono text-stone-900"
+                            className="w-full px-1.5 py-0.5 border border-stone-300 bg-white font-mono text-stone-900"
                           />
                         </label>
                         <label className="text-[10px] text-stone-500">
@@ -3294,106 +3417,60 @@ export const PinterestAIPanel: React.FC<Props> = ({
                             decimals={0}
                             value={Math.round(item.heightCm)}
                             onChange={(v) => updateDetectedItem(item.id, { heightCm: v })}
-                            className="w-full px-1.5 py-0.5 border border-stone-200 font-mono text-stone-900"
+                            className="w-full px-1.5 py-0.5 border border-stone-300 bg-white font-mono text-stone-900"
                           />
                         </label>
                       </div>
-                    </div>
-                  </div>
 
-                  {st.status === 'error' && st.errorMsg && (
-                    <div className="px-2 py-1.5 bg-red-50 border border-red-200 text-[10px] font-mono text-red-800 break-words leading-snug">
-                      Hata: {st.errorMsg}
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-stone-100">
-                    <span className="text-[10px] font-mono min-w-0 truncate">
-                      {st.status === 'isolating' || st.status === 'modeling' ? (
-                        <span className="text-blue-700 flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                          <span className="truncate">{st.progressText || '2K PBR üretiliyor...'}</span>
-                        </span>
-                      ) : placed ? (
-                        <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                          <Check className="w-3 h-3 shrink-0" /> {placed.glbUrl ? '2K PBR Odada' : '3B Odada'}
-                        </span>
-                      ) : (
-                        <span className="text-stone-400">Odada değil</span>
-                      )}
-                    </span>
-
-                    <div className="flex items-center gap-1 shrink-0">
-                      {placed ? (
-                        <button
-                          type="button"
-                          onClick={() => onSelectObjectInRoom(placed.id)}
-                          className="px-2 py-1 border border-stone-950 bg-stone-950 text-white text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap"
-                          title="3B sahnede seçip rengini, ölçüsünü veya yerini değiştir"
-                        >
-                          <MousePointerClick className="w-3 h-3" />
-                          <span>Renk / Düzenle</span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => placeSingleInstantIn3D(item)}
-                          className="px-2 py-1 border border-stone-950 bg-stone-950 text-white text-[10px] font-semibold whitespace-nowrap"
-                        >
-                          Anında Koy
-                        </button>
+                      {st.status === 'error' && st.errorMsg && (
+                        <div className="px-2 py-1.5 bg-red-50 border border-red-200 text-[10px] font-mono text-red-800 break-words leading-snug">
+                          Hata: {st.errorMsg}
+                        </div>
                       )}
 
-                      {canUpgradePbr && runpodReady && (
-                        <button
-                          type="button"
-                          disabled={st.status === 'isolating' || st.status === 'modeling' || batchRunning}
-                          onClick={() => upgradeItemWithRunPod3D(item)}
-                          className="px-2 py-1 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800 text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
-                          title="Yüksek detaylı 2K PBR .GLB modele yükselt"
-                        >
-                          <Wand2 className="w-3 h-3" />
-                          <span>2K PBR</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Item #7B: Save Modeled / 2K PBR Product Permanently to Showroom Product Catalog! */}
-                  {placed && onSaveToCatalog && (
-                    <div className="pt-1 border-t border-stone-100 flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-stone-500 truncate">
-                        {placed.glbUrl ? '2K PBR .GLB hazır — kataloğa eklenebilir' : 'Kataloğa kaydet (önce 2K PBR önerilir)'}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={savingCatalogId === placed.id}
-                        onClick={async () => {
-                          setSavingCatalogId(placed.id);
-                          try {
-                            const ok = await onSaveToCatalog(placed, thumb);
-                            if (ok) setSavedCatalogIds((prev) => ({ ...prev, [placed.id]: true }));
-                          } finally {
-                            setSavingCatalogId(null);
-                          }
-                        }}
-                        className={`px-2 py-1 border text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
-                          savedCatalogIds[placed.id]
-                            ? 'border-emerald-700 bg-emerald-700 text-white'
-                            : placed.glbUrl
-                            ? 'border-stone-950 bg-stone-950 text-white hover:bg-stone-800'
-                            : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
-                        }`}
-                      >
-                        {savingCatalogId === placed.id ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : savedCatalogIds[placed.id] ? (
-                          <Check className="w-3 h-3" />
-                        ) : (
-                          <BookmarkPlus className="w-3 h-3" />
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        {canUpgradePbr && runpodReady && (
+                          <button
+                            type="button"
+                            disabled={isBusy || batchRunning}
+                            onClick={() => upgradeItemWithRunPod3D(item)}
+                            className="flex-1 py-1.5 px-2 border border-stone-950 bg-white hover:bg-stone-950 hover:text-white text-stone-950 text-[10px] font-bold flex items-center justify-center gap-1 whitespace-nowrap disabled:opacity-50 transition"
+                            title="Bu parçayı gerçek yüksek detaylı 3B modele dönüştür"
+                          >
+                            {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                            <span>Yüksek Detay 3B</span>
+                          </button>
                         )}
-                        <span>{savedCatalogIds[placed.id] ? 'Katalogda' : 'Kataloğa Kaydet'}</span>
-                      </button>
+                        {placed && onSaveToCatalog && (
+                          <button
+                            type="button"
+                            disabled={savingCatalogId === placed.id}
+                            onClick={async () => {
+                              setSavingCatalogId(placed.id);
+                              try {
+                                const ok = await onSaveToCatalog(placed, thumb);
+                                if (ok) setSavedCatalogIds((prev) => ({ ...prev, [placed.id]: true }));
+                              } finally {
+                                setSavingCatalogId(null);
+                              }
+                            }}
+                            className={`flex-1 py-1.5 px-2 border text-[10px] font-semibold flex items-center justify-center gap-1 whitespace-nowrap transition ${
+                              savedCatalogIds[placed.id]
+                                ? 'border-emerald-700 bg-emerald-700 text-white'
+                                : 'border-stone-300 bg-white text-stone-800 hover:border-stone-950'
+                            }`}
+                          >
+                            {savingCatalogId === placed.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : savedCatalogIds[placed.id] ? (
+                              <Check className="w-3 h-3" />
+                            ) : (
+                              <BookmarkPlus className="w-3 h-3" />
+                            )}
+                            <span>{savedCatalogIds[placed.id] ? 'Katalogda' : 'Kataloğa Kaydet'}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
