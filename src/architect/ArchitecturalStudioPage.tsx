@@ -235,6 +235,11 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [uploadingCad, setUploadingCad] = useState(false);
   const [sunPlaying, setSunPlaying] = useState(false);
   const [export3dsMaxOpen, setExport3dsMaxOpen] = useState(false);
+  const [activeRoomId, setActiveRoomId] = useState<string>('main');
+  const [roomBarAddOpen, setRoomBarAddOpen] = useState(false);
+  const [roomBarKind, setRoomBarKind] = useState<RoomKind>('bedroom');
+  const [roomBarSide, setRoomBarSide] = useState<WallId>('east');
+  const [roomBarEmpty, setRoomBarEmpty] = useState(true);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // Universal Smart Search Bar (Colors, codes, nearest shades, 3D items, windows, doors, rooms!)
@@ -553,14 +558,57 @@ export const ArchitecturalStudioPage: React.FC = () => {
     return () => window.clearInterval(id);
   }, [sunPlaying]);
 
-  // Keep activeWall in sync when clicking a wall or wallZone in 3D
+  // Keep activeWall & activeRoomId in sync when clicking elements in 3D
   useEffect(() => {
     if (selection?.type === 'wall') setActiveWall(selection.wall);
     else if (selection?.type === 'wallZone') {
       const z = (project.wallZones || []).find((wz) => wz.id === selection.id);
       if (z) setActiveWall(z.wall);
+    } else if (selection?.type === 'adjacentRoom') {
+      setActiveRoomId(selection.id);
+    } else if (selection?.type === 'floor') {
+      setActiveRoomId('main');
     }
   }, [selection, project.wallZones]);
+
+  useEffect(() => {
+    if (activeRoomId !== 'main' && !(project.adjacentRooms || []).some((r) => r.id === activeRoomId)) {
+      setActiveRoomId('main');
+    }
+  }, [activeRoomId, project.adjacentRooms]);
+
+  const findFirstFreeWall = useCallback(
+    (parentId = 'main'): WallId => {
+      const used = new Set(
+        (project.adjacentRooms || [])
+          .filter((r) => r.parentRoomId === parentId)
+          .map((r) => r.attachedSide)
+      );
+      const order: WallId[] = ['east', 'west', 'south', 'north'];
+      return order.find((w) => !used.has(w)) || 'east';
+    },
+    [project.adjacentRooms]
+  );
+
+  const selectActiveRoom = useCallback(
+    (roomId: string, focusAngle: 'eye' | 'corner' = 'eye') => {
+      setActiveRoomId(roomId);
+      setCameraMode('free');
+      if (roomId === 'main') {
+        setSelection({ type: 'floor' });
+      } else {
+        setSelection({ type: 'adjacentRoom', id: roomId });
+      }
+      setTimeout(() => {
+        if ((project.adjacentRooms?.length || 0) > 0 || roomId !== 'main') {
+          viewportRef.current?.focusRoom(roomId, focusAngle);
+        } else {
+          viewportRef.current?.resetCamera('free');
+        }
+      }, 40);
+    },
+    [project.adjacentRooms?.length]
+  );
 
   const solar = useMemo(() => computeSolarLighting(project.sun), [project.sun]);
   const houseBounds = useMemo(() => getHouseBounds(project), [project]);
@@ -571,6 +619,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
       const built = buildApartmentPreset(preset, catalog);
       setProject(built);
       setSelection(null);
+      setActiveRoomId('main');
       setNewRoomParentId('main');
       setTimeout(() => viewportRef.current?.resetCamera(cameraMode === 'plan' ? 'plan' : 'free'), 80);
       const label =
@@ -591,13 +640,10 @@ export const ArchitecturalStudioPage: React.FC = () => {
       depthM?: number;
       passageStyle?: PassageStyle;
       autoFurnish?: boolean;
-    }) => {
-      let createdRoomId = '';
-      let createdName = '';
+      focusInRoom?: boolean;
+    }): string => {
+      const { room, newObjects } = attachAdjacentRoom(project, opts);
       setProject((prev) => {
-        const { room, newObjects } = attachAdjacentRoom(prev, opts);
-        createdRoomId = room.id;
-        createdName = room.name;
         // Automatically clear any overlapping exterior facade window/door on main's attached wall so the new passage opens cleanly with zero warnings
         const nextWindows =
           opts.parentRoomId === 'main' ? prev.windows.filter((w) => w.wall !== opts.side) : prev.windows;
@@ -611,13 +657,20 @@ export const ArchitecturalStudioPage: React.FC = () => {
           objects: [...prev.objects, ...newObjects],
         };
       });
+      setActiveRoomId(room.id);
+      setSelection({ type: 'adjacentRoom', id: room.id });
       setTimeout(() => {
-        if (createdRoomId) setSelection({ type: 'adjacentRoom', id: createdRoomId });
-        viewportRef.current?.resetCamera(cameraMode === 'plan' ? 'plan' : 'free');
-      }, 90);
-      showToast(`${createdName || ROOM_KIND_LABELS[opts.roomKind]} eklendi ve kapı geçişi açıldı.`);
+        if (opts.focusInRoom) {
+          setCameraMode('free');
+          viewportRef.current?.focusRoom(room.id, 'eye');
+        } else {
+          viewportRef.current?.resetCamera(cameraMode === 'plan' ? 'plan' : 'free');
+        }
+      }, 110);
+      showToast(`${room.name} eklendi ve kapı geçişi açıldı — artık bu odayı tasarlayabilirsiniz!`);
+      return room.id;
     },
-    [cameraMode, showToast]
+    [project, cameraMode, showToast]
   );
   const parsedQuick = useMemo(
     () => parseQuickAddQuery(quickQuery, catalog, project.ceilingM),
@@ -2772,7 +2825,20 @@ export const ArchitecturalStudioPage: React.FC = () => {
     <div className={activeTab === 'pinterest' ? 'p-3.5 block' : 'hidden'}>
       <PinterestAIPanel
         project={project}
-        activeTargetRoomId={selection?.type === 'adjacentRoom' ? selection.id : undefined}
+        activeTargetRoomId={activeRoomId}
+        onTargetRoomChange={(rid) => selectActiveRoom(rid, 'eye')}
+        onQuickCreateRoom={(kind) => {
+          const parentId = activeRoomId && activeRoomId !== 'main' ? 'main' : 'main';
+          const freeWall = findFirstFreeWall(parentId);
+          return handleAttachAdjacentRoom({
+            parentRoomId: parentId,
+            side: freeWall,
+            roomKind: kind,
+            passageStyle: kind === 'kitchen' || kind === 'living' ? 'open_arch' : 'door',
+            autoFurnish: false,
+            focusInRoom: true,
+          });
+        }}
         onApplySingleMaterial={(mat: PinterestMaterialEntry, targetRoomId?: string) => {
           setProject((prev) => {
             if (targetRoomId && targetRoomId !== 'main') {
@@ -2909,11 +2975,12 @@ export const ArchitecturalStudioPage: React.FC = () => {
                               floorMaterial: style.floorMaterial || r.floorMaterial,
                               floorTintHex: style.floorTintHex || r.floorTintHex,
                               wallColorHex: style.wallColorHex || r.wallColorHex,
+                              wallPattern: style.wallPattern || r.wallPattern,
                             }
                           : r
                       )
                     : prev.adjacentRooms,
-                objects: [...keepObjs, ...objects],
+                objects: autoLinkNestedAssemblies([...keepObjs, ...objects]),
               };
             }
 
@@ -3763,7 +3830,183 @@ export const ArchitecturalStudioPage: React.FC = () => {
         )}
 
         {/* Center Full-Bleed Multi-Touch & Tablet/4K TV-Safe 3D Viewport */}
-        <main className="flex-1 min-w-0 relative overflow-hidden">
+        <main className="flex-1 min-w-0 flex flex-col relative overflow-hidden">
+          {/* Always-Visible Multi-Room Switcher & 1-Click "+ Yeni Oda Ekle" Strip (stays accessible from Foto 3B & every tab!) */}
+          {!tvPresentationMode && (
+            <div className="relative z-20 h-10 bg-white/95 border-b border-stone-200 px-2.5 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0 py-1">
+                <button
+                  type="button"
+                  onClick={() => selectActiveRoom('main', 'eye')}
+                  className={`px-2.5 py-1 border text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
+                    activeRoomId === 'main'
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-stone-200 bg-[#faf9f6] hover:border-stone-950 text-stone-800'
+                  }`}
+                >
+                  <span className="font-mono text-[9px] opacity-70">01</span>
+                  <span>Ana Salon</span>
+                  <span className="font-mono text-[9px] opacity-70">
+                    {project.widthM.toFixed(1)}×{project.depthM.toFixed(1)}m
+                  </span>
+                </button>
+
+                {(project.adjacentRooms || []).map((rm, idx) => {
+                  const isAct = activeRoomId === rm.id;
+                  return (
+                    <button
+                      key={rm.id}
+                      type="button"
+                      onClick={() => selectActiveRoom(rm.id, 'eye')}
+                      className={`px-2.5 py-1 border text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
+                        isAct
+                          ? 'border-stone-950 bg-stone-950 text-white'
+                          : 'border-stone-200 bg-[#faf9f6] hover:border-stone-950 text-stone-800'
+                      }`}
+                    >
+                      <span className="font-mono text-[9px] opacity-70">{String(idx + 2).padStart(2, '0')}</span>
+                      <span>{rm.name}</span>
+                      <span className="font-mono text-[9px] opacity-70">
+                        {rm.widthM.toFixed(1)}×{rm.depthM.toFixed(1)}m
+                      </span>
+                    </button>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRoomBarSide(findFirstFreeWall('main'));
+                    setRoomBarEmpty(activeTab === 'pinterest');
+                    setRoomBarAddOpen((v) => !v);
+                  }}
+                  className={`px-2.5 py-1 border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0 transition ${
+                    roomBarAddOpen
+                      ? 'border-stone-950 bg-stone-950 text-white'
+                      : 'border-dashed border-stone-500 bg-white hover:border-stone-950 hover:bg-stone-100 text-stone-900'
+                  }`}
+                  title="Aynı projeye yeni oda ekle (Yatak Odası, Mutfak, Salon, Çalışma, Banyo...)"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Yeni Oda Ekle</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                {totalRoomCount > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCameraMode('free');
+                      viewportRef.current?.resetCamera('free');
+                    }}
+                    className="px-2 py-1 border border-stone-300 hover:border-stone-950 bg-white text-stone-800 text-[10px] font-semibold whitespace-nowrap shrink-0 transition"
+                    title="Tüm evi tek seferde kuşbakışı gör"
+                  >
+                    Tüm Ev ({totalRoomCount} Oda)
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openRenderStudio({ roomId: activeRoomId, angle: 'eye', autoStart: true })}
+                  className="px-2 py-1 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-stone-800 text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
+                  title="Seçili odayı göz hizasından V-Ray renderla"
+                >
+                  <Camera className="w-3 h-3" />
+                  <span className="hidden sm:inline">Bu Odayı Renderla</span>
+                </button>
+              </div>
+
+              {/* Instant "+ Yeni Oda Ekle" Dropdown Popover */}
+              {roomBarAddOpen && (
+                <div className="absolute left-2.5 top-full mt-1.5 w-[310px] max-w-[calc(100vw-24px)] bg-white border border-stone-300 shadow-2xl p-3 space-y-2.5 z-40 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-stone-950">Projeye Yeni Oda Ekle</span>
+                    <button
+                      type="button"
+                      onClick={() => setRoomBarAddOpen(false)}
+                      className="p-0.5 text-stone-400 hover:text-stone-950"
+                      aria-label="Kapat"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-mono uppercase text-stone-500">Oda Tipi</span>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { kind: 'bedroom' as RoomKind, lbl: 'Yatak Odası' },
+                          { kind: 'kitchen' as RoomKind, lbl: 'Mutfak' },
+                          { kind: 'living' as RoomKind, lbl: 'Oturma' },
+                          { kind: 'office' as RoomKind, lbl: 'Çalışma' },
+                          { kind: 'bathroom' as RoomKind, lbl: 'Banyo / WC' },
+                          { kind: 'balcony' as RoomKind, lbl: 'Balkon' },
+                        ] as const
+                      ).map((r) => (
+                        <button
+                          key={r.kind}
+                          type="button"
+                          onClick={() => setRoomBarKind(r.kind)}
+                          className={`py-1.5 px-1.5 border text-[10px] font-semibold truncate transition ${
+                            roomBarKind === r.kind
+                              ? 'border-stone-950 bg-stone-950 text-white'
+                              : 'border-stone-200 bg-[#faf9f6] hover:border-stone-950 text-stone-800'
+                          }`}
+                        >
+                          {r.lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-mono uppercase text-stone-500">Hangi Duvara Eklensin?</span>
+                    <WallCompassPicker
+                      value={roomBarSide}
+                      onChange={setRoomBarSide}
+                      project={project}
+                      centerLabel="Ana Salon"
+                      compact
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-[11px] text-stone-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={roomBarEmpty}
+                      onChange={(e) => setRoomBarEmpty(e.target.checked)}
+                      className="accent-stone-950"
+                    />
+                    <span>Boş oda aç (Pinterest Foto 3B / sıfırdan tasarım)</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleAttachAdjacentRoom({
+                        parentRoomId: 'main',
+                        side: roomBarSide,
+                        roomKind: roomBarKind,
+                        passageStyle: roomBarKind === 'kitchen' || roomBarKind === 'living' ? 'open_arch' : 'door',
+                        autoFurnish: !roomBarEmpty,
+                        focusInRoom: true,
+                      });
+                      setRoomBarAddOpen(false);
+                    }}
+                    className="w-full py-2 bg-stone-950 hover:bg-stone-800 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{ROOM_KIND_LABELS[roomBarKind]} Ekle &amp; Odaklan</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 3D Canvas Sub-Container */}
+          <div className="flex-1 min-h-0 relative overflow-hidden">
           {/* Desktop & Landscape Tablet Edge Collapse/Expand Handles (Item #4) */}
           {!tvPresentationMode && (
             <button
@@ -4017,6 +4260,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
               </div>
             )
           )}
+          </div>
         </main>
 
         {/* Right Contextual Inspector: Collapsible Side Panel on Desktop/Landscape Tablet; Clean Bottom Sheet on Phone/Portrait Tablet! */}

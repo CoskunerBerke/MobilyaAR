@@ -60,6 +60,7 @@ import {
   type FloorMaterialKind,
   type MezzanineBounds,
   type ParametricFurnitureKind,
+  type RoomKind,
   type WallId,
   type WallPattern,
 } from './types';
@@ -166,6 +167,8 @@ function buildMaterialEntriesFromStyle(
 interface Props {
   project: ArchRoomProject;
   activeTargetRoomId?: string;
+  onTargetRoomChange?: (roomId: string) => void;
+  onQuickCreateRoom?: (kind: RoomKind) => string | undefined;
   onApplySingleMaterial?: (mat: PinterestMaterialEntry, targetRoomId?: string) => void;
   onApplyRoomStyle: (style: PinterestRoomStyle, targetRoomId?: string) => void;
   onApplyPinterestScene: (
@@ -313,6 +316,8 @@ const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
 export const PinterestAIPanel: React.FC<Props> = ({
   project,
   activeTargetRoomId,
+  onTargetRoomChange,
+  onQuickCreateRoom,
   onApplySingleMaterial,
   onApplyRoomStyle,
   onApplyPinterestScene,
@@ -356,6 +361,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
   const [userFocusPrompt, setUserFocusPrompt] = useState<string>('');
   const [targetRoomId, setTargetRoomId] = useState<string>(activeTargetRoomId || 'main');
+  const [showQuickRoomPicker, setShowQuickRoomPicker] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [refining, setRefining] = useState(false);
   const [autoPopulateOnAnalyze, setAutoPopulateOnAnalyze] = useState(true);
@@ -1613,12 +1619,14 @@ export const PinterestAIPanel: React.FC<Props> = ({
         return next;
       });
 
-      // On Photo 1 (with no narrow focus prompt), cleanly replace ONLY this target room's old furniture
-      // so leftover objects from previous rooms/demos never pollute the new Pinterest reconstruction;
-      // on Photo 2+ NEVER wipe prior photos' furniture!
+      // On Photo 1 (or when targeting a freshly selected separate room without a narrow focus prompt),
+      // cleanly replace ONLY this target room's old furniture (adjacent rooms & Ana Salon stay untouched!);
+      // when adding Photo 2+ into the SAME Ana Salon, keep prior furniture non-destructively!
       const effectiveReplace =
-        photos.length > 1
-          ? false
+        tRoom.id !== 'main'
+          ? replaceExistingOnBuild || !userFocusPrompt.trim()
+          : photos.length > 1
+          ? replaceExistingOnBuild
           : replaceExistingOnBuild || !userFocusPrompt.trim();
 
       if (autoPopulateOnAnalyze && taggedObjects.length > 0) {
@@ -2555,24 +2563,80 @@ export const PinterestAIPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Inline Multi-Room Target Picker (shown directly whenever apartment has 2+ rooms!) */}
-            {(project.adjacentRooms?.length || 0) > 0 && (
-              <div className="flex items-center gap-2 border border-stone-200 bg-[#faf9f6] px-2.5 py-1.5">
-                <span className="text-[10px] font-semibold text-stone-600 whitespace-nowrap">Hedef Oda:</span>
-                <select
-                  value={targetRoomId}
-                  onChange={(e) => setTargetRoomId(e.target.value)}
-                  className="flex-1 min-w-0 px-1.5 py-1 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
-                >
-                  <option value="main">Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)</option>
-                  {(project.adjacentRooms || []).map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} ({r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m)
-                    </option>
-                  ))}
-                </select>
+            {/* Always-Visible Target Room Selector + 1-Click "+ Yeni Oda" Creator right inside Foto 3B! */}
+            <div className="border border-stone-200 bg-[#faf9f6] p-2 space-y-1.5">
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                  Hedef Oda
+                </span>
+                {onQuickCreateRoom && (
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickRoomPicker((v) => !v)}
+                    className={`px-2 py-0.5 border text-[10px] font-bold flex items-center gap-1 whitespace-nowrap transition ${
+                      showQuickRoomPicker
+                        ? 'border-stone-950 bg-stone-950 text-white'
+                        : 'border-stone-950 bg-white hover:bg-stone-950 hover:text-white text-stone-950'
+                    }`}
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Yeni Oda Ekle</span>
+                  </button>
+                )}
               </div>
-            )}
+
+              <select
+                value={targetRoomId}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setTargetRoomId(nextId);
+                  onTargetRoomChange?.(nextId);
+                }}
+                className="w-full px-2 py-1.5 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950 focus:outline-none focus:border-stone-950"
+              >
+                <option value="main">
+                  01 · Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)
+                </option>
+                {(project.adjacentRooms || []).map((r, i) => (
+                  <option key={r.id} value={r.id}>
+                    {String(i + 2).padStart(2, '0')} · {r.name} ({r.widthM.toFixed(1)}×{r.depthM.toFixed(1)} m)
+                  </option>
+                ))}
+              </select>
+
+              {showQuickRoomPicker && onQuickCreateRoom && (
+                <div className="pt-1.5 border-t border-stone-200 space-y-1.5">
+                  <p className="text-[10px] text-stone-600">
+                    Tek tıkla yanına boş oda ekle — yeni fotoğrafı doğrudan bu odaya kur:
+                  </p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {(
+                      [
+                        { kind: 'bedroom' as RoomKind, label: '+ Yatak Odası' },
+                        { kind: 'kitchen' as RoomKind, label: '+ Mutfak' },
+                        { kind: 'living' as RoomKind, label: '+ Oturma Odası' },
+                        { kind: 'office' as RoomKind, label: '+ Çalışma Odası' },
+                        { kind: 'bathroom' as RoomKind, label: '+ Banyo / WC' },
+                        { kind: 'balcony' as RoomKind, label: '+ Balkon / Teras' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.kind}
+                        type="button"
+                        onClick={() => {
+                          const newId = onQuickCreateRoom(opt.kind);
+                          if (newId) setTargetRoomId(newId);
+                          setShowQuickRoomPicker(false);
+                        }}
+                        className="py-1.5 px-2 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-white text-[10px] font-semibold text-stone-800 text-left truncate transition"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Collapsible Placement & Calibration Options (keeps primary CTA crisp & clutter-free) */}
             <div className="border border-stone-200 bg-[#faf9f6]">
@@ -2597,21 +2661,6 @@ export const PinterestAIPanel: React.FC<Props> = ({
 
               {showAdvancedOptions && (
                 <div className="px-2.5 pb-2.5 pt-2 border-t border-stone-200 space-y-2 text-[11px] text-stone-700 bg-white">
-                  {(project.adjacentRooms?.length || 0) === 0 && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-mono uppercase text-stone-500 block">
-                        Hangi Odaya Yerleştirilsin?
-                      </label>
-                      <select
-                        value={targetRoomId}
-                        onChange={(e) => setTargetRoomId(e.target.value)}
-                        className="w-full px-2 py-1.5 border border-stone-300 bg-white text-[11px] font-semibold text-stone-950"
-                      >
-                        <option value="main">Ana Salon ({project.widthM.toFixed(1)}×{project.depthM.toFixed(1)} m)</option>
-                      </select>
-                    </div>
-                  )}
-
                   <div className="grid grid-cols-2 gap-1">
                     <button
                       type="button"
