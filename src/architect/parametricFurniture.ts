@@ -1161,24 +1161,56 @@ export function buildParametricObject3D(
       grp.add(st);
     }
   } else if (obj.parametricKind === 'bookshelf') {
-    const woodMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.6 });
-    const backMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.8 });
+    const baseCol = new THREE.Color(primaryHex || '#f2f0ec');
+    const woodMat = new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.56 });
+    // Soft architectural recessed back matching shelf tone (never a harsh pitch-black TV void!)
+    const backMat = new THREE.MeshStandardMaterial({ color: baseCol.clone().multiplyScalar(0.92), roughness: 0.8 });
     const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe4b8 });
+    const decorPalette = [0x3b3a38, 0xc8b9a6, 0x8f6b53, 0xded9cf, 0x4c5d54, 0x252422];
+    const decorMats = decorPalette.map((hex) => new THREE.MeshStandardMaterial({ color: hex, roughness: 0.72 }));
+    const paperMat = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.85 });
     disposables.push(() => {
       woodMat.dispose();
       backMat.dispose();
       ledMat.dispose();
+      decorMats.forEach((m) => m.dispose());
+      paperMat.dispose();
     });
-    const th = 0.032;
-    addBox(W, H, 0.02, 0, H * 0.5, -D * 0.5 + 0.01, backMat);
+    const th = 0.028;
+    addBox(W, H, 0.018, 0, H * 0.5, -D * 0.5 + 0.009, backMat, false);
     addBox(th, H, D, -W * 0.5 + th * 0.5, H * 0.5, 0, woodMat);
     addBox(th, H, D, W * 0.5 - th * 0.5, H * 0.5, 0, woodMat);
-    const shelves = Math.max(4, Math.min(7, Math.round(H / 0.38)));
+    const shelves = Math.max(3, Math.min(7, Math.round(H / 0.36)));
+    const innerW = Math.max(0.28, W - th * 2 - 0.06);
+    const itemsPerTier = Math.max(2, Math.min(6, Math.round(innerW / 0.3)));
     for (let i = 0; i <= shelves; i++) {
       const sy = (H - th) * (i / shelves) + th * 0.5;
       addBox(W - th * 2, th, D, 0, sy, 0, woodMat);
       if (i > 0 && i < shelves) {
-        addBox(W - th * 2.4, 0.008, 0.012, 0, sy - th * 0.6, -D * 0.5 + 0.04, ledMat, false);
+        addBox(W - th * 2.4, 0.006, 0.01, 0, sy - th * 0.6, -D * 0.5 + 0.03, ledMat, false);
+      }
+      if (i < shelves) {
+        const tierH = (H - th) / shelves;
+        const shelfTopY = sy + th * 0.5;
+        const maxObjH = Math.max(0.12, tierH - th - 0.045);
+        for (let bi = 0; bi < itemsPerTier; bi++) {
+          const seed = i * 13 + bi * 7;
+          const frac = (bi + 0.5) / itemsPerTier;
+          const bx = -innerW * 0.5 + frac * innerW + (((seed % 5) - 2) * 0.015);
+          if ((seed % 3) !== 0) {
+            const fw = Math.min((innerW / itemsPerTier) * 0.74, 0.14 + (seed % 4) * 0.032);
+            const fh = Math.min(maxObjH * 0.86, 0.16 + ((seed + 1) % 3) * 0.045);
+            addBox(fw, fh, 0.018, bx, shelfTopY + fh * 0.5, -D * 0.14, decorMats[seed % decorMats.length], false);
+            addBox(fw * 0.76, fh * 0.76, 0.006, bx, shelfTopY + fh * 0.5, -D * 0.14 + 0.011, paperMat, false);
+          } else {
+            for (let k = 0; k < 3; k++) {
+              const bh = Math.min(maxObjH * 0.82, 0.17 + ((seed + k) % 3) * 0.032);
+              const bw = 0.024 + ((seed + k) % 2) * 0.008;
+              const bd = Math.min(D * 0.72, 0.14);
+              addBox(bw, bh, bd, bx + (k - 1) * 0.03, shelfTopY + bh * 0.5, -0.01, decorMats[(seed + k * 2) % decorMats.length], false);
+            }
+          }
+        }
       }
     }
   } else if (obj.parametricKind === 'bed_frame') {

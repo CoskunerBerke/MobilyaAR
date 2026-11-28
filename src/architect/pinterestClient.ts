@@ -153,6 +153,9 @@ export function resolvePinterestArchetype(item: PinterestDetectedObject): Parame
   }
   if (/televizyon|\btv\b|oled|ekran|screen/.test(t)) return 'wall_tv';
   if (/duvar raf|floating shelf|wall shelf|\braf\b|nis raf/.test(t) && (item.heightCm || 0) <= 65) return 'wall_shelf';
+  if (/sepet|basket|hasir|rattan|wicker/.test(t) && !/koltuk|sandalye|chair|sofa|sehpa|table|avize|lamba|lamp/.test(t)) {
+    return 'decorative_vase';
+  }
   if (/vazo|vase|tepsi|tray|mum|candle|cicek.*vazo|dekor.*obje|flower/.test(t) || ((/bitki|cicek|saksi|plant/.test(t)) && (item.relation === 'on_top_of' || ((item.heightCm || 0) > 0 && item.heightCm <= 45)))) {
     return 'decorative_vase';
   }
