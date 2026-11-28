@@ -54,6 +54,12 @@ export interface PinterestRoomStyle {
   primaryWindowWall?: WallId;
   /** All walls that visibly carry floor-to-ceiling windows or curtains (e.g. ['west','north'] for corner curtains) */
   windowWalls?: WallId[];
+  /** Exact height of window sill from floor in cm (10 for floor-to-ceiling French doors, 80-105 for standard sill windows) */
+  windowSillHeightCm?: number;
+  /** Exact visible window frame color (#f4f3ef white PVC/wood, #232325 matte black, #8f6d4c natural oak) */
+  windowFrameColorHex?: string;
+  /** True when the window visibly has a raised interior windowsill ledge carrying plants/books/decor */
+  windowHasDeepSill?: boolean;
   hasCeilingLedCove?: boolean;
   hasMezzanine?: boolean;
   mezzanine?: PinterestMezzanineSpec;
@@ -76,7 +82,16 @@ export interface PinterestDetectedObject {
   floorLevel?: 0 | 1;
   elevationCm: number;
   anchorToId?: string;
-  relation?: 'none' | 'above' | 'on_top_of' | 'left_of' | 'right_of' | 'in_front_of';
+  relation?:
+    | 'none'
+    | 'above'
+    | 'on_top_of'
+    | 'on_windowsill'
+    | 'inside_shelf'
+    | 'leaning_on_wall'
+    | 'left_of'
+    | 'right_of'
+    | 'in_front_of';
   relativeX: number;
   relativeZ: number;
   facingDeg: number;
@@ -135,10 +150,17 @@ function normTr(s: string): string {
  * so the entire Pinterest room can assemble instantaneously in 3D with zero failures.
  */
 export function resolvePinterestArchetype(item: PinterestDetectedObject): ParametricFurnitureKind {
+  const t = normTr(`${item.nameTr} ${item.category} ${item.visualDescriptionEn}`);
+  // Universal high-precision semantic guards that override common Vision misclassifications (e.g. wicker basket -> ottoman!)
+  if (
+    /sepet|basket|hasir|rattan|wicker/.test(t) &&
+    !/koltuk|sandalye|chair|sofa|sehpa|table|avize|lamba|lamp|puf|tabure|stool|pouf|bitki|agac|cicek|plant|tree/.test(t)
+  ) {
+    return 'decorative_vase';
+  }
   if (item.parametricKind && VALID_PARAMETRIC_SET.has(item.parametricKind)) {
     return item.parametricKind;
   }
-  const t = normTr(`${item.nameTr} ${item.category} ${item.visualDescriptionEn}`);
   if (item.mountMode === 'rug' || /hali|kilim|rug|carpet/.test(t)) return 'rug_custom';
   if (/ayna|mirror/.test(t)) return 'wall_mirror';
   if (/tablo|poster|resim|cerceve|painting|artwork|wall art/.test(t)) return 'wall_art';
@@ -673,6 +695,8 @@ export interface VerifyAndRefineResult {
     removeWindows?: boolean;
     wallColorHex?: string | null;
     floorTintHex?: string | null;
+    windowSillHeightCm?: number | null;
+    windowFrameColorHex?: string | null;
     enableMezzanine?: boolean | null;
     mezzanineHeightCm?: number | null;
   } | null;

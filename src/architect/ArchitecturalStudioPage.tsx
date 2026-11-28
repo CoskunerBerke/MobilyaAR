@@ -219,7 +219,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [cameraMode, setCameraMode] = useState<ArchCameraMode>('free');
   const [dragAxis, setDragAxis] = useState<'xz' | 'y'>('xz');
   const [showGrid, setShowGrid] = useState(true);
-  const [showSunOrb, setShowSunOrb] = useState(true);
+  const [showSunOrb, setShowSunOrb] = useState(false);
   const [showDoorArcs, setShowDoorArcs] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [desktopLeftOpen, setDesktopLeftOpen] = useState(true);
@@ -3036,20 +3036,62 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         ? Math.min(wLenCm - 30, Math.round(wLenCm * 0.82))
                         : style.hasMezzanine
                         ? 150
-                        : Math.min(wLenCm - 50, 230);
+                        : Math.min(wLenCm - 50, 220);
+                      // Check if any placed object rests elevated on this wall's windowsill so sill height matches millimeter-accurately!
+                      const sillObjOnWall = objects.find(
+                        (o) =>
+                          o.attachedWall === ww &&
+                          o.y >= 0.4 &&
+                          o.heightM <= 0.85 &&
+                          (o.parametricKind === 'potted_plant' ||
+                            o.parametricKind === 'decorative_vase' ||
+                            /pencere|cam|denizlik|sill/i.test(o.name))
+                      );
+                      const rawSillCm =
+                        typeof style.windowSillHeightCm === 'number' && Number.isFinite(style.windowSillHeightCm)
+                          ? Math.max(0, Math.min(155, Math.round(style.windowSillHeightCm)))
+                          : sillObjOnWall
+                          ? Math.round(sillObjOnWall.y * 100)
+                          : style.hasMezzanine || isFullSheerWall
+                          ? 10
+                          : style.windowHasDeepSill
+                          ? 88
+                          : 35;
+                      const sillCm = sillObjOnWall && rawSillCm < 40 ? Math.round(sillObjOnWall.y * 100) : rawSillCm;
+                      const ceilCm = Math.round(nextCeil * 100);
+                      const winH = Math.max(
+                        85,
+                        Math.min(
+                          ceilCm - sillCm - 18,
+                          style.hasMezzanine
+                            ? 340
+                            : isFullSheerWall
+                            ? ceilCm - 24
+                            : sillCm >= 55
+                            ? 155
+                            : 235
+                        )
+                      );
+                      const frameHex =
+                        style.windowFrameColorHex && /^#[0-9a-fA-F]{6}$/.test(style.windowFrameColorHex)
+                          ? style.windowFrameColorHex
+                          : '#232325';
+                      const winKind: WindowKind =
+                        style.hasMezzanine || isFullSheerWall || sillCm <= 20
+                          ? 'french'
+                          : sillCm >= 55
+                          ? 'double'
+                          : 'triple';
                       return {
                         id: `pin-win-${ww}-${idx}-${Date.now()}`,
                         wall: ww,
-                        kind: (style.hasMezzanine || isFullSheerWall ? 'french' : 'triple') as WindowKind,
+                        kind: winKind,
                         offsetCm: Math.round(wLenCm * (style.hasMezzanine ? 0.32 : 0.5)),
                         widthCm: winW,
-                        heightCm: Math.min(
-                          Math.round(nextCeil * 100) - 22,
-                          style.hasMezzanine ? 340 : isFullSheerWall ? Math.round(nextCeil * 100) - 24 : 235
-                        ),
-                        sillHeightCm: style.hasMezzanine || isFullSheerWall ? 10 : 35,
-                        frameColorHex: '#232325',
-                        hasSill: !isFullSheerWall,
+                        heightCm: winH,
+                        sillHeightCm: sillCm,
+                        frameColorHex: frameHex,
+                        hasSill: sillCm >= 25 || Boolean(style.windowHasDeepSill) || Boolean(sillObjOnWall),
                         curtainStyle: curtainStyleVal,
                         curtainColorHex: style.curtainColorHex || '#e5dfd3',
                         curtainOpenRatio: curtainStyleVal === 'sheer_only' ? 0.12 : 0.62,
@@ -3251,6 +3293,29 @@ export const ArchitecturalStudioPage: React.FC = () => {
                   }
                 : baseWalls;
 
+            const refinedWindows = roomFixes?.removeWindows
+              ? []
+              : (typeof roomFixes?.windowSillHeightCm === 'number' && Number.isFinite(roomFixes.windowSillHeightCm)) ||
+                (roomFixes?.windowFrameColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.windowFrameColorHex))
+              ? prev.windows.map((w) => {
+                  const sillCm =
+                    typeof roomFixes?.windowSillHeightCm === 'number' && Number.isFinite(roomFixes.windowSillHeightCm)
+                      ? Math.max(0, Math.min(155, Math.round(roomFixes.windowSillHeightCm)))
+                      : w.sillHeightCm;
+                  const ceilCm = Math.round(nextCeil * 100);
+                  return {
+                    ...w,
+                    sillHeightCm: sillCm,
+                    heightCm: Math.max(85, Math.min(ceilCm - sillCm - 18, w.heightCm)),
+                    hasSill: sillCm >= 25 ? true : w.hasSill,
+                    frameColorHex:
+                      roomFixes?.windowFrameColorHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.windowFrameColorHex)
+                        ? roomFixes.windowFrameColorHex
+                        : w.frameColorHex,
+                  };
+                })
+              : prev.windows;
+
             return {
               ...prev,
               ceilingM: nextCeil,
@@ -3260,7 +3325,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
                 roomFixes?.floorTintHex && /^#[0-9a-fA-F]{6}$/.test(roomFixes.floorTintHex)
                   ? roomFixes.floorTintHex
                   : prev.floorTintHex,
-              ...(roomFixes?.removeWindows ? { windows: [], curtainCoves: [] } : {}),
+              windows: refinedWindows,
+              ...(roomFixes?.removeWindows ? { curtainCoves: [] } : {}),
               objects: autoLinkNestedAssemblies(nextObjects),
             };
           });

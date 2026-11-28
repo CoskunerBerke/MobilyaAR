@@ -555,6 +555,9 @@ Return ONLY valid JSON with this exact schema:
     "hasVisibleWindow": boolean (true if exterior window OR floor-to-ceiling window curtains are clearly visible in the photo),
     "primaryWindowWall": "north" | "west" | "east" | "south",
     "windowWalls": ["east"] (array of ALL walls visibly covered by windows or floor-to-ceiling curtains, e.g. ["west","north"] for corner curtains, [] if none),
+    "windowSillHeightCm": number (EXACT height of window sill from floor in cm: 10 for floor-to-ceiling French/balcony doors, 80..105 for standard raised-sill windows, 130..160 for high clerestory windows),
+    "windowFrameColorHex": "#RRGGBB (EXACT visible window frame color, e.g. #f4f3ef for white PVC/wood, #232325 for matte black metal, #8f6d4c for natural oak)",
+    "windowHasDeepSill": boolean (true if window has a raised sill >= 45cm or visibly carries plants/books/decor on its windowsill ledge),
     "hasCeilingLedCove": boolean (true if recessed warm LED ceiling cove / perimeter lighting is visible),
     "hasMezzanine": boolean,
     "mezzanine": {
@@ -582,9 +585,9 @@ Return ONLY valid JSON with this exact schema:
       "mountMode": "floor" | "wall" | "ceiling" | "rug",
       "suggestedWall": "north" | "south" | "west" | "east" | "center",
       "floorLevel": 0 | 1,
-      "elevationCm": number (height above ITS OWN FLOOR LEVEL: 0 for floor/rug, ~105-135 for wall art/mirror/TV),
-      "anchorToId": "optional id of parent object (e.g. lamp on nightstand, memo board above mirror, art above bed, chair in front of desk) or empty string",
-      "relation": "none" | "above" | "on_top_of" | "left_of" | "right_of" | "in_front_of",
+      "elevationCm": number (EXACT height above ITS OWN FLOOR LEVEL in cm: 0 ONLY for items resting directly on the floor/rug; 80-110 for items sitting on a raised windowsill; 40-90 for tabletop/shelf items; 105-150 for wall art/mirror/TV/sconces! NEVER write 0 for an item sitting on a windowsill, ledge, mantel, or table!),
+      "anchorToId": "optional id of parent object (e.g. lamp on nightstand, vase on coffee table, memo board above mirror, art above bed, chair in front of desk) or empty string",
+      "relation": "none" | "above" | "on_top_of" | "on_windowsill" | "inside_shelf" | "leaning_on_wall" | "left_of" | "right_of" | "in_front_of",
       "relativeX": number (-0.90 to 0.90),
       "relativeZ": number (-0.90 to 0.90),
       "facingDeg": number (0, 90, -90, or 180),
@@ -605,17 +608,22 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
   * Tall floor-to-ceiling marble chimney tower (heightCm 220..280): ONLY then use parametricKind="fireplace_marble"!
   * Separate wall-mounted TV above a tv_baza or linear_fireplace: ALWAYS emit BOTH the baza/fireplace AND a separate "wall_tv" with anchorToId="<baza id>", relation="above", elevationCm=95..120!
   * Floating wall shelves / open wood cubby boxes beside a TV panel: use parametricKind="wall_shelf", mountMode="wall", with exact elevationCm (e.g. 125, 185)!
-- TABLETOP FLOWERS, VASES & LAMPS ON TOP OF FURNITURE:
+- TABLETOP FLOWERS, VASES, BASKETS, WINDOWSILLS & ELEVATED DETAILS (UNIVERSAL FOR EVERY PHOTO!):
   * Small flowers, vases, candle trays, bowls sitting ON TOP of a TV baza, coffee table, console, or dining table: use parametricKind="decorative_vase" (compact widthCm 18..38, heightCm 18..42), anchorToId="<parent id>", relation="on_top_of"!
   * Small table lamps sitting on a TV baza or nightstand: parametricKind="table_lamp", anchorToId="<parent id>", relation="on_top_of"!
-  * ONLY tall floor-standing trees/palms in corners (heightCm 75..180, elevationCm=0) should use parametricKind="potted_plant"!
+  * WINDOWSILL ITEMS (CRITICAL!): If ANY small potted plant, vase, candle, lamp, book, or frame sits ON A WINDOWSILL / WINDOW LEDGE, you MUST set relation="on_windowsill", suggestedWall=<the window's wall>, elevationCm=<roomStyle.windowSillHeightCm, e.g. 85..100>, and compact dimensions (widthCm 18..38, heightCm 22..55)! NEVER set elevationCm=0 for an item sitting up on a windowsill, radiator cover, mantel, or wall ledge!
+  * WOVEN / RATTAN / WICKER FLOOR BASKETS ("Hasır Sepet", "Rattan Sepet", "Wicker Basket"): ALWAYS use parametricKind="decorative_vase" (NEVER "ottoman" and NEVER "potted_plant"!) with elevationCm=0, relation="none"!
+  * FLOOR-LEANING FRAMES / MIRRORS resting on the floor against a wall: set relation="leaning_on_wall", elevationCm=0!
+  * ONLY tall floor-standing trees/palms in corners (heightCm 75..180, elevationCm=0) should use floor-standing parametricKind="potted_plant"!
 - SAME-WALL ADJACENCY (CRITICAL!): If multiple items appear side-by-side on the SAME primary photographed wall (for example: full-length mirror on left + framed board directly above mirror + hanging ivy/art on right + bed pushed against that wall), they MUST ALL share the EXACT SAME suggestedWall ("north") with matching left-to-right relativeX (-0.75 left -> +0.75 right)!
 - VERTICAL STACKING & MIRRORS:
   * Tall full-length floor-standing mirror ("Boy Aynası" or "Kemerli Boy Aynası" if arch-topped!, heightCm 155..200): mountMode="wall", elevationCm=0!
   * NEVER hallucinate lamps, doors, or sofas visible ONLY inside a mirror's reflection!
   * Framed art/board hanging DIRECTLY ABOVE a mirror or bed: SAME suggestedWall AND SAME relativeX as the item below it, with elevationCm=180 (above tall mirror) or elevationCm=110..135 (above bed/sofa)!
   * Hanging ivy/wall tapestry behind a bed: parametricKind="wall_art", mountMode="wall", SAME suggestedWall and relativeX as the bed, elevationCm=85!
-- CURTAINS & WINDOWS: If floor-to-ceiling curtains cover a wall (or TWO corner walls like west + north!), set hasVisibleWindow=true, list ALL curtained walls in windowWalls (e.g. ["east"] or ["west","north"]), and set curtainStyle="sheer_only" for white sheer curtains or "sheer_and_drape" for layered curtains! NEVER emit curtains or windows inside detectedObjects — they are rendered automatically from roomStyle.windowWalls!
+- CURTAINS & REAL WINDOW GEOMETRY (CRITICAL!):
+  * Inspect EVERY visible window's real bottom height & frame color! Set roomStyle.windowSillHeightCm accurately (80..105 for standard raised-sill windows; 10 ONLY for true floor-to-ceiling French doors/balcony glass!), set roomStyle.windowFrameColorHex accurately (#f4f3ef for white frames, #232325 for black frames, #8f6d4c for wood!), and set windowHasDeepSill=true whenever a raised windowsill ledge is visible!
+  * If floor-to-ceiling curtains cover a wall (or TWO corner walls like west + north!), set hasVisibleWindow=true, list ALL curtained walls in windowWalls (e.g. ["east"] or ["west","north"]), and set curtainStyle="sheer_only" for white sheer curtains or "sheer_and_drape" for layered curtains (or "none" if the window clearly has NO curtains!). NEVER emit curtains or windows inside detectedObjects — they are rendered automatically from roomStyle.windowWalls!
 - WALL-ANCHORED FURNITURE: For bed_frame, sofa, desk, bookshelf, wardrobe, sideboard, console_table, vanity_table, nightstand that sit against a wall, ALWAYS set suggestedWall ("north"|"east"|"west"|"south") and facingDeg pointing INTO the room away from that wall (north->0, south->180, west->90, east->-90).
 - SIDE-WALL DIMENSIONS (CRITICAL!): widthCm is ALWAYS the horizontal span ALONG the wall and depthCm is ALWAYS the thickness projecting INTO the room, even on "west" or "east" walls (e.g. a 180cm wide, 60cm deep wardrobe on "west" wall MUST have widthCm=180, depthCm=60, NEVER 60×180!).
 - SOFA VS TV/FIREPLACE WALL: NEVER assign a sofa to the SAME suggestedWall as a TV or fireplace wall! Place the sofa on the perpendicular wall ("west"/"east") or opposite wall ("south") facing the TV/fireplace.
@@ -707,7 +715,8 @@ YOUR JOB — Audit Image 2 strictly against Image 1 and make SURGICAL, NON-DESTR
 - Check if a stale window/curtain is blocking wall art or shouldn't exist -> set roomFixes.removeWindows = true.
 - Check if Image 1 is a 2-story loft/mezzanine but Image 2 missed the 2nd floor -> set roomFixes.enableMezzanine = true.
 - Check EVERY placed object in the JSON list:
-  * Is any object on the WRONG wall, floating off the floor when it should sit on the floor (e.g. full-length mirror -> elevationCm: 0), facing backwards, overlapping badly, wrong floorLevel (0 vs 1), wrong proportion, or wrong main color? Add an "update" entry in objectFixes with its EXACT existing "id"!
+  * Is any object on the WRONG wall, floating off the floor when it should sit on the floor (e.g. full-length mirror -> elevationCm: 0), OR mistakenly dropped to the floor (elevationCm: 0) when Image 1 clearly shows it elevated on a windowsill (elevationCm: 80..105), shelf, mantel, or tabletop? Add an "update" entry in objectFixes with its EXACT existing "id" and true elevationCm!
+  * Does the window's sill height (floor-level vs raised 85-100cm sill) or window frame color (white vs black) mismatch Image 1? Fix roomFixes.windowSillHeightCm and roomFixes.windowFrameColorHex!
   * Is any object a hallucination (e.g. mirror reflection artifact or nonexistent piece)? Add { "id": "...", "action": "remove", "reasonTr": "..." }!
 - ${cleanFocus ? 'ONLY add missingObjects if a piece EXPLICITLY requested by the user prompt is missing; otherwise keep missingObjects as [].' : 'Check if up to 3 MAJOR clearly visible hero items from Image 1 (like an armchair, coffee table, rug, lamp, plant, nightstand, bookcase, framed art) are completely missing from Image 2 -> add them to missingObjects!'}
 - STABILITY RULE (CRITICAL): If an object is ALREADY reasonably placed on the right wall/zone in Image 2, DO NOT move, flip, or remove it — preserve good placements so visual accuracy strictly improves!
@@ -722,6 +731,8 @@ Return ONLY valid JSON:
     "accentWall": "north" | "west" | "east" | "south" | null,
     "wallPattern": "smooth" | "boiserie" | "slats" | "concrete" | "stone" | "wallpaper" | "marble" | "mirror" | null,
     "floorTintHex": "#RRGGBB" | null,
+    "windowSillHeightCm": number | null,
+    "windowFrameColorHex": "#RRGGBB" | null,
     "enableMezzanine": boolean | null,
     "mezzanineHeightCm": number | null
   },
@@ -876,9 +887,9 @@ Generate ONE crystal-clear, unobstructed 3D studio product render of THIS EXACT 
 
 CRITICAL RULES:
 - Must look IDENTICAL to the target item in the reference photo (do NOT invent a different style or generic substitute).
-- Remove ALL other room furniture, foreground coffee tables, overlapping cushions from other items, rugs, walls, floor shadows, and clutter.
-- Reconstruct any partially occluded bottom legs or corners faithfully to match the item's design.
-- Show the complete item from head to foot with small white margin around all 4 edges, slight natural 3/4 front view, clean neutral softbox lighting, ZERO cast floor shadow, ZERO wall behind it, pure #FFFFFF background.`,
+- Remove ALL other room furniture, supporting tables, windowsills, window frames, curtains, foreground coffee tables, overlapping cushions from other items, rugs, walls, floor shadows, and clutter — NEVER include a windowsill ledge, frame corner, or invented black wireframe stand beneath the item!
+- Reconstruct any partially occluded bottom base/legs/pot edges faithfully to match the item's design.
+- Show ONLY the single target item cleanly from head to foot with small white margin around all 4 edges, slight natural 3/4 front view, clean neutral softbox lighting, ZERO cast floor shadow, ZERO wall behind it, pure #FFFFFF background.`,
         },
       ];
       if (cropImg) parts.push({ inlineData: { mimeType: cropImg.mimeType, data: cropImg.data } });

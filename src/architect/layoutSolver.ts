@@ -196,12 +196,21 @@ function clampInsideFloor(
  *  - Wall art/mirrors/TVs with explicit 'above' anchor center cleanly over their parent piece
  *  - Every object stays strictly inside room or mezzanine bounds
  */
+export interface SolverWindowSpec {
+  wall: WallId;
+  offsetCm?: number;
+  widthCm?: number;
+  sillHeightCm: number;
+  hasSill?: boolean;
+}
+
 export function applyArchitecturalRelationships(
   objects: ArchPlacedObject[],
   sourceItems: Map<string, PinterestDetectedObject>,
   project: Pick<ArchRoomProject, 'widthM' | 'depthM' | 'ceilingM'>,
   effectiveCeilingM: number,
-  mezBounds: MezzanineBounds | null
+  mezBounds: MezzanineBounds | null,
+  windows: SolverWindowSpec[] = []
 ): ArchPlacedObject[] {
   const result = objects.map((o) => ({ ...o }));
   const byPinId = new Map<string, ArchPlacedObject>();
@@ -374,9 +383,10 @@ export function applyArchitecturalRelationships(
     }
   }
 
-  // 2) ALL tabletop decor items (table_lamp, decorative_vase, small tabletop plants, or explicit 'on_top_of' non-rug relation)
+  // 2) ALL tabletop decor items (table_lamp, decorative_vase, or explicit 'on_top_of' non-rug relation)
   //    ALWAYS sit cleanly ON TOP OF their anchored or nearest surface (TV baza, fireplace bench, nightstand, coffee/dining table)!
   //    Floor woven baskets (sepet/basket/hasır/rattan) stay strictly on the floor unless explicitly on_top_of!
+  //    Windowsill items ('on_windowsill' or explicitly named windowsill/pencere önü) are handled by Step 2b below!
   const NON_TABLETOP_KINDS = new Set([
     'sofa',
     'armchair',
@@ -398,9 +408,27 @@ export function applyArchitecturalRelationships(
     'rug_custom',
     'stairs',
   ]);
+  const isWindowsillCandidate = (obj: ArchPlacedObject, src?: PinterestDetectedObject): boolean => {
+    if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) return false;
+    if (obj.heightM > 0.85) return false;
+    if (src?.relation === 'on_windowsill') return true;
+    const text = `${obj.name} ${src?.visualDescriptionEn || ''}`;
+    if (/pencere\s*[öo]n|cam\s*[öo]n|denizlik|windowsill|window\s*sill|window\s*ledge/i.test(text)) return true;
+    if (
+      (src?.elevationCm || 0) >= 45 &&
+      obj.heightM <= 0.72 &&
+      obj.mountMode !== 'wall' &&
+      obj.mountMode !== 'ceiling' &&
+      windows.some((w) => w.wall === src?.suggestedWall && w.sillHeightCm >= 35)
+    ) {
+      return true;
+    }
+    return false;
+  };
   const decorCountPerSurface = new Map<string, number>();
   for (const obj of result) {
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    if (isWindowsillCandidate(obj, src)) continue;
     // Floor rattan/wicker baskets MUST stay on the floor beside sofa/table, never hoisted onto a coffee table!
     const isFloorBasket =
       /sepet|basket|has[ıi]r|rattan|wicker/i.test(obj.name) &&
@@ -451,6 +479,80 @@ export function applyArchitecturalRelationships(
       obj.y = Number((parent.y + parent.heightM).toFixed(3));
       obj.rot = parent.rot;
       obj.lockedParentId = parent.id;
+    }
+  }
+
+  // 2b) UNIVERSAL WINDOWSILL & ELEVATED LEDGE SNAPPER (works on ANY Pinterest photo with raised windowsills!):
+  //     Snaps windowsill plants, candles, books, frames & vases directly ONTO the room's physical 20cm interior sill ledge!
+  for (const obj of result) {
+    if (obj.lockedParentId) continue;
+    const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    if (!isWindowsillCandidate(obj, src)) continue;
+
+    const preferredWall =
+      src?.suggestedWall && src.suggestedWall !== 'center' ? src.suggestedWall : obj.attachedWall;
+    const matchedWin =
+      windows.find((w) => w.wall === preferredWall) ||
+      windows.find((w) => w.sillHeightCm >= 35) ||
+      windows[0];
+
+    if (matchedWin) {
+      const wall = matchedWin.wall;
+      const isHoriz = wall === 'north' || wall === 'south';
+      const wallLen = isHoriz ? project.widthM : project.depthM;
+      const winCenterAlong =
+        typeof matchedWin.offsetCm === 'number' ? matchedWin.offsetCm / 100 - wallLen * 0.5 : 0;
+      const winHalfSpan = Math.max(0.28, ((matchedWin.widthCm || 180) / 100) * 0.42 - obj.widthM * 0.45);
+      const rawAlong = isHoriz ? obj.x : obj.z;
+      const along = Math.max(winCenterAlong - winHalfSpan, Math.min(winCenterAlong + winHalfSpan, rawAlong));
+
+      // Rest flush ON TOP OF the protruding 20cm interior windowsill ledge (never floating & never dropped to y=0!)
+      const sillCm =
+        matchedWin.sillHeightCm >= 40
+          ? matchedWin.sillHeightCm
+          : Math.max(78, Math.min(115, src?.elevationCm || 88));
+      const sillY = Math.max(0.4, Math.min(effectiveCeilingM - obj.heightM - 0.1, sillCm / 100));
+      const sillInset = Math.max(0.08, Math.min(0.15, obj.depthM * 0.44));
+
+      if (wall === 'west') {
+        obj.x = Number((-project.widthM * 0.5 + sillInset).toFixed(3));
+        obj.z = Number(along.toFixed(3));
+        obj.rot = Math.PI / 2;
+      } else if (wall === 'east') {
+        obj.x = Number((project.widthM * 0.5 - sillInset).toFixed(3));
+        obj.z = Number(along.toFixed(3));
+        obj.rot = -Math.PI / 2;
+      } else if (wall === 'north') {
+        obj.x = Number(along.toFixed(3));
+        obj.z = Number((-project.depthM * 0.5 + sillInset).toFixed(3));
+        obj.rot = 0;
+      } else {
+        obj.x = Number(along.toFixed(3));
+        obj.z = Number((project.depthM * 0.5 - sillInset).toFixed(3));
+        obj.rot = Math.PI;
+      }
+      obj.y = Number(sillY.toFixed(3));
+      obj.attachedWall = wall;
+      obj.mountMode = 'wall';
+    } else if ((src?.elevationCm || 0) >= 35) {
+      const baseY = (obj.floorLevel || 0) === 1 && mezBounds ? mezBounds.topY : 0;
+      obj.y = Number(Math.min(effectiveCeilingM - obj.heightM - 0.1, baseY + (src!.elevationCm / 100)).toFixed(3));
+    }
+  }
+
+  // 2c) UNIVERSAL NON-ZERO ELEVATION PRESERVATION (mantels, wall ledges, radiator covers, inside shelves):
+  //     Never silently crush compact elevated decor/plants (elevationCm >= 35) back down to y=0!
+  for (const obj of result) {
+    if (obj.lockedParentId || obj.mountMode === 'wall' || obj.mountMode === 'ceiling' || obj.mountMode === 'rug') continue;
+    if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) continue;
+    const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
+    const isFloorBasket =
+      /sepet|basket|has[ıi]r|rattan|wicker/i.test(obj.name) &&
+      !/çiçek|cicek|vazo|vase|buket|bouquet/i.test(obj.name);
+    if (isFloorBasket || obj.heightM > 0.78) continue;
+    const baseY = (obj.floorLevel || 0) === 1 && mezBounds ? mezBounds.topY : 0;
+    if (obj.y <= baseY + 0.05 && (src?.elevationCm || 0) >= 35) {
+      obj.y = Number(Math.min(effectiveCeilingM - obj.heightM - 0.08, baseY + src!.elevationCm / 100).toFixed(3));
     }
   }
 
@@ -654,6 +756,8 @@ export interface VisualRefineRoomFix {
   accentWall?: WallId | null;
   wallPattern?: 'smooth' | 'boiserie' | 'slats' | 'concrete' | 'stone' | 'wallpaper' | 'marble' | 'mirror' | null;
   floorTintHex?: string | null;
+  windowSillHeightCm?: number | null;
+  windowFrameColorHex?: string | null;
   enableMezzanine?: boolean | null;
   mezzanineHeightCm?: number | null;
 }
@@ -744,6 +848,11 @@ export function applyVisualCritiqueFixes(
     const isFloorBasketItem =
       /sepet|basket|has[ıi]r|rattan|wicker/i.test(o.name) &&
       !/çiçek|cicek|vazo|vase|buket|bouquet/i.test(o.name);
+    const isElevatedSmallItem =
+      o.heightM <= 0.78 &&
+      (o.y > baseY + 0.25 ||
+        (typeof f.elevationCm === 'number' && f.elevationCm >= 35) ||
+        /pencere\s*[öo]n|cam\s*[öo]n|denizlik|windowsill|window\s*sill/i.test(o.name));
     const isFloatingOrTabletop =
       !isFloorBasketItem &&
       (o.parametricKind === 'table_lamp' ||
@@ -751,7 +860,7 @@ export function applyVisualCritiqueFixes(
         o.parametricKind === 'tv_baza' ||
         ((o.parametricKind === 'wardrobe' || o.parametricKind === 'bookshelf') && o.y > baseY + 0.08) ||
         Boolean(o.lockedParentId) ||
-        (o.parametricKind === 'potted_plant' && o.heightM <= 0.58 && o.y > baseY + 0.15));
+        (o.parametricKind === 'potted_plant' && isElevatedSmallItem));
     const isFloorStandingKind = !isHighWallKind && !isFloatingOrTabletop;
 
     if (isFloorStandingKind) {

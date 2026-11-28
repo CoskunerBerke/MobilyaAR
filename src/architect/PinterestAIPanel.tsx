@@ -49,6 +49,7 @@ import {
   applyArchitecturalRelationships,
   applyVisualCritiqueFixes,
   resolveMezzaninePlan,
+  type SolverWindowSpec,
   type VisualRefineRoomFix,
 } from './layoutSolver';
 import {
@@ -1022,8 +1023,20 @@ export const PinterestAIPanel: React.FC<Props> = ({
         x = pos.x;
         z = pos.z;
       }
-      y = 0;
-      occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+      const isWinSillItem =
+        item.relation === 'on_windowsill' ||
+        (/pencere\s*[öo]n|cam\s*[öo]n|denizlik|windowsill|window\s*sill/i.test(
+          `${item.nameTr} ${item.visualDescriptionEn || ''}`
+        ) &&
+          hM <= 0.85);
+      if (isWinSillItem) {
+        y = Math.max(0.42, Math.min(headroomM - hM - 0.1, (item.elevationCm || 88) / 100));
+      } else if (isTabletopDecor && (item.elevationCm || 0) >= 35) {
+        y = Math.min(headroomM - hM - 0.1, (item.elevationCm || 0) / 100);
+      } else {
+        y = 0;
+        occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
+      }
     }
 
     // Translate local target-room coordinates into world space!
@@ -1169,14 +1182,62 @@ export const PinterestAIPanel: React.FC<Props> = ({
     const sourceMap = new Map<string, PinterestDetectedObject>();
     ordered.forEach((it) => sourceMap.set(it.id, it));
 
-    // Stage 2: Enforce architectural parent-child physics inside target room's local coordinates
+    // Derive exact window specs (including real sillHeightCm!) so windowsill plants/candles/books snap onto the true 20cm interior sill!
+    const solverWindows: SolverWindowSpec[] = (() => {
+      if (!tRoom.isMain) return [];
+      if (replaceExisting && styleToApply) {
+        const winWalls: WallId[] =
+          Array.isArray(styleToApply.windowWalls) && styleToApply.windowWalls.length > 0
+            ? (styleToApply.windowWalls.filter(
+                (w): w is WallId => w === 'north' || w === 'south' || w === 'east' || w === 'west'
+              ) as WallId[])
+            : styleToApply.hasVisibleWindow
+            ? [styleToApply.primaryWindowWall || 'west']
+            : [];
+        const hasWinSillObj = ordered.some(
+          (it) =>
+            it.relation === 'on_windowsill' ||
+            /pencere\s*[öo]n|cam\s*[öo]n|denizlik|windowsill|window\s*sill/i.test(
+              `${it.nameTr} ${it.visualDescriptionEn || ''}`
+            )
+        );
+        const inferredSillCm =
+          typeof styleToApply.windowSillHeightCm === 'number' && Number.isFinite(styleToApply.windowSillHeightCm)
+            ? Math.max(0, Math.min(155, Math.round(styleToApply.windowSillHeightCm)))
+            : styleToApply.hasMezzanine
+            ? 10
+            : styleToApply.windowHasDeepSill || hasWinSillObj
+            ? 88
+            : 35;
+        return winWalls.map((ww) => {
+          const wLenCm = Math.round((ww === 'north' || ww === 'south' ? tRoom.w : tRoom.d) * 100);
+          return {
+            wall: ww,
+            offsetCm: Math.round(wLenCm * (styleToApply.hasMezzanine ? 0.32 : 0.5)),
+            widthCm: styleToApply.hasMezzanine ? 150 : Math.min(wLenCm - 50, 220),
+            sillHeightCm: inferredSillCm,
+            hasSill: inferredSillCm >= 25 || Boolean(styleToApply.windowHasDeepSill) || hasWinSillObj,
+          };
+        });
+      }
+      return project.windows.map((w) => ({
+        wall: w.wall,
+        offsetCm: w.offsetCm,
+        widthCm: w.widthCm,
+        sillHeightCm: w.sillHeightCm,
+        hasSill: w.hasSill,
+      }));
+    })();
+
+    // Stage 2: Enforce architectural parent-child & windowsill physics inside target room's local coordinates
     const localBuilt = builtObjects.map((o) => ({ ...o, x: o.x - tRoom.cx, z: o.z - tRoom.cz }));
     const localSolved = applyArchitecturalRelationships(
       localBuilt,
       sourceMap,
       { ...project, widthM: tRoom.w, depthM: tRoom.d },
       effectiveCeilingM,
-      tRoom.isMain ? mezBounds : null
+      tRoom.isMain ? mezBounds : null,
+      solverWindows
     );
     const solvedObjects = localSolved.map((o) => ({
       ...o,
@@ -1374,6 +1435,17 @@ export const PinterestAIPanel: React.FC<Props> = ({
         detected.forEach((d) => srcMap.set(d.id, d));
         addedDetected.forEach((d) => srcMap.set(d.id, d));
 
+        const qaWindows: SolverWindowSpec[] = project.windows.map((w) => ({
+          wall: w.wall,
+          offsetCm: w.offsetCm,
+          widthCm: w.widthCm,
+          sillHeightCm:
+            typeof qa.roomFixes?.windowSillHeightCm === 'number' && Number.isFinite(qa.roomFixes.windowSillHeightCm)
+              ? Math.max(0, Math.min(155, Math.round(qa.roomFixes.windowSillHeightCm)))
+              : w.sillHeightCm,
+          hasSill: w.hasSill,
+        }));
+
         const nextCandidate = applyArchitecturalRelationships(
           combined,
           srcMap,
@@ -1384,7 +1456,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
             depthM: project.depthM,
             ceilingM: updatedCeil,
             mezzanine: updatedMez,
-          })
+          }),
+          qaWindows
         );
 
         totalApplied += appliedCount;
@@ -1847,7 +1920,30 @@ export const PinterestAIPanel: React.FC<Props> = ({
         halfD: o.depthM * 0.5,
       }));
     const built = await buildInstant3DObject(item, itemPhotoUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
-    onAddGeneratedObject(built.obj);
+    // Run single-item placement through universal surface & windowsill solver so windowsill plants / tabletop vases never drop to y=0!
+    const roomWindows: SolverWindowSpec[] = tRoom.isMain
+      ? project.windows.map((w) => ({ wall: w.wall, offsetCm: w.offsetCm, widthCm: w.widthCm, sillHeightCm: w.sillHeightCm, hasSill: w.hasSill }))
+      : [];
+    const existingLocal = project.objects
+      .filter((o) => o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
+      .map((o) => ({ ...o, x: o.x - tRoom.cx, z: o.z - tRoom.cz }));
+    const builtLocal = { ...built.obj, x: built.obj.x - tRoom.cx, z: built.obj.z - tRoom.cz };
+    const singleMap = new Map<string, PinterestDetectedObject>([[item.id, item]]);
+    const solvedSingleList = applyArchitecturalRelationships(
+      [...existingLocal, builtLocal],
+      singleMap,
+      { ...project, widthM: tRoom.w, depthM: tRoom.d },
+      project.ceilingM,
+      tRoom.isMain ? getMezzanineBounds(project) : null,
+      roomWindows
+    );
+    const solvedItem = solvedSingleList.find((o) => o.id === built.obj.id) || builtLocal;
+    const placedObj: ArchPlacedObject = {
+      ...solvedItem,
+      x: Number((solvedItem.x + tRoom.cx).toFixed(3)),
+      z: Number((solvedItem.z + tRoom.cz).toFixed(3)),
+    };
+    onAddGeneratedObject(placedObj);
     setJobs((prev) => ({
       ...prev,
       [item.id]: {
@@ -1950,24 +2046,54 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
 
       const glbUrl = gen.remoteGlbUrl || gen.localBlobUrl;
-      const tRoom = getTargetRoomRect();
-      const occupied: OBB2D[] = project.objects
-        .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
-        .map((o) => ({
-          id: o.id,
-          x: o.x - tRoom.cx,
-          z: o.z - tRoom.cz,
-          rot: o.rot,
-          halfW: o.widthM * 0.5,
-          halfD: o.depthM * 0.5,
-        }));
-      const base = await buildInstant3DObject(item, itemPhotoUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
-      const upgradedObj: ArchPlacedObject = {
-        ...base.obj,
-        glbUrl,
-        parametricKind: undefined,
-        thumbUrl: modelInputImage,
-      };
+      const existingObj = findPlacedObjForItem(item.id);
+      let upgradedObj: ArchPlacedObject;
+      if (existingObj) {
+        // Preserve the item's EXACT calibrated 3D position, windowsill/tabletop elevation, rotation & dimensions in-place!
+        upgradedObj = {
+          ...existingObj,
+          glbUrl,
+          parametricKind: undefined,
+          thumbUrl: modelInputImage,
+        };
+      } else {
+        const tRoom = getTargetRoomRect();
+        const occupied: OBB2D[] = project.objects
+          .filter((o) => o.mountMode !== 'rug' && o.mountMode !== 'ceiling' && o.y < 0.8 && o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
+          .map((o) => ({
+            id: o.id,
+            x: o.x - tRoom.cx,
+            z: o.z - tRoom.cz,
+            rot: o.rot,
+            halfW: o.widthM * 0.5,
+            halfD: o.depthM * 0.5,
+          }));
+        const base = await buildInstant3DObject(item, itemPhotoUrl, occupied, { north: [], east: [], south: [], west: [] }, [], { north: [], east: [], south: [], west: [] }, project.ceilingM, getMezzanineBounds(project), project.mezzanine?.enabled ? project.mezzanine : null, tRoom);
+        const roomWindows: SolverWindowSpec[] = tRoom.isMain
+          ? project.windows.map((w) => ({ wall: w.wall, offsetCm: w.offsetCm, widthCm: w.widthCm, sillHeightCm: w.sillHeightCm, hasSill: w.hasSill }))
+          : [];
+        const existingLocal = project.objects
+          .filter((o) => o.pinterestItemId !== item.id && isObjInRoomRect(o, tRoom))
+          .map((o) => ({ ...o, x: o.x - tRoom.cx, z: o.z - tRoom.cz }));
+        const baseLocal = { ...base.obj, x: base.obj.x - tRoom.cx, z: base.obj.z - tRoom.cz };
+        const solvedList = applyArchitecturalRelationships(
+          [...existingLocal, baseLocal],
+          new Map<string, PinterestDetectedObject>([[item.id, item]]),
+          { ...project, widthM: tRoom.w, depthM: tRoom.d },
+          project.ceilingM,
+          tRoom.isMain ? getMezzanineBounds(project) : null,
+          roomWindows
+        );
+        const solvedBase = solvedList.find((o) => o.id === base.obj.id) || baseLocal;
+        upgradedObj = {
+          ...solvedBase,
+          x: Number((solvedBase.x + tRoom.cx).toFixed(3)),
+          z: Number((solvedBase.z + tRoom.cz).toFixed(3)),
+          glbUrl,
+          parametricKind: undefined,
+          thumbUrl: modelInputImage,
+        };
+      }
       onAddGeneratedObject(upgradedObj);
 
       setJobs((prev) => ({

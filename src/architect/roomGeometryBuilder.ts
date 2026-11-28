@@ -285,7 +285,11 @@ function createWindowAssembly(
   }
 
   if (win.hasSill && win.kind !== 'round' && win.kind !== 'oval' && y0 >= 0.08) {
-    addBox(w + 0.08, 0.032, wallT + 0.06, cx, y0 - 0.008, -wallT * 0.5 + 0.025, sillMat);
+    // Raised windows (sill >= 40cm) get a true 20cm protruding interior windowsill ledge so plants/candles/books rest physically ON it!
+    const interiorProtrude = y0 >= 0.4 ? 0.2 : 0.05;
+    const sillD = wallT + interiorProtrude + 0.02;
+    const sillZ = -wallT * 0.5 + interiorProtrude * 0.5;
+    addBox(w + 0.1, 0.036, sillD, cx, y0 - 0.018, sillZ, sillMat);
   }
 
   if (win.curtainStyle !== 'none') {
