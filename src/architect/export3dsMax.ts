@@ -639,7 +639,10 @@ export async function exportFull3dsMaxZipBundle(
   if (latestRenderDataUrl) {
     const pngBytes = dataUrlToBytes(latestRenderDataUrl);
     if (pngBytes) {
-      entries.push({ name: `${glb.stats.slug}-VRay-Referans-Render.png`, data: pngBytes });
+      const mimeMatch = String(latestRenderDataUrl).match(/^data:image\/([a-z0-9+.-]+);base64,/i);
+      const rawFmt = (mimeMatch?.[1] || 'png').toLowerCase();
+      const ext = rawFmt.includes('jpeg') || rawFmt === 'jpg' ? 'jpg' : rawFmt.includes('webp') ? 'webp' : 'png';
+      entries.push({ name: `${glb.stats.slug}-VRay-Referans-Render.${ext}`, data: pngBytes });
     }
   }
 
