@@ -658,7 +658,11 @@ export const ArchitecturalStudioPage: React.FC = () => {
         };
       });
       setActiveRoomId(room.id);
-      setSelection({ type: 'adjacentRoom', id: room.id });
+      if (!opts.focusInRoom) {
+        setSelection({ type: 'adjacentRoom', id: room.id });
+      } else {
+        setSelection(null);
+      }
       setTimeout(() => {
         if (opts.focusInRoom) {
           setCameraMode('free');
@@ -3642,7 +3646,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
             <button
               type="button"
               onClick={toggleTvPresentationMode}
-              className="p-2 sm:px-2.5 sm:py-1.5 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+              className="hidden lg:inline-flex p-2 xl:px-2.5 xl:py-1.5 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 text-[11px] font-semibold items-center gap-1 whitespace-nowrap shrink-0"
               title="Tam Ekran TV / Showroom Sunum Modu"
             >
               <Maximize2 className="w-3.5 h-3.5" />
@@ -3652,13 +3656,13 @@ export const ArchitecturalStudioPage: React.FC = () => {
             <button
               type="button"
               onClick={handleSaveProjectJson}
-              className="hidden sm:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0"
+              className="hidden xl:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 shrink-0"
               title="Projeyi Kaydet (.json)"
             >
               <Save className="w-3.5 h-3.5" />
             </button>
             <label
-              className="hidden sm:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 cursor-pointer shrink-0"
+              className="hidden xl:inline-flex p-2 border border-stone-200 hover:border-stone-950 bg-white text-stone-800 cursor-pointer shrink-0"
               title="Proje Aç (.json)"
             >
               <FolderOpen className="w-3.5 h-3.5" />
