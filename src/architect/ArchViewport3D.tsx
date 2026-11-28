@@ -6,6 +6,7 @@ import { buildContactShadow } from '../lib/contactShadow';
 import { preparePhotorealMaterial } from '../lib/roomRendering';
 import { buildParametricObject3D } from './parametricFurniture';
 import { buildArchitecturalRoom, type BuiltRoomResult } from './roomGeometryBuilder';
+import type { Scene3dsMaxContext } from './export3dsMax';
 import { computeSolarLighting } from './solarMath';
 import { findAttachedChildren, resolveHorizontalMove3D, resolveVerticalMove3D } from './surfacePhysics';
 import { getHouseBounds, getWallLengthM, type ArchPlacedObject, type ArchRoomProject, type ArchSelection, type WallId } from './types';
@@ -53,6 +54,7 @@ export type ArchCameraMode = 'free' | 'plan' | 'inside';
 
 export interface ArchViewportHandle {
   captureSnapshot: (hideSelection?: boolean) => string | null;
+  getExportContext: () => Scene3dsMaxContext | null;
   resetCamera: (mode?: ArchCameraMode) => void;
   focusWall: (wall: WallId) => void;
   focusRoom: (roomId: string, angle?: 'corner' | 'eye') => void;
@@ -461,6 +463,25 @@ export const ArchViewport3D = forwardRef<ArchViewportHandle, Props>(
         }
         eng.renderer.render(eng.scene, eng.camera);
         return url;
+      },
+      getExportContext: () => {
+        const eng = engineRef.current;
+        if (!eng) return null;
+        const camPos = eng.camera.position;
+        let tgt = eng.controls.target.clone();
+        if (camModeRef.current === 'inside') {
+          const dir = new THREE.Vector3();
+          eng.camera.getWorldDirection(dir);
+          tgt = camPos.clone().add(dir.multiplyScalar(3.2));
+        }
+        return {
+          roomRoot: eng.roomRoot,
+          objectsRoot: eng.objectsRoot,
+          builtRoom: eng.builtRoom,
+          cameraPos: [camPos.x, camPos.y, camPos.z],
+          cameraTarget: [tgt.x, tgt.y, tgt.z],
+          cameraFov: eng.camera.fov,
+        };
       },
       resetCamera: (mode) => applyCameraPreset(mode || camModeRef.current),
       focusWall: (wall) => focusOnWall(wall),

@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Box,
   Building2,
   Camera,
   ChevronDown,
@@ -55,6 +56,7 @@ import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
 import { RenderStudioModal, type RenderStudioLaunchOpts, type StudioRenderItem } from './RenderStudioModal';
+import { Export3dsMaxModal } from './Export3dsMaxModal';
 import { WallCompassPicker } from './WallCompassPicker';
 import { BrandCatalogPanel } from './BrandCatalogPanel';
 import {
@@ -232,6 +234,7 @@ export const ArchitecturalStudioPage: React.FC = () => {
   const [loadingCount, setLoadingCount] = useState(0);
   const [uploadingCad, setUploadingCad] = useState(false);
   const [sunPlaying, setSunPlaying] = useState(false);
+  const [export3dsMaxOpen, setExport3dsMaxOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // Universal Smart Search Bar (Colors, codes, nearest shades, 3D items, windows, doors, rooms!)
@@ -3613,12 +3616,21 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </button>
             <button
               type="button"
+              onClick={() => setExport3dsMaxOpen(true)}
+              className="px-2.5 py-1.5 border border-stone-950 bg-white hover:bg-stone-950 hover:text-white text-stone-950 text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+              title="3B oda sahnesini Autodesk 3ds Max (.GLB / .OBJ + MaxScript) olarak dışa aktar"
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>3ds Max</span>
+            </button>
+            <button
+              type="button"
               onClick={handleDownloadSnapshot}
-              className="px-2.5 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
+              className="px-2 py-1.5 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 transition"
               title="3B sahneyi ham PNG olarak indir"
             >
               <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">PNG</span>
+              <span className="hidden xl:inline">PNG</span>
             </button>
           </div>
         </header>
@@ -4081,7 +4093,18 @@ export const ArchitecturalStudioPage: React.FC = () => {
           viewportRef.current?.focusRoom(roomId, angle);
         }}
         onCaptureViewport={() => viewportRef.current?.captureSnapshot(true) || null}
+        onOpen3dsMaxExport={() => setExport3dsMaxOpen(true)}
         onClose={() => setRenderModalOpen(false)}
+        onToast={showToast}
+      />
+
+      {/* Autodesk 3ds Max / V-Ray / Corona 3D Scene Exporter Modal (.ZIP, .GLB, .OBJ/.MTL, MaxScript .MS) */}
+      <Export3dsMaxModal
+        open={export3dsMaxOpen}
+        project={project}
+        latestRenderDataUrl={renderHistory[0]?.renderImageDataUrl || null}
+        getExportContext={() => viewportRef.current?.getExportContext() || null}
+        onClose={() => setExport3dsMaxOpen(false)}
         onToast={showToast}
       />
     </div>

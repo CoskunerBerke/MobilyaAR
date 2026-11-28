@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Box,
   Camera,
   Check,
   Columns,
@@ -49,6 +50,7 @@ interface Props {
   onDeleteRender: (id: string) => void;
   onFocusRoom: (roomId: string, angle: 'corner' | 'eye') => void;
   onCaptureViewport: () => string | null;
+  onOpen3dsMaxExport?: () => void;
   onClose: () => void;
   onToast: (msg: string) => void;
 }
@@ -93,6 +95,7 @@ export const RenderStudioModal: React.FC<Props> = ({
   onDeleteRender,
   onFocusRoom,
   onCaptureViewport,
+  onOpen3dsMaxExport,
   onClose,
   onToast,
 }) => {
@@ -552,6 +555,21 @@ export const RenderStudioModal: React.FC<Props> = ({
                 </button>
               )}
 
+              {onOpen3dsMaxExport && (
+                <button
+                  type="button"
+                  disabled={Boolean(busyMsg)}
+                  onClick={() => {
+                    onClose();
+                    onOpen3dsMaxExport();
+                  }}
+                  className="w-full py-2 border border-stone-300 hover:border-stone-950 bg-white text-stone-900 text-xs font-semibold flex items-center justify-center gap-2 transition disabled:opacity-50"
+                >
+                  <Box className="w-3.5 h-3.5" />
+                  <span>3B Sahneyi 3ds Max&apos;e Aktar (.GLB / .OBJ)</span>
+                </button>
+              )}
+
               {errorMsg && (
                 <div className="p-2.5 border border-red-300 bg-red-50 text-[11px] text-red-900 leading-relaxed">
                   {errorMsg}
@@ -599,10 +617,24 @@ export const RenderStudioModal: React.FC<Props> = ({
                   <span className="hidden sm:inline text-[10px] font-mono text-stone-400">
                     {activeItem.label} · {activeItem.presetLabel} · {activeItem.createdAt}
                   </span>
+                  {onOpen3dsMaxExport && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpen3dsMaxExport();
+                      }}
+                      className="px-2.5 py-1 border border-white/30 hover:border-white text-white text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition"
+                      title="Bu 3B sahneyi 3ds Max (.GLB / .OBJ + MaxScript) olarak dışa aktar"
+                    >
+                      <Box className="w-3.5 h-3.5" />
+                      <span>3ds Max</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => downloadImage(activeItem.renderImageDataUrl, `${activeItem.label}-${activeItem.presetLabel}`)}
-                    className="px-3 py-1 bg-white hover:bg-[#efe9df] text-stone-950 text-[11px] font-bold inline-flex items-center gap-1.5 transition"
+                    className="px-3 py-1 bg-white hover:bg-[#efe9df] text-stone-950 text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>HD İndir</span>
