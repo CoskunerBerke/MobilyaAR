@@ -130,6 +130,16 @@ const VALID_PARAMETRIC_SET = new Set<ParametricFurnitureKind>([
   'wall_mirror',
   'floor_lamp',
   'console_table',
+  'kitchen_counter',
+  'kitchen_upper_cabinet',
+  'kitchen_island',
+  'bar_stool',
+  'kitchen_appliance',
+  'fridge',
+  'toilet_wc',
+  'bathroom_vanity',
+  'shower_cabin',
+  'washer',
   'wall_art',
 ]);
 
@@ -151,7 +161,23 @@ function normTr(s: string): string {
  */
 export function resolvePinterestArchetype(item: PinterestDetectedObject): ParametricFurnitureKind {
   const t = normTr(`${item.nameTr} ${item.category} ${item.visualDescriptionEn}`);
-  // Universal high-precision semantic guards that override common Vision misclassifications (e.g. wicker basket -> ottoman!)
+  // Universal high-precision semantic guards that override common Vision misclassifications!
+  if (/ust.*dolap|mutfak.*ust|upper.*cabinet|wall.*cabinet/.test(t)) return 'kitchen_upper_cabinet';
+  if (/buzdolab|ankastre.*boy|fridge|refrigerator|freezer/.test(t)) return 'fridge';
+  if (/bar.*tabure|bar.*sandalye|ada.*tabure|yuksek.*tabure|bar.*stool|counter.*stool/.test(t)) return 'bar_stool';
+  if (/mutfak.*ada|kahvalti.*bar|bar.*tezgah|yarimada|kitchen.*island|breakfast.*bar|peninsula/.test(t)) {
+    return 'kitchen_island';
+  }
+  if (/mutfak.*tezgah|alt.*dolap|mutfak.*alt|evye|ocak.*tezgah|kitchen.*counter|base.*cabinet/.test(t)) {
+    return 'kitchen_counter';
+  }
+  if (/kahve.*makin|espresso|kettle|su.*isit|tost.*makin|mikrodalga|blender|airfryer|coffee.*maker|appliance/.test(t)) {
+    return 'kitchen_appliance';
+  }
+  if (/klozet|tuvalet|toilet|\bwc\b/.test(t)) return 'toilet_wc';
+  if (/dusakabin|dus.*kabin|shower/.test(t)) return 'shower_cabin';
+  if (/camasir.*makin|kurutma.*makin|washer|washing.*machine/.test(t)) return 'washer';
+  if (/banyo.*dolab|lavabo.*dolab|bathroom.*vanity/.test(t)) return 'bathroom_vanity';
   if (
     /sepet|basket|hasir|rattan|wicker/.test(t) &&
     !/koltuk|sandalye|chair|sofa|sehpa|table|avize|lamba|lamp|puf|tabure|stool|pouf|bitki|agac|cicek|plant|tree/.test(t)

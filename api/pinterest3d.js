@@ -293,7 +293,7 @@ function parseJsonResponse(rawText) {
 }
 
 const VALID_ARCHETYPES =
-  '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_baza" | "tv_wall_unit" | "wall_tv" | "wall_shelf" | "linear_fireplace" | "fireplace_marble" | "decorative_vase" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
+  '"sofa" | "armchair" | "coffee_table_round" | "coffee_table_rect" | "dining_table" | "dining_chair" | "bar_stool" | "desk" | "office_chair" | "vanity_table" | "bed_frame" | "nightstand" | "wardrobe" | "bookshelf" | "sideboard" | "console_table" | "tv_baza" | "tv_wall_unit" | "wall_tv" | "wall_shelf" | "linear_fireplace" | "fireplace_marble" | "kitchen_counter" | "kitchen_upper_cabinet" | "kitchen_island" | "fridge" | "kitchen_appliance" | "toilet_wc" | "bathroom_vanity" | "shower_cabin" | "washer" | "decorative_vase" | "potted_plant" | "chandelier" | "floor_lamp" | "table_lamp" | "rug_custom" | "wall_mirror" | "wall_art" | "ottoman" | "stairs" | "ac_unit"';
 
 async function callOpenAICompatibleVision({ endpoint, apiKey, models, prompt, imageDataUrls, label, extraHeaders = {} }) {
   if (!apiKey) throw new Error(`${label} anahtarı eksik.`);
@@ -574,7 +574,7 @@ Return ONLY valid JSON with this exact schema:
     {
       "id": "unique-slug",
       "nameTr": "short descriptive Turkish name (e.g. Zeytin Yeşili Yatak, Konyak Ofis Koltuğu, Çalışma Masası, Siyah Yuvarlak Sehpa, Merdiven, Makyaj Masası, Yuvarlak Duvar Aynası)",
-      "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+      "category": "Şömine" | "TV & Ünite" | "Mutfak" | "Banyo" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
       "parametricKind": ${VALID_ARCHETYPES},
       "primaryColorHex": "#RRGGBB (EXACT main color of this specific item in the photo)",
       "accentColorHex": "#RRGGBB (secondary/leg/frame/cushion/pot color of this item)",
@@ -608,6 +608,15 @@ RULES (Output ONLY compact valid JSON immediately, NO prose, NO markdown):
   * Tall floor-to-ceiling marble chimney tower (heightCm 220..280): ONLY then use parametricKind="fireplace_marble"!
   * Separate wall-mounted TV above a tv_baza or linear_fireplace: ALWAYS emit BOTH the baza/fireplace AND a separate "wall_tv" with anchorToId="<baza id>", relation="above", elevationCm=95..120!
   * Floating wall shelves / open wood cubby boxes beside a TV panel: use parametricKind="wall_shelf", mountMode="wall", with exact elevationCm (e.g. 125, 185)!
+- KITCHEN & BATHROOM ARCHITECTURAL RULES (CRITICAL FOR ANY KITCHEN OR BATHROOM PHOTO!):
+  * CLOSED KITCHEN UPPER WALL CABINETS ("Mutfak Üst Dolabı"): ALWAYS use parametricKind="kitchen_upper_cabinet", mountMode="wall", elevationCm=145..155, depthCm=35..40, heightCm=90..125! NEVER classify closed kitchen upper cabinets as "bookshelf" or "wall_shelf"! If an L-shaped kitchen has upper cabinets on TWO walls (e.g. "west" + "north"), emit TWO separate "kitchen_upper_cabinet" entries (one on "west", one on "north")!
+  * LOWER KITCHEN BASE CABINETS & COUNTERTOP ("Mutfak Alt Tezgahı"): ALWAYS emit parametricKind="kitchen_counter", mountMode="wall", elevationCm=0, depthCm=60..65, heightCm=88..92 (with primaryColorHex = cabinet door color, accentColorHex = countertop surface color like #f4f3ef white!). For L-shaped counters, emit one on each wall ("west" + "north")! NEVER omit the lower kitchen counters behind a breakfast bar!
+  * KITCHEN ISLAND / BREAKFAST BAR / PENINSULA ("Mutfak Adası / Kahvaltı Barı"): ALWAYS use parametricKind="kitchen_island" (NEVER "dining_table"!), heightCm=90..95!
+  * BAR STOOLS ("Bar Taburesi / Ada Taburesi"): ALWAYS use parametricKind="bar_stool" (NEVER "dining_chair"!), widthCm=38..44, depthCm=38..44, heightCm=72..84, anchorToId="<kitchen_island id>", relation="in_front_of"!
+  * REFRIGERATOR / BUILT-IN TALL FRIDGE TOWER ("Buzdolabı / Ankastre Boy Dolap"): ALWAYS use parametricKind="fridge" (NEVER "wardrobe"!), mountMode="wall", heightCm=210..265!
+  * COFFEE MAKERS, KETTLES, TOASTERS, MICROWAVES ("Kahve Makinesi / Kettle / Küçük Ev Aleti"): ALWAYS use parametricKind="kitchen_appliance" (NEVER "decorative_vase"!), compact widthCm=20..35, depthCm=20..32, heightCm=22..38, anchorToId="<kitchen_counter id>", relation="on_top_of"!
+  * SINGLE GLASS GLOBE / BAR PENDANTS ("Cam Küre Sarkıt"): use parametricKind="chandelier", compact widthCm=26..36, depthCm=26..36, heightCm=90..130, nameTr including "Cam Küre Sarkıt"!
+  * BATHROOM ITEMS: ALWAYS use "toilet_wc" (klozet), "bathroom_vanity" (lavabo dolabı), "shower_cabin" (duşakabin), "washer" (çamaşır makinesi)!
 - TABLETOP FLOWERS, VASES, BASKETS, WINDOWSILLS & ELEVATED DETAILS (UNIVERSAL FOR EVERY PHOTO!):
   * Small flowers, vases, candle trays, bowls sitting ON TOP of a TV baza, coffee table, console, or dining table: use parametricKind="decorative_vase" (compact widthCm 18..38, heightCm 18..42), anchorToId="<parent id>", relation="on_top_of"!
   * Small table lamps sitting on a TV baza or nightstand: parametricKind="table_lamp", anchorToId="<parent id>", relation="on_top_of"!
@@ -758,7 +767,7 @@ Return ONLY valid JSON:
     {
       "id": "missing-slug",
       "nameTr": "Turkish name",
-      "category": "Şömine" | "TV & Ünite" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
+      "category": "Şömine" | "TV & Ünite" | "Mutfak" | "Banyo" | "Yatak" | "Kanepe" | "Berjer" | "Sehpa" | "Masa" | "Sandalye" | "Depolama" | "Kitaplık" | "Aydınlatma" | "Bitki" | "Ayna & Tablo" | "Halı" | "Merdiven" | "Dekor",
       "parametricKind": ${VALID_ARCHETYPES},
       "primaryColorHex": "#RRGGBB",
       "accentColorHex": "#RRGGBB",

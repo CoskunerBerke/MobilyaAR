@@ -1393,101 +1393,320 @@ export function buildParametricObject3D(
       addBox(W * 0.42, H * 0.52, 0.014, -W * 0.12, H * 0.48, D * 0.5 + 0.005, accentBlock, false);
     }
   } else if (obj.parametricKind === 'kitchen_counter') {
-    // Realistic Technotop / Laminate Countertop & Lower Cabinet Assembly (Mutfak & Ada Tezgahı)
+    // Realistic Architectural Lower Kitchen Cabinet & Countertop Assembly (handles cabinet=primary, counter=accent OR vice-versa!)
+    const pCol = new THREE.Color(primaryHex || '#8b8782');
+    const aCol = new THREE.Color(accentHex || '#f3f2ee');
+    const pLum = 0.299 * pCol.r + 0.587 * pCol.g + 0.114 * pCol.b;
+    const aLum = 0.299 * aCol.r + 0.587 * aCol.g + 0.114 * aCol.b;
+    // If Vision passed darker cabinet color as primaryHex and bright white countertop as accentHex, honor that cleanly!
+    const topHex = obj.countertopSurface ? primaryHex : aLum > pLum + 0.12 ? accentHex : primaryHex;
+    const cabHex = obj.countertopSurface ? accentHex : aLum > pLum + 0.12 ? primaryHex : accentHex;
     const surfKind = obj.countertopSurface || 'marble';
-    const topTex = createFloorTexture(surfKind, primaryHex, W * 1.1, D * 1.4);
+    const topTex = createFloorTexture(surfKind, topHex || '#f2f0ec', W * 1.1, D * 1.4);
     const topMat = new THREE.MeshStandardMaterial({
       map: topTex,
-      roughness: surfKind === 'marble' ? 0.24 : surfKind === 'travertine' ? 0.42 : 0.55,
+      roughness: surfKind === 'marble' ? 0.22 : surfKind === 'travertine' ? 0.42 : 0.52,
       metalness: 0.04,
     });
     const cabMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(accentHex),
-      roughness: 0.52,
-      metalness: 0.06,
+      color: new THREE.Color(cabHex || '#88847e'),
+      roughness: 0.46,
+      metalness: 0.05,
     });
     const seamMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(accentHex).multiplyScalar(0.75),
-      roughness: 0.65,
+      color: new THREE.Color(cabHex || '#88847e').multiplyScalar(0.62),
+      roughness: 0.68,
     });
     const steelMat = new THREE.MeshStandardMaterial({
-      color: 0xcbd0d6,
-      roughness: 0.25,
-      metalness: 0.85,
+      color: 0xd4d8de,
+      roughness: 0.22,
+      metalness: 0.86,
+    });
+    const glassCookMat = new THREE.MeshStandardMaterial({
+      color: 0x16171a,
+      roughness: 0.12,
+      metalness: 0.45,
     });
     const sinkMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2c30,
-      roughness: 0.35,
-      metalness: 0.5,
+      color: 0x3a3d42,
+      roughness: 0.3,
+      metalness: 0.6,
     });
     disposables.push(() => {
       topMat.dispose();
       cabMat.dispose();
       seamMat.dispose();
       steelMat.dispose();
+      glassCookMat.dispose();
       sinkMat.dispose();
     });
 
     const plinthH = 0.1;
-    const topT = 0.044;
+    const topT = 0.042;
     const cabH = Math.max(0.45, H - plinthH - topT);
     // Recessed dark toe-kick plinth
     addBox(W - 0.04, plinthH, D - 0.08, 0, plinthH * 0.5, -0.02, seamMat, false);
-    // Main lower cabinet body
-    addBox(W - 0.02, cabH, D - 0.04, 0, plinthH + cabH * 0.5, -0.01, cabMat);
-    // Individual cabinet doors + recessed handles
-    const doors = Math.max(2, Math.min(6, Math.round(W / 0.55)));
-    const dw = (W - 0.03) / doors;
+    // Main lower cabinet carcass
+    addBox(W - 0.015, cabH, D - 0.03, 0, plinthH + cabH * 0.5, -0.01, cabMat);
+    // Handleless Gola-profile flush doors
+    const doors = Math.max(2, Math.min(6, Math.round(W / 0.56)));
+    const dw = (W - 0.02) / doors;
     for (let i = 0; i < doors; i++) {
-      const dx = -W * 0.5 + 0.015 + dw * (i + 0.5);
-      addBox(dw - 0.01, cabH - 0.02, 0.022, dx, plinthH + cabH * 0.5, D * 0.5 - 0.015, cabMat);
-      if (i > 0) addBox(0.008, cabH - 0.02, 0.012, dx - dw * 0.5, plinthH + cabH * 0.5, D * 0.5 - 0.012, seamMat, false);
-      // Sleek horizontal aluminum Gola profile handle near top of door
-      addBox(dw * 0.36, 0.014, 0.02, dx, plinthH + cabH - 0.055, D * 0.5 + 0.005, steelMat, false);
+      const dx = -W * 0.5 + 0.01 + dw * (i + 0.5);
+      addBox(dw - 0.008, cabH - 0.016, 0.022, dx, plinthH + cabH * 0.5, D * 0.5 - 0.012, cabMat);
+      if (i > 0) addBox(0.006, cabH - 0.016, 0.014, dx - dw * 0.5, plinthH + cabH * 0.5, D * 0.5 - 0.014, seamMat, false);
     }
-    // Thick Technotop / Laminate countertop slab with slight front overhang
-    addBox(W + 0.02, topT, D + 0.03, 0, H - topT * 0.5, 0.01, topMat);
-    // Matching 16cm rear splashback strip
-    addBox(W + 0.02, 0.16, 0.024, 0, H + 0.08, -D * 0.5 + 0.012, topMat);
-    // Integrated matte granite/steel sink basin + minimalist gooseneck faucet
-    if (W >= 1.1) {
+    // Recessed horizontal Gola finger-pull channel right beneath countertop
+    addBox(W - 0.02, 0.022, 0.02, 0, H - topT - 0.011, D * 0.5 - 0.014, seamMat, false);
+    // Crisp countertop slab
+    addBox(W + 0.016, topT, D + 0.024, 0, H - topT * 0.5, 0.008, topMat);
+    // Architectural rear backsplash panel (48cm tall subtle quartz/tile splashback)
+    addBox(W + 0.01, 0.46, 0.018, 0, H + 0.23, -D * 0.5 + 0.009, topMat, false);
+    // Integrated undermount sink + arched chrome gooseneck mixer faucet
+    if (W >= 1.0) {
       const sinkX = W * 0.22;
-      addBox(0.56, 0.012, 0.4, sinkX, H + 0.006, 0.02, sinkMat, false);
-      addBox(0.026, 0.24, 0.026, sinkX, H + 0.12, -0.2, steelMat, false);
-      addBox(0.022, 0.022, 0.16, sinkX, H + 0.23, -0.13, steelMat, false);
+      addBox(0.54, 0.01, 0.4, sinkX, H + 0.005, 0.02, sinkMat, false);
+      const neckGeo = new THREE.CylinderGeometry(0.013, 0.016, 0.24, 14);
+      const archGeo = new THREE.TorusGeometry(0.075, 0.011, 10, 18, Math.PI);
+      disposables.push(() => {
+        neckGeo.dispose();
+        archGeo.dispose();
+      });
+      const neck = new THREE.Mesh(neckGeo, steelMat);
+      neck.position.set(sinkX, H + 0.12, -D * 0.34);
+      grp.add(neck);
+      const arch = new THREE.Mesh(archGeo, steelMat);
+      arch.position.set(sinkX, H + 0.24, -D * 0.34 + 0.075);
+      arch.rotation.y = Math.PI / 2;
+      grp.add(arch);
+    }
+    // Sleek flush black glass induction cooktop on opposite side when counter is wide enough
+    if (W >= 1.65) {
+      const cookX = -W * 0.24;
+      addBox(0.58, 0.008, 0.48, cookX, H + 0.004, 0.01, glassCookMat, false);
     }
   } else if (obj.parametricKind === 'kitchen_upper_cabinet') {
-    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.48, metalness: 0.05 });
-    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex).multiplyScalar(0.78), roughness: 0.65 });
-    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffe4b8 });
+    // Architectural handleless kitchen upper wall cabinets (supports 2-tier full-to-ceiling split + warm under-cabinet LED!)
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#8d8882'), roughness: 0.42, metalness: 0.05 });
+    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#8d8882').multiplyScalar(0.58), roughness: 0.72 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0xffebc2 });
     disposables.push(() => {
       bodyMat.dispose();
       seamMat.dispose();
       ledMat.dispose();
     });
     addBox(W, H, D - 0.02, 0, H * 0.5, -0.01, bodyMat);
-    const doors = Math.max(2, Math.min(6, Math.round(W / 0.52)));
-    const dw = (W - 0.02) / doors;
+    const doors = Math.max(2, Math.min(7, Math.round(W / 0.52)));
+    const dw = (W - 0.016) / doors;
+    const isTwoTier = H >= 0.92;
     for (let i = 0; i < doors; i++) {
-      const dx = -W * 0.5 + 0.01 + dw * (i + 0.5);
-      addBox(dw - 0.01, H - 0.02, 0.022, dx, H * 0.5, D * 0.5 - 0.01, bodyMat);
-      if (i > 0) addBox(0.008, H - 0.02, 0.01, dx - dw * 0.5, H * 0.5, D * 0.5 - 0.012, seamMat, false);
+      const dx = -W * 0.5 + 0.008 + dw * (i + 0.5);
+      if (isTwoTier) {
+        const lowerH = H * 0.58;
+        const upperH = H - lowerH - 0.008;
+        addBox(dw - 0.007, lowerH, 0.022, dx, lowerH * 0.5 + 0.004, D * 0.5 - 0.01, bodyMat);
+        addBox(dw - 0.007, upperH, 0.022, dx, lowerH + 0.008 + upperH * 0.5, D * 0.5 - 0.01, bodyMat);
+      } else {
+        addBox(dw - 0.007, H - 0.012, 0.022, dx, H * 0.5, D * 0.5 - 0.01, bodyMat);
+      }
+      if (i > 0) addBox(0.006, H - 0.01, 0.012, dx - dw * 0.5, H * 0.5, D * 0.5 - 0.013, seamMat, false);
     }
-    addBox(W - 0.06, 0.012, 0.022, 0, 0.006, -D * 0.2, ledMat, false);
-  } else if (obj.parametricKind === 'fridge') {
-    const steelMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.26, metalness: 0.62 });
-    const trimMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex), roughness: 0.35, metalness: 0.72 });
-    disposables.push(() => {
-      steelMat.dispose();
-      trimMat.dispose();
+    if (isTwoTier) {
+      addBox(W - 0.01, 0.008, 0.014, 0, H * 0.58 + 0.004, D * 0.5 - 0.012, seamMat, false);
+    }
+    // Warm architectural under-cabinet task LED strip
+    addBox(W - 0.04, 0.01, 0.026, 0, 0.005, -D * 0.16, ledMat, false);
+  } else if (obj.parametricKind === 'kitchen_island') {
+    // Sleek waterfall-side kitchen breakfast bar / peninsula / island with knee-space overhang for bar stools!
+    const topMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#99948e'), roughness: 0.36, metalness: 0.06 });
+    const sideMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accentHex && accentHex !== '#262524' ? accentHex : primaryHex || '#87827c'),
+      roughness: 0.44,
+      metalness: 0.05,
     });
-    addBox(W, H, D - 0.04, 0, H * 0.5, -0.02, steelMat);
-    // Upper fridge door + lower freezer door + sleek vertical handles
-    addBox(W - 0.015, H * 0.63, 0.04, 0, H * 0.675, D * 0.5 - 0.02, steelMat);
-    addBox(W - 0.015, H * 0.33, 0.04, 0, H * 0.175, D * 0.5 - 0.02, steelMat);
-    addBox(W - 0.02, 0.014, 0.02, 0, H * 0.35, D * 0.5 - 0.015, trimMat, false);
-    addBox(0.02, H * 0.34, 0.032, -W * 0.4, H * 0.58, D * 0.5 + 0.012, trimMat, false);
-    addBox(0.02, H * 0.2, 0.032, -W * 0.4, H * 0.2, D * 0.5 + 0.012, trimMat, false);
+    const seamMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#87827c').multiplyScalar(0.62), roughness: 0.7 });
+    disposables.push(() => {
+      topMat.dispose();
+      sideMat.dispose();
+      seamMat.dispose();
+    });
+    const slabT = 0.068;
+    const legH = Math.max(0.5, H - slabT);
+    // Thick architectural countertop bridge slab
+    addBox(W, slabT, D, 0, H - slabT * 0.5, 0, topMat);
+    // Solid waterfall gable panel on the open right side (flush full depth!)
+    const gableT = 0.065;
+    addBox(gableT, legH, D, W * 0.5 - gableT * 0.5, legH * 0.5, 0, sideMat);
+    // Rear modesty/storage support panel recessed back 30cm so bar stools tuck comfortably under front overhang!
+    const rearD = Math.max(0.18, D - 0.34);
+    addBox(W - gableT - 0.02, legH, rearD, -gableT * 0.5, legH * 0.5, -D * 0.5 + rearD * 0.5, sideMat);
+    // Recessed dark toe-kick shadow strip at floor
+    addBox(W - 0.08, 0.07, rearD - 0.02, -gableT * 0.5, 0.035, -D * 0.5 + rearD * 0.5 + 0.01, seamMat, false);
+  } else if (obj.parametricKind === 'bar_stool') {
+    // Modern sculptural chrome pedestal bar stool with footrest ring & contoured low-back shell (like contemporary kitchens!)
+    const isWooden4Leg = /ahşap|ahsap|wood|meşe|mese|ceviz/i.test(obj.name);
+    const seatMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#f2f0eb'), roughness: 0.38, metalness: 0.04 });
+    const chromeMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(isWooden4Leg ? accentHex || '#8b684c' : '#d8dce2'),
+      roughness: isWooden4Leg ? 0.55 : 0.16,
+      metalness: isWooden4Leg ? 0.06 : 0.92,
+    });
+    disposables.push(() => {
+      seatMat.dispose();
+      chromeMat.dispose();
+    });
+    const seatY = Math.min(0.74, Math.max(0.58, H * 0.84));
+    const seatR = Math.min(0.21, Math.max(0.15, Math.min(W, D) * 0.45));
+    const seatGeo = new THREE.CylinderGeometry(seatR, seatR * 0.88, 0.055, 28);
+    const backH = Math.max(0.08, Math.min(0.18, H - seatY));
+    const backGeo = new THREE.CylinderGeometry(seatR * 1.02, seatR * 0.98, backH, 26, 1, true, Math.PI * 0.62, Math.PI * 0.76);
+    const backMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#f2f0eb'), roughness: 0.38, side: THREE.DoubleSide });
+    disposables.push(() => {
+      seatGeo.dispose();
+      backGeo.dispose();
+      backMat.dispose();
+    });
+
+    const seat = new THREE.Mesh(seatGeo, seatMat);
+    seat.position.set(0, seatY, 0);
+    seat.castShadow = true;
+    seat.receiveShadow = true;
+    grp.add(seat);
+
+    const back = new THREE.Mesh(backGeo, backMat);
+    back.position.set(0, seatY + backH * 0.48, 0);
+    back.castShadow = true;
+    grp.add(back);
+
+    if (isWooden4Leg) {
+      const legGeo = new THREE.CylinderGeometry(0.015, 0.012, seatY, 10);
+      disposables.push(() => legGeo.dispose());
+      const off = seatR * 0.72;
+      for (const sx of [-off, off]) {
+        for (const sz of [-off, off]) {
+          const leg = new THREE.Mesh(legGeo, chromeMat);
+          leg.position.set(sx, seatY * 0.5, sz);
+          leg.castShadow = true;
+          grp.add(leg);
+        }
+      }
+      addBox(off * 2, 0.018, 0.018, 0, seatY * 0.32, off, chromeMat, false);
+    } else {
+      const baseGeo = new THREE.CylinderGeometry(seatR * 0.92, seatR * 1.02, 0.022, 32);
+      const colGeo = new THREE.CylinderGeometry(0.022, 0.024, seatY - 0.02, 20);
+      const footRingGeo = new THREE.TorusGeometry(seatR * 0.68, 0.009, 10, 28);
+      footRingGeo.rotateX(Math.PI / 2);
+      disposables.push(() => {
+        baseGeo.dispose();
+        colGeo.dispose();
+        footRingGeo.dispose();
+      });
+      const base = new THREE.Mesh(baseGeo, chromeMat);
+      base.position.y = 0.011;
+      base.castShadow = true;
+      base.receiveShadow = true;
+      grp.add(base);
+      const col = new THREE.Mesh(colGeo, chromeMat);
+      col.position.y = seatY * 0.5;
+      col.castShadow = true;
+      grp.add(col);
+      const foot = new THREE.Mesh(footRingGeo, chromeMat);
+      foot.position.y = seatY * 0.36;
+      grp.add(foot);
+      addBox(seatR * 1.32, 0.014, 0.014, 0, seatY * 0.36, 0, chromeMat, false);
+    }
+  } else if (obj.parametricKind === 'kitchen_appliance') {
+    // Sleek countertop small kitchen appliance (Espresso/Coffee Maker, Kettle, Toaster — NEVER flower blossoms!)
+    const isKettle = /kettle|su\s*[ıi]s[ıi]t|çaydanl|caydanl/i.test(obj.name);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex || '#eceae5'), roughness: 0.28, metalness: 0.12 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(accentHex || '#1e1f22'), roughness: 0.32, metalness: 0.45 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: 0xd0d5dc, roughness: 0.2, metalness: 0.88 });
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0xdce8f0, transparent: true, opacity: 0.45, roughness: 0.08, metalness: 0.12 });
+    disposables.push(() => {
+      bodyMat.dispose();
+      darkMat.dispose();
+      steelMat.dispose();
+      glassMat.dispose();
+    });
+    if (isKettle) {
+      const r = Math.min(0.095, Math.max(0.06, Math.min(W, D) * 0.36));
+      const kh = Math.min(0.26, Math.max(0.18, H));
+      const baseGeo = new THREE.CylinderGeometry(r * 1.02, r * 1.06, 0.025, 24);
+      const cylGeo = new THREE.CylinderGeometry(r * 0.84, r * 0.96, kh - 0.055, 24);
+      const lidGeo = new THREE.CylinderGeometry(r * 0.84, r * 0.84, 0.028, 24);
+      disposables.push(() => {
+        baseGeo.dispose();
+        cylGeo.dispose();
+        lidGeo.dispose();
+      });
+      const base = new THREE.Mesh(baseGeo, darkMat);
+      base.position.y = 0.0125;
+      grp.add(base);
+      const cyl = new THREE.Mesh(cylGeo, glassMat);
+      cyl.position.y = 0.025 + (kh - 0.055) * 0.5;
+      cyl.castShadow = true;
+      grp.add(cyl);
+      const lid = new THREE.Mesh(lidGeo, darkMat);
+      lid.position.y = kh - 0.015;
+      grp.add(lid);
+      // Curved D-handle on side
+      addBox(0.018, kh * 0.58, 0.02, r + 0.025, kh * 0.52, 0, darkMat);
+      addBox(0.036, 0.018, 0.02, r + 0.01, kh * 0.8, 0, darkMat, false);
+      addBox(0.036, 0.018, 0.02, r + 0.01, kh * 0.24, 0, darkMat, false);
+    } else {
+      // Modern espresso / coffee maker housing + recessed brew bay + chrome drip grid + mug
+      const mw = Math.min(0.28, Math.max(0.16, W));
+      const md = Math.min(0.3, Math.max(0.18, D));
+      const mh = Math.min(0.36, Math.max(0.24, H));
+      // Base + chrome drip tray
+      addBox(mw, 0.035, md, 0, 0.0175, 0, darkMat);
+      addBox(mw * 0.72, 0.008, md * 0.42, 0, 0.038, md * 0.24, steelMat, false);
+      // Rear vertical body
+      addBox(mw, mh - 0.035, md * 0.54, 0, 0.035 + (mh - 0.035) * 0.5, -md * 0.23, bodyMat);
+      // Upper overhanging brew head
+      addBox(mw * 0.94, mh * 0.28, md * 0.95, 0, mh - mh * 0.14, 0.004, bodyMat);
+      addBox(mw * 0.5, 0.028, 0.04, 0, mh - mh * 0.3, md * 0.24, steelMat, false);
+    }
+  } else if (obj.parametricKind === 'fridge') {
+    const isBuiltInTower =
+      /ankastre|g[öo]mme|dolap|built.?in|integrated|kiler|boy/i.test(obj.name) ||
+      !/inox|çelik|celik|metal|steel|silver|gümüş/i.test(obj.name);
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex || '#8d8882'),
+      roughness: isBuiltInTower ? 0.42 : 0.24,
+      metalness: isBuiltInTower ? 0.05 : 0.68,
+    });
+    const seamMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(primaryHex || '#8d8882').multiplyScalar(isBuiltInTower ? 0.45 : 0.72),
+      roughness: isBuiltInTower ? 0.78 : 0.32,
+      metalness: isBuiltInTower ? 0.05 : 0.75,
+    });
+    disposables.push(() => {
+      bodyMat.dispose();
+      seamMat.dispose();
+    });
+    if (isBuiltInTower) {
+      // Sleek European integrated handleless built-in refrigerator tower (3-tier horizontal doors + recessed plinth!)
+      const plinthH = 0.09;
+      const bodyH = H - plinthH;
+      addBox(W - 0.03, plinthH, D - 0.06, 0, plinthH * 0.5, -0.02, seamMat, false);
+      addBox(W, bodyH, D - 0.025, 0, plinthH + bodyH * 0.5, -0.012, bodyMat);
+      const h1 = bodyH * 0.58;
+      const h2 = bodyH * 0.18;
+      const h3 = bodyH - h1 - h2 - 0.016;
+      addBox(W - 0.008, h1, 0.024, 0, plinthH + h1 * 0.5, D * 0.5 - 0.012, bodyMat);
+      addBox(W - 0.008, h2, 0.024, 0, plinthH + h1 + 0.008 + h2 * 0.5, D * 0.5 - 0.012, bodyMat);
+      addBox(W - 0.008, h3, 0.024, 0, plinthH + h1 + h2 + 0.016 + h3 * 0.5, D * 0.5 - 0.012, bodyMat);
+      addBox(W - 0.01, 0.009, 0.016, 0, plinthH + h1 + 0.004, D * 0.5 - 0.014, seamMat, false);
+      addBox(W - 0.01, 0.009, 0.016, 0, plinthH + h1 + h2 + 0.012, D * 0.5 - 0.014, seamMat, false);
+    } else {
+      addBox(W, H, D - 0.04, 0, H * 0.5, -0.02, bodyMat);
+      addBox(W - 0.015, H * 0.63, 0.04, 0, H * 0.675, D * 0.5 - 0.02, bodyMat);
+      addBox(W - 0.015, H * 0.33, 0.04, 0, H * 0.175, D * 0.5 - 0.02, bodyMat);
+      addBox(W - 0.02, 0.014, 0.02, 0, H * 0.35, D * 0.5 - 0.015, seamMat, false);
+      addBox(0.02, H * 0.34, 0.032, -W * 0.4, H * 0.58, D * 0.5 + 0.012, seamMat, false);
+      addBox(0.02, H * 0.2, 0.032, -W * 0.4, H * 0.2, D * 0.5 + 0.012, seamMat, false);
+    }
   } else if (obj.parametricKind === 'toilet_wc') {
     // VitrA Wall-Hung Toilet + Concealed Cistern Panel
     const ceramicMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(primaryHex), roughness: 0.16, metalness: 0.04 });
@@ -1672,10 +1891,17 @@ export function buildParametricObject3D(
       (primaryLum > 0.72 && !/halka|ring|kristal|crystal|tel|wire|kafes|çoklu|coklu|cluster/i.test(obj.name));
     const isPendantCluster =
       !isPaperLantern && /tel|kablo|çoklu|coklu|wire|cluster|kafes/i.test(obj.name);
+    const isSingleGlassGlobe =
+      !isPaperLantern &&
+      !isPendantCluster &&
+      (/cam|glass|şeffaf|seffaf|bar.*sark|ada.*sark|tekli.*sark|globe|küre|kure|pirinç|pirinc|gold|alt[ıi]n.*sark/i.test(
+        obj.name
+      ) ||
+        (W <= 0.48 && D <= 0.48 && !/halka|ring/i.test(obj.name)));
     const brassMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(primaryHex),
-      roughness: 0.28,
-      metalness: 0.82,
+      color: new THREE.Color(primaryHex || '#c7a462'),
+      roughness: 0.24,
+      metalness: 0.85,
     });
     const glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(accentHex || '#fff2d2') });
     const wireMat = new THREE.MeshBasicMaterial({ color: 0x222224 });
@@ -1685,14 +1911,62 @@ export function buildParametricObject3D(
       wireMat.dispose();
     });
 
-    const canGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.03, 20);
+    const canGeo = new THREE.CylinderGeometry(isSingleGlassGlobe ? 0.055 : 0.09, isSingleGlassGlobe ? 0.055 : 0.09, 0.025, 20);
     disposables.push(() => canGeo.dispose());
-    const can = new THREE.Mesh(canGeo, isPaperLantern ? new THREE.MeshStandardMaterial({ color: 0xf4f2ed, roughness: 0.75 }) : brassMat);
+    const can = new THREE.Mesh(
+      canGeo,
+      isPaperLantern ? new THREE.MeshStandardMaterial({ color: 0xf4f2ed, roughness: 0.75 }) : brassMat
+    );
     can.position.set(0, H - 0.015, 0);
     grp.add(can);
     if (isPaperLantern) disposables.push(() => (can.material as THREE.Material).dispose());
 
-    if (isPaperLantern) {
+    if (isSingleGlassGlobe) {
+      // Sleek minimalist brushed-brass rod + translucent clear glass globe pendant (modern bar & island lights!)
+      const globeR = Math.min(0.18, Math.max(0.11, Math.min(W, D) * 0.46));
+      const globeY = Math.max(globeR + 0.02, 0.16);
+      const rodTopY = H - 0.025;
+      const rodBotY = globeY;
+      const rodLen = Math.max(0.12, rodTopY - rodBotY);
+      const cordLen = rodLen * 0.42;
+      const brassStemLen = rodLen * 0.58;
+      const cordGeo = new THREE.CylinderGeometry(0.004, 0.004, cordLen, 8);
+      const stemGeo = new THREE.CylinderGeometry(0.0085, 0.0085, brassStemLen, 12);
+      const puckGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.022, 18);
+      const ledLensGeo = new THREE.CylinderGeometry(0.026, 0.026, 0.008, 18);
+      const glassGeo = new THREE.SphereGeometry(globeR, 28, 22);
+      const glassMat = new THREE.MeshStandardMaterial({
+        color: 0xf4f8fc,
+        transparent: true,
+        opacity: 0.3,
+        roughness: 0.06,
+        metalness: 0.15,
+        depthWrite: false,
+      });
+      disposables.push(() => {
+        cordGeo.dispose();
+        stemGeo.dispose();
+        puckGeo.dispose();
+        ledLensGeo.dispose();
+        glassGeo.dispose();
+        glassMat.dispose();
+      });
+      const cord = new THREE.Mesh(cordGeo, brassMat);
+      cord.position.y = rodTopY - cordLen * 0.5;
+      grp.add(cord);
+      const stem = new THREE.Mesh(stemGeo, brassMat);
+      stem.position.y = rodBotY + brassStemLen * 0.5;
+      grp.add(stem);
+      const puck = new THREE.Mesh(puckGeo, brassMat);
+      puck.position.y = globeY;
+      grp.add(puck);
+      const lens = new THREE.Mesh(ledLensGeo, glowMat);
+      lens.position.y = globeY - 0.012;
+      grp.add(lens);
+      const globe = new THREE.Mesh(glassGeo, glassMat);
+      globe.position.y = globeY;
+      grp.add(globe);
+    } else if (isPaperLantern) {
       // Sculptural Scandinavian / Japanese two-tier ribbed rice-paper lantern pendant!
       const shadeColor = primaryLum > 0.5 ? new THREE.Color(primaryHex) : new THREE.Color('#f4f1ea');
       const paperMat = new THREE.MeshStandardMaterial({

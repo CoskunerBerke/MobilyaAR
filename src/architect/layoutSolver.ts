@@ -76,6 +76,16 @@ export const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind
   ottoman: { c1: '#ddd5c7', c2: '#4a453e' },
   stairs: { c1: '#c3a27a', c2: '#242426' },
   ac_unit: { c1: '#f4f3ef', c2: '#2b2b2b' },
+  kitchen_counter: { c1: '#8e8983', c2: '#f4f2ee' },
+  kitchen_upper_cabinet: { c1: '#8e8983', c2: '#5c5853' },
+  kitchen_island: { c1: '#95908a', c2: '#807b75' },
+  bar_stool: { c1: '#f2f0eb', c2: '#d5d9df' },
+  kitchen_appliance: { c1: '#eceae4', c2: '#1f2023' },
+  fridge: { c1: '#8d8882', c2: '#5a5753' },
+  toilet_wc: { c1: '#f7f6f2', c2: '#cfd4da' },
+  bathroom_vanity: { c1: '#6e6a64', c2: '#cfd4da' },
+  shower_cabin: { c1: '#232426', c2: '#cfd4da' },
+  washer: { c1: '#f2f1ed', c2: '#2b2d31' },
 };
 
 export const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
@@ -93,6 +103,13 @@ export const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'console_table',
   'vanity_table',
   'ac_unit',
+  'kitchen_counter',
+  'kitchen_upper_cabinet',
+  'fridge',
+  'toilet_wc',
+  'bathroom_vanity',
+  'shower_cabin',
+  'washer',
 ]);
 
 export const WALL_ANCHORABLE_FLOOR_KINDS = new Set<ParametricFurnitureKind>([
@@ -113,6 +130,9 @@ const LAMP_SURFACE_KINDS = new Set<ParametricFurnitureKind>([
   'coffee_table_round',
   'coffee_table_rect',
   'dining_table',
+  'kitchen_counter',
+  'kitchen_island',
+  'bathroom_vanity',
 ]);
 
 export function resolveMezzaninePlan(
@@ -407,6 +427,15 @@ export function applyArchitecturalRelationships(
     'office_chair',
     'rug_custom',
     'stairs',
+    'kitchen_counter',
+    'kitchen_upper_cabinet',
+    'kitchen_island',
+    'bar_stool',
+    'fridge',
+    'toilet_wc',
+    'bathroom_vanity',
+    'shower_cabin',
+    'washer',
   ]);
   const isWindowsillCandidate = (obj: ArchPlacedObject, src?: PinterestDetectedObject): boolean => {
     if (obj.parametricKind && NON_TABLETOP_KINDS.has(obj.parametricKind)) return false;
@@ -426,6 +455,7 @@ export function applyArchitecturalRelationships(
     return false;
   };
   const decorCountPerSurface = new Map<string, number>();
+  const placedLatsPerSurface = new Map<string, number[]>();
   for (const obj of result) {
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
     if (isWindowsillCandidate(obj, src)) continue;
@@ -450,6 +480,7 @@ export function applyArchitecturalRelationships(
       isTabletopBurner ||
       obj.parametricKind === 'table_lamp' ||
       obj.parametricKind === 'decorative_vase' ||
+      obj.parametricKind === 'kitchen_appliance' ||
       src?.relation === 'on_top_of';
     if (!isTabletopItem) continue;
 
@@ -461,19 +492,35 @@ export function applyArchitecturalRelationships(
       sameFloor(explicitParent, obj)
         ? explicitParent
         : undefined;
-    const parent = validExplicit || findNearestOfKinds(obj, LAMP_SURFACE_KINDS, 3.8);
+    // Kitchen appliances strongly prefer kitchen_counter / kitchen_island first!
+    const preferredKitchenParent =
+      obj.parametricKind === 'kitchen_appliance'
+        ? findNearestOfKinds(obj, new Set<ParametricFurnitureKind>(['kitchen_counter', 'kitchen_island']), 4.2)
+        : undefined;
+    const parent = validExplicit || preferredKitchenParent || findNearestOfKinds(obj, LAMP_SURFACE_KINDS, 3.8);
     if (parent) {
       const prevCount = decorCountPerSurface.get(parent.id) || 0;
       decorCountPerSurface.set(parent.id, prevCount + 1);
+      const prevLats = placedLatsPerSurface.get(parent.id) || [];
       const rx = Math.cos(parent.rot);
       const rz = -Math.sin(parent.rot);
-      // Preserve item's rough left-to-right spot along a wide TV baza / fireplace console, avoiding exact overlap!
+      // Preserve item's rough left-to-right spot along a wide counter/console, avoiding exact overlap with siblings!
       const rawLat = (obj.x - parent.x) * rx + (obj.z - parent.z) * rz;
       const maxLat = Math.max(0.05, parent.widthM * 0.5 - obj.widthM * 0.5 - 0.08);
       let lat = Math.max(-maxLat, Math.min(maxLat, rawLat));
-      if (prevCount > 0 && Math.abs(lat) < 0.14) {
-        lat = (prevCount % 2 === 1 ? 1 : -1) * Math.min(maxLat, 0.28 + prevCount * 0.12);
+      const minSpacing = Math.max(0.24, obj.widthM + 0.08);
+      if (prevLats.some((p) => Math.abs(p - lat) < minSpacing)) {
+        const offsets = [0.28, -0.28, 0.52, -0.52, 0.78, -0.78];
+        for (const off of offsets) {
+          const cand = Math.max(-maxLat, Math.min(maxLat, lat + off));
+          if (prevLats.every((p) => Math.abs(p - cand) >= minSpacing * 0.85)) {
+            lat = cand;
+            break;
+          }
+        }
       }
+      prevLats.push(lat);
+      placedLatsPerSurface.set(parent.id, prevLats);
       obj.x = Number((parent.x + rx * lat).toFixed(3));
       obj.z = Number((parent.z + rz * lat).toFixed(3));
       obj.y = Number((parent.y + parent.heightM).toFixed(3));
@@ -649,6 +696,80 @@ export function applyArchitecturalRelationships(
     });
   }
 
+  // 4b) Bar stools align neatly side-by-side tucked under the front knee-space overhang of their kitchen_island / breakfast bar!
+  const islands = result.filter((o) => o.parametricKind === 'kitchen_island');
+  const assignedBarStools = new Set<string>();
+  for (const isl of islands) {
+    const stools = result.filter((o) => {
+      if (o.parametricKind !== 'bar_stool' || !sameFloor(o, isl)) return false;
+      if (assignedBarStools.has(o.id)) return false;
+      const src = o.pinterestItemId ? sourceItems.get(o.pinterestItemId) : undefined;
+      if (src?.anchorToId) {
+        const exp = byPinId.get(src.anchorToId);
+        if (exp) return exp.id === isl.id;
+      }
+      return Math.hypot(o.x - isl.x, o.z - isl.z) < 2.8;
+    });
+    if (stools.length === 0) continue;
+    stools.forEach((s) => assignedBarStools.add(s.id));
+    const rx = Math.cos(isl.rot);
+    const rz = -Math.sin(isl.rot);
+    const fx = Math.sin(isl.rot);
+    const fz = Math.cos(isl.rot);
+    // Preserve left-to-right ordering of bar stools along island axis
+    stools.sort((a, b) => (a.x - isl.x) * rx + (a.z - isl.z) * rz - ((b.x - isl.x) * rx + (b.z - isl.z) * rz));
+    const n = stools.length;
+    // Leave clean clearance before the right waterfall gable (+W/2 - 0.065)
+    const minLat = -isl.widthM * 0.5 + 0.24;
+    const maxLat = isl.widthM * 0.5 - 0.28;
+    const span = Math.max(0.24, maxLat - minLat);
+    stools.forEach((st, i) => {
+      const lat = n === 1 ? (minLat + maxLat) * 0.5 : minLat + (span * i) / (n - 1);
+      const fwd = isl.depthM * 0.5 + st.depthM * 0.14;
+      const cl = clampInsideFloor(
+        isl.x + rx * lat + fx * fwd,
+        isl.z + rz * lat + fz * fwd,
+        st.widthM * 0.5,
+        st.depthM * 0.5,
+        project.widthM,
+        project.depthM,
+        mezBounds,
+        (st.floorLevel || 0) === 1
+      );
+      st.x = Number(cl.x.toFixed(3));
+      st.z = Number(cl.z.toFixed(3));
+      st.y = isl.y;
+      st.rot = isl.rot + Math.PI; // face inward toward the breakfast bar!
+    });
+  }
+
+  // 4c) Twin/multi ceiling pendants explicitly anchored 'above' a kitchen_island or dining_table center evenly along it!
+  const pendantTargets = result.filter(
+    (o) => o.parametricKind === 'kitchen_island' || o.parametricKind === 'dining_table'
+  );
+  for (const tgt of pendantTargets) {
+    const pendants = result.filter((o) => {
+      if (o.parametricKind !== 'chandelier' || !sameFloor(o, tgt)) return false;
+      const src = o.pinterestItemId ? sourceItems.get(o.pinterestItemId) : undefined;
+      if (src?.anchorToId) {
+        const exp = byPinId.get(src.anchorToId);
+        if (exp && exp.id === tgt.id) return true;
+      }
+      return tgt.parametricKind === 'kitchen_island' && o.widthM <= 0.48 && Math.hypot(o.x - tgt.x, o.z - tgt.z) < 1.85;
+    });
+    if (pendants.length === 0) continue;
+    const rx = Math.cos(tgt.rot);
+    const rz = -Math.sin(tgt.rot);
+    pendants.sort((a, b) => (a.x - tgt.x) * rx + (a.z - tgt.z) * rz - ((b.x - tgt.x) * rx + (b.z - tgt.z) * rz));
+    const n = pendants.length;
+    const span = Math.max(0.32, tgt.widthM * 0.56);
+    pendants.forEach((p, i) => {
+      const lat = n === 1 ? 0 : -span * 0.5 + (span * i) / (n - 1);
+      p.x = Number((tgt.x + rx * lat).toFixed(3));
+      p.z = Number((tgt.z + rz * lat).toFixed(3));
+    });
+  }
+
   // 5) Rugs explicitly anchored 'under' a bed_frame / dining_table / sofa center cleanly beneath their parent!
   //    (Coffee tables were already aligned in Step 1b BEFORE tabletop decor locked onto them.)
   for (const rug of result) {
@@ -677,7 +798,7 @@ export function applyArchitecturalRelationships(
     }
   }
 
-  // 6) Explicit 'above' wall alignment + Automatic Wall-TV alignment above TV baza / linear fireplace on same wall!
+  // 6) Explicit 'above' wall alignment + Automatic Wall-TV / Kitchen Upper Cabinet alignment above lower base units on same wall!
   for (const obj of result) {
     if (obj.mountMode !== 'wall') continue;
     const src = obj.pinterestItemId ? sourceItems.get(obj.pinterestItemId) : undefined;
@@ -696,6 +817,14 @@ export function applyArchitecturalRelationships(
             c.parametricKind === 'console_table' ||
             c.parametricKind === 'sideboard')
       );
+    } else if (obj.parametricKind === 'kitchen_upper_cabinet' && obj.attachedWall) {
+      parent = result.find(
+        (c) =>
+          c.id !== obj.id &&
+          sameFloor(c, obj) &&
+          c.attachedWall === obj.attachedWall &&
+          c.parametricKind === 'kitchen_counter'
+      );
     }
     if (!parent || !sameFloor(parent, obj)) continue;
     if (parent.attachedWall && obj.attachedWall === parent.attachedWall) {
@@ -703,16 +832,17 @@ export function applyArchitecturalRelationships(
       const parentCenter = isHoriz ? parent.x : parent.z;
       const myAlong = isHoriz ? obj.x : obj.z;
       const maxDrift = Math.max(0.15, (parent.widthM - obj.widthM) * 0.5 + 0.12);
-      // Keep photo's slight asymmetric TV offset if inside the baza width (like Photo 1!), else center cleanly above baza
       const clampedAlong =
         Math.abs(myAlong - parentCenter) <= maxDrift ? myAlong : parentCenter;
       if (isHoriz) obj.x = clampedAlong;
       else obj.z = clampedAlong;
-      // Built-in upper bookshelf rests flush atop its lower sideboard cabinet; wall TV/art floats with clean breathing gap
+      const isKitchenUpper = obj.parametricKind === 'kitchen_upper_cabinet';
       const isFlushUpperCabinet = obj.parametricKind === 'bookshelf';
-      const minClearY = parent.y + parent.heightM + (isFlushUpperCabinet ? 0.0 : 0.18);
-      const maxY = effectiveCeilingM - obj.heightM - 0.08;
-      obj.y = isFlushUpperCabinet
+      const minClearY = parent.y + parent.heightM + (isKitchenUpper ? 0.54 : isFlushUpperCabinet ? 0.0 : 0.18);
+      const maxY = effectiveCeilingM - obj.heightM - (isKitchenUpper ? 0.02 : 0.08);
+      obj.y = isKitchenUpper
+        ? Number(Math.max(minClearY, Math.min(maxY, Math.max(obj.y, minClearY))).toFixed(3))
+        : isFlushUpperCabinet
         ? Math.max(parent.y + parent.heightM, Math.min(maxY, obj.y))
         : Math.max(minClearY, Math.min(maxY, Math.max(obj.y, minClearY + 0.14)));
     }
@@ -841,6 +971,7 @@ export function applyVisualCritiqueFixes(
       o.parametricKind === 'wall_art' ||
       o.parametricKind === 'wall_tv' ||
       o.parametricKind === 'wall_shelf' ||
+      o.parametricKind === 'kitchen_upper_cabinet' ||
       o.parametricKind === 'ac_unit' ||
       o.parametricKind === 'chandelier' ||
       (o.parametricKind === 'table_lamp' && (o.mountMode === 'wall' || /aplik|sconce|duvar/i.test(o.name))) ||
@@ -857,6 +988,7 @@ export function applyVisualCritiqueFixes(
       !isFloorBasketItem &&
       (o.parametricKind === 'table_lamp' ||
         o.parametricKind === 'decorative_vase' ||
+        o.parametricKind === 'kitchen_appliance' ||
         o.parametricKind === 'tv_baza' ||
         ((o.parametricKind === 'wardrobe' || o.parametricKind === 'bookshelf') && o.y > baseY + 0.08) ||
         Boolean(o.lockedParentId) ||

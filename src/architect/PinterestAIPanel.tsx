@@ -288,6 +288,16 @@ const DEFAULT_COLORS_BY_ARCHETYPE: Partial<Record<ParametricFurnitureKind, { c1:
   ottoman: { c1: '#ddd5c7', c2: '#4a453e' },
   stairs: { c1: '#c3a27a', c2: '#242426' },
   ac_unit: { c1: '#f4f3ef', c2: '#2b2b2b' },
+  kitchen_counter: { c1: '#8e8983', c2: '#f4f2ee' },
+  kitchen_upper_cabinet: { c1: '#8e8983', c2: '#5c5853' },
+  kitchen_island: { c1: '#95908a', c2: '#807b75' },
+  bar_stool: { c1: '#f2f0eb', c2: '#d5d9df' },
+  kitchen_appliance: { c1: '#eceae4', c2: '#1f2023' },
+  fridge: { c1: '#8d8882', c2: '#5a5753' },
+  toilet_wc: { c1: '#f7f6f2', c2: '#cfd4da' },
+  bathroom_vanity: { c1: '#6e6a64', c2: '#cfd4da' },
+  shower_cabin: { c1: '#232426', c2: '#cfd4da' },
+  washer: { c1: '#f2f1ed', c2: '#2b2d31' },
 };
 
 interface WallSlot {
@@ -312,6 +322,13 @@ const WALL_BACKED_KINDS = new Set<ParametricFurnitureKind>([
   'console_table',
   'vanity_table',
   'ac_unit',
+  'kitchen_counter',
+  'kitchen_upper_cabinet',
+  'fridge',
+  'toilet_wc',
+  'bathroom_vanity',
+  'shower_cabin',
+  'washer',
 ]);
 
 /** Floor furniture that snaps flush to its wall whenever AI assigns a specific wall (never left floating sideways!) */
@@ -748,11 +765,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
       !isFloorBasket &&
       (isTabletopBurner ||
         archetype === 'decorative_vase' ||
+        archetype === 'kitchen_appliance' ||
         (archetype === 'table_lamp' && !isWallSconce) ||
         item.relation === 'on_top_of' ||
         (archetype === 'potted_plant' &&
           (((Number(item.heightCm) || 0) > 0 && Number(item.heightCm) <= 58) ||
-            /pencere|küçük|kucuk|mini|masa/i.test(item.nameTr))));
+            /pencere|küçük|kucuk|mini|masa|tezgah/i.test(item.nameTr))));
 
     // Side-wall W×D auto-swap: if Vision reported world X×Z instead of local W×D for elongated furniture on west/east wall
     // (e.g. a 180cm wide, 60cm deep wardrobe reported as 60×180 on west wall!), swap so wide face runs ALONG the wall!
@@ -773,6 +791,12 @@ export const PinterestAIPanel: React.FC<Props> = ({
       'wall_art',
       'wall_mirror',
       'wall_shelf',
+      'kitchen_counter',
+      'kitchen_upper_cabinet',
+      'fridge',
+      'bathroom_vanity',
+      'shower_cabin',
+      'washer',
     ]);
     if (
       (item.suggestedWall === 'west' || item.suggestedWall === 'east') &&
@@ -830,6 +854,46 @@ export const PinterestAIPanel: React.FC<Props> = ({
         dM = Math.max(0.45, Math.min(1.2, dM));
         hM = Math.max(0.7, Math.min(headroomM - 0.15, hM));
       }
+    } else if (archetype === 'kitchen_upper_cabinet') {
+      wM = Math.max(0.6, Math.min(roomW * 0.86, wM));
+      dM = Math.max(0.32, Math.min(0.42, dM));
+      hM = Math.max(0.6, Math.min(Math.max(0.7, headroomM - 1.44), hM));
+    } else if (archetype === 'kitchen_counter') {
+      wM = Math.max(0.85, Math.min(roomW * 0.88, wM));
+      dM = Math.max(0.55, Math.min(0.68, dM));
+      hM = Math.max(0.84, Math.min(0.95, hM));
+    } else if (archetype === 'kitchen_island') {
+      wM = Math.max(0.95, Math.min(roomW * 0.72, wM));
+      dM = Math.max(0.52, Math.min(1.15, dM));
+      hM = Math.max(0.86, Math.min(1.04, hM));
+    } else if (archetype === 'fridge') {
+      wM = Math.max(0.58, Math.min(1.08, wM));
+      dM = Math.max(0.56, Math.min(0.76, dM));
+      hM = Math.max(1.85, Math.min(headroomM - 0.04, hM));
+    } else if (archetype === 'bar_stool') {
+      wM = Math.max(0.36, Math.min(0.48, wM));
+      dM = Math.max(0.36, Math.min(0.48, dM));
+      hM = Math.max(0.66, Math.min(0.94, hM));
+    } else if (archetype === 'kitchen_appliance') {
+      wM = Math.max(0.16, Math.min(0.38, wM));
+      dM = Math.max(0.16, Math.min(0.36, dM));
+      hM = Math.max(0.18, Math.min(0.42, hM));
+    } else if (archetype === 'bathroom_vanity') {
+      wM = Math.max(0.55, Math.min(2.0, wM));
+      dM = Math.max(0.42, Math.min(0.58, dM));
+      hM = Math.max(0.78, Math.min(0.92, hM));
+    } else if (archetype === 'shower_cabin') {
+      wM = Math.max(0.8, Math.min(1.8, wM));
+      dM = Math.max(0.8, Math.min(1.4, dM));
+      hM = Math.max(1.9, Math.min(2.3, hM));
+    } else if (archetype === 'toilet_wc') {
+      wM = Math.max(0.36, Math.min(0.48, wM));
+      dM = Math.max(0.52, Math.min(0.7, dM));
+      hM = Math.max(0.75, Math.min(1.18, hM));
+    } else if (archetype === 'washer') {
+      wM = Math.max(0.56, Math.min(0.68, wM));
+      dM = Math.max(0.52, Math.min(0.68, dM));
+      hM = Math.max(0.8, Math.min(0.9, hM));
     } else if (archetype === 'stairs' && activeMezBounds) {
       // Snap stairs height flush to the 2nd floor mezzanine deck!
       hM = activeMezBounds.topY;
@@ -848,6 +912,7 @@ export const PinterestAIPanel: React.FC<Props> = ({
       (hM >= 1.25 || (item.elevationCm !== undefined && item.elevationCm <= 15) || /boy|ayakta|zemin|full.?length|kemer/i.test(item.nameTr));
     const isHighWall =
       isWallSconce ||
+      archetype === 'kitchen_upper_cabinet' ||
       (!isFloorMirror &&
         (archetype === 'wall_art' ||
           archetype === 'wall_mirror' ||
@@ -911,9 +976,9 @@ export const PinterestAIPanel: React.FC<Props> = ({
       }
       occupiedGround.push({ id: item.id, x, z, rot, halfW: wM * 0.5, halfD: dM * 0.5 });
     } else if (isCeiling) {
-      y = Math.max(baseFloorY + 1.65, effectiveCeilingM - hM);
-      x = Math.max(-roomW * 0.25, Math.min(roomW * 0.25, x));
-      z = Math.max(-roomD * 0.25, Math.min(roomD * 0.25, z));
+      y = Math.max(baseFloorY + 1.55, effectiveCeilingM - hM);
+      x = Math.max(-roomW * 0.4, Math.min(roomW * 0.4, x));
+      z = Math.max(-roomD * 0.4, Math.min(roomD * 0.4, z));
     } else if (isRug) {
       y = baseFloorY + 0.004;
       rot = 0;
@@ -938,6 +1003,8 @@ export const PinterestAIPanel: React.FC<Props> = ({
         const relElev =
           archetype === 'ac_unit'
             ? Math.max(1.75, headroomM - hM - 0.15)
+            : archetype === 'kitchen_upper_cabinet'
+            ? Math.max(1.42, Math.min(headroomM - hM - 0.03, (item.elevationCm || 148) / 100))
             : archetype === 'wall_shelf'
             ? Math.max(0.65, Math.min(headroomM - hM - 0.12, (item.elevationCm || 145) / 100))
             : Math.max(0.75, Math.min(headroomM - hM - 0.08, (item.elevationCm || 115) / 100));
