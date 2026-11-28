@@ -3502,8 +3502,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
               type="button"
               onClick={() => {
                 setExportMenuOpen(false);
-                if (window.innerWidth < 1024) setMobileSearchOpen((v) => !v);
-                else setSearchPaletteOpen(true);
+                setMobileSearchOpen(false);
+                setSearchPaletteOpen(true);
               }}
               className="px-2.5 py-1.5 border border-stone-300 hover:border-stone-950 bg-[#faf9f6] hover:bg-white text-stone-800 text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
               title="Renk, parke kodu, mobilya, pencere veya 3+1 daire ara (Ctrl+K)"

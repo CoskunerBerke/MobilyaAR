@@ -1175,7 +1175,7 @@ export function App() {
                 {
                   no: '03',
                   title: 'AR, 3ds Max veya Müşteri PDF İndir',
-                  desc: 'Müşteriye 2D kroki + boya/parke metrajlı A4 sunum PDF&apos;i gönderin, 3ds Max (.ZIP) çıktısı alın veya QR ile telefonda 1:1 AR gösterin.',
+                  desc: "Müşteriye 2D kroki + boya/parke metrajlı A4 sunum PDF'i gönderin, 3ds Max (.ZIP) çıktısı alın veya QR ile telefonda 1:1 AR gösterin.",
                 },
               ].map((step) => (
                 <div
