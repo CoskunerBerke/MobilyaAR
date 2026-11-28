@@ -31,6 +31,7 @@ import {
 } from '../lib/arLauncher';
 import { buildShareUrl } from '../lib/server';
 import { NumericInput } from './NumericInput';
+import { WallCompassPicker } from './WallCompassPicker';
 import { findOpenShelvingAt, findSupportUnderObject, getBaseFloorYAt, isOpenShelvingHost } from './surfacePhysics';
 import {
   COUNTERTOP_CATALOG,
@@ -49,6 +50,7 @@ import {
   PASSAGE_STYLE_LABELS,
   ROOM_KIND_LABELS,
   WALL_LABELS,
+  WALL_SHORT_LABELS,
   WALL_PATTERN_LABELS,
   WINDOW_KIND_LABELS,
   getWallLengthM,
@@ -97,7 +99,7 @@ interface Props {
 }
 
 const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
-const WALL_SHORT: Record<WallId, string> = { north: 'Üst A', east: 'Sağ B', south: 'Alt C', west: 'Sol D' };
+const WALL_SHORT: Record<WallId, string> = WALL_SHORT_LABELS;
 
 const OBJECT_COLOR_SWATCHES: Array<{ name: string; hex: string }> = [
   { name: 'Beyaz', hex: '#f2f0ea' },
@@ -412,22 +414,13 @@ export const SelectionInspector: React.FC<Props> = ({
         <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
           <div className="space-y-1.5">
             <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">Başka Duvara Taşı</span>
-            <div className="grid grid-cols-4 gap-1">
-              {WALL_IDS.map((wId) => (
-                <button
-                  key={wId}
-                  type="button"
-                  onClick={() => onMoveOpeningToWall('wallZone', zone.id, wId)}
-                  className={`py-1.5 border text-[10px] font-semibold transition ${
-                    zone.wall === wId
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800'
-                  }`}
-                >
-                  {WALL_SHORT[wId]}
-                </button>
-              ))}
-            </div>
+            <WallCompassPicker
+              value={zone.wall}
+              onChange={(wId) => onMoveOpeningToWall('wallZone', zone.id, wId)}
+              project={project}
+              centerLabel="Bölge Konumu"
+              compact
+            />
           </div>
 
           <div className="space-y-2">
@@ -722,22 +715,13 @@ export const SelectionInspector: React.FC<Props> = ({
             <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
               Pencereyi Başka Duvara Taşı
             </span>
-            <div className="grid grid-cols-4 gap-1">
-              {WALL_IDS.map((wId) => (
-                <button
-                  key={wId}
-                  type="button"
-                  onClick={() => onMoveOpeningToWall('window', win.id, wId)}
-                  className={`py-1.5 border text-[10px] font-semibold transition ${
-                    win.wall === wId
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800'
-                  }`}
-                >
-                  {WALL_SHORT[wId]}
-                </button>
-              ))}
-            </div>
+            <WallCompassPicker
+              value={win.wall}
+              onChange={(wId) => onMoveOpeningToWall('window', win.id, wId)}
+              project={project}
+              centerLabel="Pencere Duvarı"
+              compact
+            />
           </div>
 
           <label className="block space-y-1">
@@ -893,22 +877,13 @@ export const SelectionInspector: React.FC<Props> = ({
             <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
               Kapıyı Başka Duvara Taşı
             </span>
-            <div className="grid grid-cols-4 gap-1">
-              {WALL_IDS.map((wId) => (
-                <button
-                  key={wId}
-                  type="button"
-                  onClick={() => onMoveOpeningToWall('door', door.id, wId)}
-                  className={`py-1.5 border text-[10px] font-semibold transition ${
-                    door.wall === wId
-                      ? 'border-stone-950 bg-stone-950 text-white'
-                      : 'border-stone-300 hover:border-stone-950 bg-[#faf9f6] text-stone-800'
-                  }`}
-                >
-                  {WALL_SHORT[wId]}
-                </button>
-              ))}
-            </div>
+            <WallCompassPicker
+              value={door.wall}
+              onChange={(wId) => onMoveOpeningToWall('door', door.id, wId)}
+              project={project}
+              centerLabel="Kapı Duvarı"
+              compact
+            />
           </div>
 
           <select
@@ -1803,9 +1778,10 @@ export const SelectionInspector: React.FC<Props> = ({
                 key={wId}
                 type="button"
                 onClick={() => onSnapObjectToWall(obj.id, wId)}
+                title={WALL_LABELS[wId]}
                 className="py-1.5 border border-stone-300 hover:border-stone-950 hover:bg-stone-950 hover:text-white bg-[#faf9f6] text-[10px] font-semibold transition"
               >
-                {wId === 'north' ? 'Üst A' : wId === 'east' ? 'Sağ B' : wId === 'south' ? 'Alt C' : 'Sol D'}
+                {WALL_SHORT[wId]}
               </button>
             ))}
           </div>

@@ -55,6 +55,7 @@ import { convertCadFileToGlb } from '../lib/cadImport';
 import { clampToRoomWalls, findOpenSpawnPosition, parseProductFootprintM, type OBB2D } from '../lib/collision2d';
 import { ArchViewport3D, type ArchCameraMode, type ArchViewportHandle } from './ArchViewport3D';
 import { RenderStudioModal, type RenderStudioLaunchOpts, type StudioRenderItem } from './RenderStudioModal';
+import { WallCompassPicker } from './WallCompassPicker';
 import { BrandCatalogPanel } from './BrandCatalogPanel';
 import {
   SUPPLIER_SHORT,
@@ -1695,29 +1696,25 @@ export const ArchitecturalStudioPage: React.FC = () => {
                       </label>
                     </div>
 
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-stone-500 block">Hangi Duvara Eklensin?</span>
-                      <div className="grid grid-cols-4 gap-1">
-                        {(
-                          [
-                            { id: 'north' as WallId, lbl: 'Üst A' },
-                            { id: 'east' as WallId, lbl: 'Sağ B' },
-                            { id: 'south' as WallId, lbl: 'Alt C' },
-                            { id: 'west' as WallId, lbl: 'Sol D' },
-                          ]
-                        ).map((sd) => (
-                          <button
-                            key={sd.id}
-                            type="button"
-                            onClick={() => setNewRoomSide(sd.id)}
-                            className={`py-1 border text-[10px] font-semibold ${
-                              newRoomSide === sd.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white'
-                            }`}
-                          >
-                            {sd.lbl}
-                          </button>
-                        ))}
-                      </div>
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500 block">
+                        Hangi Duvara Eklensin? (Oda Planından Seç)
+                      </span>
+                      <WallCompassPicker
+                        value={newRoomSide}
+                        onChange={(wId) => {
+                          setNewRoomSide(wId);
+                          if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
+                        }}
+                        project={project}
+                        parentRoomId={newRoomParentId}
+                        centerLabel={
+                          newRoomParentId === 'main'
+                            ? 'Ana Salon'
+                            : (project.adjacentRooms || []).find((r) => r.id === newRoomParentId)?.name || 'Oda'
+                        }
+                        compact
+                      />
                     </div>
 
                     <div className="space-y-1">
@@ -1974,25 +1971,24 @@ export const ArchitecturalStudioPage: React.FC = () => {
             </button>
             {openRoomSection === 'openings' && (
               <div className="px-3.5 pb-3.5 pt-1 space-y-3 bg-white">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-stone-500 block">Eklenecek Duvar</span>
-                  <div className="grid grid-cols-4 gap-1">
-                    {WALL_IDS.map((wId) => (
-                      <button
-                        key={wId}
-                        type="button"
-                        onClick={() => {
-                          setActiveWall(wId);
-                          if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
-                        }}
-                        className={`py-1.5 border text-[10px] font-semibold truncate transition ${
-                          activeWall === wId ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-[#faf9f6] text-stone-700'
-                        }`}
-                      >
-                        {wId === 'north' ? 'Üst A' : wId === 'east' ? 'Sağ B' : wId === 'south' ? 'Alt C' : 'Sol D'}
-                      </button>
-                    ))}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono uppercase tracking-wider text-stone-500">
+                      Eklenecek Duvar (Plan Üzerinden Seç)
+                    </span>
+                    <span className="text-[10px] font-semibold text-stone-900">
+                      {WALL_LABELS[activeWall]}
+                    </span>
                   </div>
+                  <WallCompassPicker
+                    value={activeWall}
+                    onChange={(wId) => {
+                      setActiveWall(wId);
+                      if (cameraMode === 'free') viewportRef.current?.focusWall(wId);
+                    }}
+                    project={project}
+                    centerLabel="Ana Salon"
+                  />
                 </div>
 
                 <div className="space-y-1.5">
@@ -2045,8 +2041,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         }`}
                       >
                         <span className="truncate">{WINDOW_KIND_LABELS[w.kind]}</span>
-                        <span className="text-[10px] font-mono opacity-75">
-                          {w.wall === 'north' ? 'Üst A' : w.wall === 'east' ? 'Sağ B' : w.wall === 'south' ? 'Alt C' : 'Sol D'}
+                        <span className="text-[10px] font-mono opacity-75 shrink-0 ml-2">
+                          {WALL_LABELS[w.wall]}
                         </span>
                       </button>
                     ))}
@@ -2067,8 +2063,8 @@ export const ArchitecturalStudioPage: React.FC = () => {
                         <span className="truncate">
                           {DOOR_KIND_LABELS[d.kind]} ({d.swing === 'inward' ? 'İçeri' : 'Dışarı'})
                         </span>
-                        <span className="text-[10px] font-mono opacity-75">
-                          {d.wall === 'north' ? 'Üst A' : d.wall === 'east' ? 'Sağ B' : d.wall === 'south' ? 'Alt C' : 'Sol D'}
+                        <span className="text-[10px] font-mono opacity-75 shrink-0 ml-2">
+                          {WALL_LABELS[d.wall]}
                         </span>
                       </button>
                     ))}

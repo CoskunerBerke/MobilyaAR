@@ -451,10 +451,17 @@ export interface ArchRoomProject {
 }
 
 export const WALL_LABELS: Record<WallId, string> = {
-  north: 'Üst Duvar (A)',
-  south: 'Alt Duvar (C)',
-  west: 'Sol Duvar (D)',
-  east: 'Sağ Duvar (B)',
+  north: 'Karşı Duvar',
+  south: 'Ön Duvar',
+  west: 'Sol Duvar',
+  east: 'Sağ Duvar',
+};
+
+export const WALL_SHORT_LABELS: Record<WallId, string> = {
+  north: 'Karşı',
+  east: 'Sağ',
+  south: 'Ön',
+  west: 'Sol',
 };
 
 export const WINDOW_KIND_LABELS: Record<WindowKind, string> = {

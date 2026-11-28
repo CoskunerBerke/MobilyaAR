@@ -1703,36 +1703,36 @@ export function buildArchitecturalRoom(project: ArchRoomProject, roomRoot: THREE
 
   const apronOff = T + 0.5;
   makeWallBadge(
-    `A · ÜST (${Math.round(houseBounds.totalW * 100)} cm)`,
+    `KARŞI DUVAR (${Math.round(houseBounds.totalW * 100)} cm)`,
     houseBounds.centerX,
     houseBounds.minZ - apronOff,
     0,
-    hasMultiRoom ? 2.2 : 1.55,
-    hasMultiRoom ? 0.42 : 0.29
+    hasMultiRoom ? 2.2 : 1.75,
+    hasMultiRoom ? 0.42 : 0.3
   );
   makeWallBadge(
-    `C · ALT (${Math.round(houseBounds.totalW * 100)} cm)`,
+    `ÖN DUVAR (${Math.round(houseBounds.totalW * 100)} cm)`,
     houseBounds.centerX,
     houseBounds.maxZ + apronOff,
     0,
-    hasMultiRoom ? 2.2 : 1.55,
-    hasMultiRoom ? 0.42 : 0.29
+    hasMultiRoom ? 2.2 : 1.75,
+    hasMultiRoom ? 0.42 : 0.3
   );
   makeWallBadge(
-    `D · SOL (${Math.round(houseBounds.totalD * 100)} cm)`,
+    `SOL DUVAR (${Math.round(houseBounds.totalD * 100)} cm)`,
     houseBounds.minX - apronOff,
     houseBounds.centerZ,
     Math.PI / 2,
-    hasMultiRoom ? 2.2 : 1.55,
-    hasMultiRoom ? 0.42 : 0.29
+    hasMultiRoom ? 2.2 : 1.75,
+    hasMultiRoom ? 0.42 : 0.3
   );
   makeWallBadge(
-    `B · SAĞ (${Math.round(houseBounds.totalD * 100)} cm)`,
+    `SAĞ DUVAR (${Math.round(houseBounds.totalD * 100)} cm)`,
     houseBounds.maxX + apronOff,
     houseBounds.centerZ,
     -Math.PI / 2,
-    hasMultiRoom ? 2.2 : 1.55,
-    hasMultiRoom ? 0.42 : 0.29
+    hasMultiRoom ? 2.2 : 1.75,
+    hasMultiRoom ? 0.42 : 0.3
   );
 
   // Room interior name + m² tags in 2D Plan view when multi-room apartment is active!

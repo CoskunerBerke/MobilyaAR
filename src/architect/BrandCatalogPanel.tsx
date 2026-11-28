@@ -19,6 +19,7 @@ import {
   type WallPanelCatalogItem,
 } from './materialCatalogs';
 import { WALL_LABELS, type ArchRoomProject, type ArchSelection, type WallId } from './types';
+import { WallCompassPicker } from './WallCompassPicker';
 
 type CatalogCategory = 'parquet' | 'wall' | 'skirting' | 'door' | 'countertop' | 'furniture';
 
@@ -45,8 +46,6 @@ const CATEGORIES: Array<{ id: CatalogCategory; label: string }> = [
   { id: 'countertop', label: 'Tezgah' },
   { id: 'furniture', label: 'Mobilya Paneli' },
 ];
-
-const WALL_IDS: WallId[] = ['north', 'east', 'south', 'west'];
 
 function swatchPatternCss(kind: string, hex: string): React.CSSProperties {
   if (kind === 'slats' || kind === 'fluted') {
@@ -249,45 +248,40 @@ export const BrandCatalogPanel: React.FC<Props> = ({
       )}
 
       {category === 'wall' && (
-        <div className="border border-stone-200 bg-[#faf9f6] p-2 space-y-2">
-          <div className="grid grid-cols-4 gap-1">
-            {WALL_IDS.map((wId) => (
-              <button
-                key={wId}
-                type="button"
-                onClick={() => onSelectWall(wId)}
-                className={`py-1 border text-[10px] font-semibold ${
-                  activeWall === wId ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700'
-                }`}
-              >
-                {wId === 'north' ? 'Üst A' : wId === 'east' ? 'Sağ B' : wId === 'south' ? 'Alt C' : 'Sol D'}
-              </button>
-            ))}
+        <div className="space-y-2">
+          <WallCompassPicker
+            value={activeWall}
+            onChange={onSelectWall}
+            project={project}
+            centerLabel="Kaplanacak Duvar"
+            compact
+          />
+          <div className="border border-stone-200 bg-[#faf9f6] p-2 space-y-2">
+            <div className="grid grid-cols-3 gap-1">
+              {(
+                [
+                  { id: 'zone', lbl: 'Bölge Panel' },
+                  { id: 'full', lbl: 'Seçili Duvar' },
+                  { id: 'all', lbl: '4 Duvara' },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setWallApplyMode(m.id)}
+                  className={`py-1 border text-[10px] font-semibold ${
+                    wallApplyMode === m.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700'
+                  }`}
+                >
+                  {m.lbl}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-stone-500">
+              Hedef: <strong className="text-stone-900">{WALL_LABELS[activeWall]}</strong> ·{' '}
+              {wallApplyMode === 'zone' ? 'Duvar profili / panel şeridi ekler' : wallApplyMode === 'all' ? '4 duvarı birden kaplar' : 'Tüm duvarı kaplar'}
+            </p>
           </div>
-          <div className="grid grid-cols-3 gap-1">
-            {(
-              [
-                { id: 'zone', lbl: 'Bölge Panel' },
-                { id: 'full', lbl: 'Seçili Duvar' },
-                { id: 'all', lbl: '4 Duvara' },
-              ] as const
-            ).map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setWallApplyMode(m.id)}
-                className={`py-1 border text-[10px] font-semibold ${
-                  wallApplyMode === m.id ? 'border-stone-950 bg-stone-950 text-white' : 'border-stone-200 bg-white text-stone-700'
-                }`}
-              >
-                {m.lbl}
-              </button>
-            ))}
-          </div>
-          <p className="text-[10px] text-stone-500">
-            Hedef: <strong className="text-stone-900">{WALL_LABELS[activeWall]}</strong> ·{' '}
-            {wallApplyMode === 'zone' ? 'Duvar profili / panel şeridi ekler' : wallApplyMode === 'all' ? '4 duvarı birden kaplar' : 'Tüm duvarı kaplar'}
-          </p>
         </div>
       )}
 
